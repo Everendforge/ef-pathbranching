@@ -1,0 +1,38 @@
+{
+  "specVersion": "0.1",
+  "graphId": "example-branching-graph",
+  "entryNodeId": "node-start",
+  "canonRefs": [
+    {
+      "id": "example-character",
+      "kind": "character"
+    },
+    {
+      "id": "example-location",
+      "kind": "location"
+    }
+  ],
+  "nodes": [
+    {
+      "id": "node-start",
+      "type": "line",
+      "speakerRef": "example-character",
+      "textKey": "line.start",
+      "choices": [
+        {
+          "id": "choice-continue",
+          "textKey": "choice.continue",
+          "targetNodeId": "node-end"
+        }
+      ]
+    },
+    {
+      "id": "node-end",
+      "type": "line",
+      "speakerRef": "example-character",
+      "textKey": "line.end",
+      "choices": []
+    }
+  ],
+  "variables": {}
+}
