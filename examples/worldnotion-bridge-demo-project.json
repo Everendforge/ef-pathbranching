@@ -1,0 +1,205 @@
+{
+  "specVersion": "0.1",
+  "projectId": "bridge-demo-pathbranching",
+  "name": "Bridge Demo PathBranching Project",
+  "sourceVault": {
+    "kind": "worldnotion",
+    "relativePath": "../worldnotion/examples/bridge-demo-vault"
+  },
+  "entrySequenceId": "sequence:example-protagonist",
+  "canonRefs": [
+    { "id": "universe:bridge-demo", "kind": "universe", "source": "worldnotion" },
+    { "id": "character:example-protagonist", "kind": "character", "source": "worldnotion" },
+    { "id": "character:example-companion", "kind": "character", "source": "worldnotion" },
+    { "id": "character:example-messenger", "kind": "character", "source": "worldnotion" },
+    { "id": "location:example-harbor", "kind": "location", "source": "worldnotion" },
+    { "id": "organization:example-guild", "kind": "organization", "source": "worldnotion" },
+    { "id": "concept:seasonal-signal", "kind": "concept", "source": "worldnotion" },
+    { "id": "knowledge:seasonal-signal", "kind": "knowledge-entry", "source": "worldnotion" },
+    { "id": "knowledge:messenger-report", "kind": "knowledge-entry", "source": "worldnotion" },
+    { "id": "item:signal-token", "kind": "item", "source": "worldnotion" },
+    { "id": "story:opening-story", "kind": "story", "source": "worldnotion" },
+    { "id": "scene:opening-signal", "kind": "scene", "source": "worldnotion" },
+    { "id": "sequence:example-protagonist", "kind": "branch-sequence", "source": "worldnotion" }
+  ],
+  "dataClasses": [
+    {
+      "id": "class:KnowledgeEntry",
+      "label": "Knowledge Entry",
+      "category": "canonProjection",
+      "roles": ["unlockable", "conditionTarget"],
+      "fields": [
+        { "name": "sourceRef", "type": "canonRef", "required": true },
+        { "name": "title", "type": "text", "required": true },
+        { "name": "body", "type": "text" },
+        { "name": "legacyNumericId", "type": "number" }
+      ]
+    },
+    {
+      "id": "class:EventSource",
+      "label": "Event Source",
+      "category": "narrative",
+      "roles": ["eventSeed"],
+      "fields": [
+        { "name": "sourceRef", "type": "canonRef", "required": true },
+        { "name": "viewpointCharacter", "type": "canonRef" },
+        { "name": "location", "type": "canonRef" }
+      ]
+    },
+    {
+      "id": "unity:WorldbuildingData",
+      "label": "Unity WorldbuildingData",
+      "category": "engineAdapter",
+      "roles": ["unityOutput"],
+      "fields": [
+        { "name": "ID_numero", "type": "number" },
+        { "name": "Title", "type": "text", "required": true },
+        { "name": "parrafos", "type": "text" }
+      ]
+    }
+  ],
+  "projectionRules": [
+    {
+      "id": "projection:concept-to-knowledge-entry",
+      "label": "WorldNotion concept to PathBranching KnowledgeEntry",
+      "from": {
+        "layer": "worldnotion",
+        "type": "concept",
+        "role": "unlockable"
+      },
+      "to": {
+        "layer": "pathbranching",
+        "classId": "class:KnowledgeEntry"
+      },
+      "fieldMappings": [
+        { "targetField": "sourceRef", "sourcePath": "$source.id", "required": true },
+        { "targetField": "title", "sourcePath": "$source.name", "required": true },
+        { "targetField": "body", "sourcePath": "$source.body" }
+      ]
+    },
+    {
+      "id": "projection:knowledge-entry-to-unity-worldbuilding-data",
+      "label": "KnowledgeEntry to Unity WorldbuildingData",
+      "from": {
+        "layer": "pathbranching",
+        "classId": "class:KnowledgeEntry"
+      },
+      "to": {
+        "layer": "engine",
+        "classId": "unity:WorldbuildingData",
+        "adapter": "unity-ink"
+      },
+      "fieldMappings": [
+        { "targetField": "ID_numero", "sourcePath": "$source.legacyNumericId" },
+        { "targetField": "Title", "sourcePath": "$source.title", "required": true },
+        { "targetField": "parrafos", "sourcePath": "$source.body" }
+      ]
+    }
+  ],
+  "graphModules": [
+    {
+      "id": "module:data.knowledge-entry",
+      "label": "Knowledge Entry",
+      "graph": "data",
+      "nodeType": "knowledgeEntry",
+      "dataClassId": "class:KnowledgeEntry",
+      "ports": [
+        { "id": "source", "direction": "input", "accepts": ["canonRef"], "required": true },
+        { "id": "runtime", "direction": "output", "accepts": ["class:KnowledgeEntry"] }
+      ]
+    },
+    {
+      "id": "module:projection.unity-worldbuilding-data",
+      "label": "Unity WorldbuildingData Projection",
+      "graph": "projection",
+      "nodeType": "unityWorldbuildingDataProjection",
+      "dataClassId": "unity:WorldbuildingData",
+      "ports": [
+        { "id": "knowledge", "direction": "input", "accepts": ["class:KnowledgeEntry"], "required": true },
+        { "id": "unityAsset", "direction": "output", "accepts": ["unity:WorldbuildingData"] }
+      ],
+      "exportAs": {
+        "layer": "engineAdapter",
+        "type": "WorldbuildingData"
+      }
+    }
+  ],
+  "sequences": [
+    {
+      "id": "sequence:example-protagonist",
+      "name": "Example Protagonist Sequence",
+      "characterRef": "character:example-protagonist",
+      "entryEventId": "event:opening-signal",
+      "eventIds": ["event:opening-signal"],
+      "legacyUnity": {
+        "scriptableObject": "SequenceData",
+        "assetName": "ExampleProtagonist"
+      }
+    }
+  ],
+  "branches": [],
+  "events": [
+    {
+      "id": "event:opening-signal",
+      "legacyId": "001",
+      "name": "Opening Signal",
+      "type": "normal",
+      "branchRef": null,
+      "script": {
+        "id": "script:opening-signal",
+        "format": "ink",
+        "sourcePath": "Stories/Opening/Opening Signal.ink",
+        "compiledPath": "Stories/Opening/Opening Signal.json",
+        "entrySection": "Start"
+      },
+      "canonRefs": [
+        "scene:opening-signal",
+        "story:opening-story",
+        "character:example-protagonist",
+        "character:example-companion",
+        "character:example-messenger",
+        "location:example-harbor"
+      ],
+      "unlocks": [
+        {
+          "type": "unlockCanonEntry",
+          "ref": "knowledge:seasonal-signal",
+          "sourceFunction": "UnlockKnowledge"
+        },
+        {
+          "type": "unlockCanonEntry",
+          "ref": "knowledge:messenger-report",
+          "sourceFunction": "UnlockKnowledge"
+        }
+      ],
+      "transitions": [],
+      "legacyUnity": {
+        "scriptableObject": "EventsData",
+        "assetName": "EVT_OPENING_SIGNAL",
+        "eventID": "001"
+      }
+    }
+  ],
+  "scripts": [
+    {
+      "id": "script:opening-signal",
+      "format": "ink",
+      "sourcePath": "Stories/Opening/Opening Signal.ink",
+      "compiledPath": "Stories/Opening/Opening Signal.json",
+      "entrySection": "Start"
+    }
+  ],
+  "externalFunctions": [
+    { "name": "UnlockKnowledge", "kind": "consequence", "mapsTo": "unlockCanonEntry" },
+    { "name": "KnowledgeUnlocked", "kind": "condition", "mapsTo": "canonEntryUnlocked" },
+    { "name": "SetNextEvent", "kind": "transition", "mapsTo": "setNextEvent" },
+    { "name": "ReturnMenu", "kind": "engineSignal", "mapsTo": "returnMenu" }
+  ],
+  "variables": {},
+  "engineTargets": {
+    "unity": {
+      "adapter": "unity-ink",
+      "minimumAdapterVersion": "0.1"
+    }
+  }
+}

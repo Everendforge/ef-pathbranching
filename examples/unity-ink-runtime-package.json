@@ -1,0 +1,159 @@
+{
+  "specVersion": "0.1",
+  "packageId": "unity-ink-bridge-example",
+  "entryNodeId": "event:opening-signal",
+  "canonRefs": [
+    {
+      "id": "character:example-protagonist",
+      "kind": "character",
+      "source": "worldnotion"
+    },
+    {
+      "id": "character:example-companion",
+      "kind": "character",
+      "source": "worldnotion"
+    },
+    {
+      "id": "knowledge:seasonal-signal",
+      "kind": "knowledge-entry",
+      "source": "worldnotion"
+    }
+  ],
+  "variables": {
+    "dice_result": 0,
+    "next_event_id": ""
+  },
+  "localization": {
+    "event.opening-signal.name": "Opening Signal",
+    "choice.opening-signal.inspect": "Inspect the signal",
+    "choice.opening-signal.ask": "Ask the companion"
+  },
+  "nodes": [
+    {
+      "id": "event:opening-signal",
+      "type": "event",
+      "textKey": "event.opening-signal.name",
+      "speakerRef": "character:example-protagonist",
+      "choices": [
+        {
+          "id": "choice.opening-signal.inspect",
+          "textKey": "choice.opening-signal.inspect",
+          "targetNodeId": "script:opening-signal.inspect",
+          "consequences": [
+            {
+              "type": "unlockCanonEntry",
+              "ref": "knowledge:seasonal-signal"
+            }
+          ]
+        },
+        {
+          "id": "choice.opening-signal.ask",
+          "textKey": "choice.opening-signal.ask",
+          "targetNodeId": "script:opening-signal.ask"
+        }
+      ]
+    }
+  ],
+  "pathBranching": {
+    "projectId": "bridge-demo-project",
+    "sourceVault": {
+      "kind": "worldnotion",
+      "relativePath": "../worldnotion/examples/bridge-demo-vault"
+    },
+    "dataClasses": [
+      {
+        "id": "class:KnowledgeEntry",
+        "label": "Knowledge Entry",
+        "roles": ["unlockable", "conditionTarget"]
+      },
+      {
+        "id": "unity:WorldbuildingData",
+        "label": "Unity WorldbuildingData",
+        "roles": ["unityOutput"]
+      }
+    ],
+    "projectionRules": [
+      {
+        "id": "projection:knowledge-entry-to-unity-worldbuilding-data",
+        "label": "KnowledgeEntry to Unity WorldbuildingData"
+      }
+    ],
+    "entrySequenceId": "sequence:example-protagonist",
+    "sequences": [
+      {
+        "id": "sequence:example-protagonist",
+        "name": "Example Protagonist Sequence",
+        "characterRef": "character:example-protagonist",
+        "entryEventId": "event:opening-signal",
+        "eventIds": ["event:opening-signal"]
+      }
+    ],
+    "branches": [],
+    "events": [
+      {
+        "id": "event:opening-signal",
+        "name": "Opening Signal",
+        "type": "normal",
+        "branchRef": null,
+        "script": {
+          "id": "script:opening-signal",
+          "format": "ink",
+          "sourcePath": "Stories/Opening/Opening Signal.ink",
+          "compiledPath": "Stories/Opening/Opening Signal.json",
+          "entrySection": "Start"
+        },
+        "canonRefs": [
+          "character:example-protagonist",
+          "character:example-companion",
+          "knowledge:seasonal-signal"
+        ],
+        "transitions": []
+      }
+    ],
+    "scripts": [
+      {
+        "id": "script:opening-signal",
+        "format": "ink",
+        "sourcePath": "Stories/Opening/Opening Signal.ink",
+        "compiledPath": "Stories/Opening/Opening Signal.json",
+        "entrySection": "Start",
+        "tags": ["speaker", "portrait", "layout", "background"],
+        "externalFunctions": ["UnlockKnowledge", "KnowledgeUnlocked", "SetNextEvent"]
+      }
+    ],
+    "externalFunctions": [
+      {
+        "name": "UnlockKnowledge",
+        "kind": "consequence",
+        "mapsTo": "unlockCanonEntry"
+      },
+      {
+        "name": "KnowledgeUnlocked",
+        "kind": "condition",
+        "mapsTo": "canonEntryUnlocked"
+      },
+      {
+        "name": "SetNextEvent",
+        "kind": "transition",
+        "mapsTo": "setNextEvent"
+      }
+    ]
+  },
+  "engineTargets": {
+    "unity": {
+      "adapter": "unity-ink",
+      "minimumAdapterVersion": "0.1",
+      "scriptableObjects": {
+        "sequence": "SequenceData",
+        "branch": "BranchData",
+        "event": "EventsData",
+        "decision": "DecisionsData",
+        "knowledgeEntry": "WorldbuildingData"
+      },
+      "ink": {
+        "sourceExtension": ".ink",
+        "compiledExtension": ".json"
+      }
+    }
+  }
+}

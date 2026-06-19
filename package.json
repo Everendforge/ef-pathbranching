@@ -1,0 +1,31 @@
+{
+  "name": "@everendforge/pathbranching",
+  "version": "0.1.0",
+  "private": false,
+  "type": "module",
+  "description": "Visual branching narrative editor core for Everend Forge.",
+  "scripts": {
+    "dev": "node scripts/run-vite.mjs --host 127.0.0.1",
+    "build": "npm run typecheck && node scripts/run-vite.mjs build",
+    "typecheck": "node scripts/run-tsc.mjs --noEmit",
+    "build:core": "node scripts/run-tsc.mjs -p tsconfig.build.json",
+    "demo:bridge": "npm run build:core && node scripts/demo-worldnotion-bridge.mjs",
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.11.2",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "typescript": "~5.8.3",
+    "vite": "^8.0.16"
+  },
+  "license": "MIT OR Apache-2.0",
+  "dependencies": {
+    "@vitejs/plugin-react": "^6.0.2",
+    "@xyflow/react": "^12.11.0",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7"
+  }
+}
