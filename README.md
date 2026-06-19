@@ -1,12 +1,14 @@
 # Everend PathBranching
 
-Everend PathBranching is the visual branching narrative editor for Everend Forge. It creates interactive narrative graphs and exports runtime packages defined by Everend Spec.
+Everend PathBranching is the visual branching narrative editor for Everend Forge. It creates interactive narrative graphs and exports runtime packages and narrative format projections defined by Everend Spec.
 
 PathBranching references canon entities by stable IDs from WorldNotion-compatible vaults, but it does not replace the canon vault.
 
 ## Current Status
 
-This repository currently contains design documentation, runtime examples, a TypeScript core, a React + React Flow story canvas, and a Tauri desktop shell. The UI loads the generic bridge project, shows collapsible Canon and PathBranching Files panels, keeps the narrative canvas always open, inspects selected nodes/edges/canon refs, validates the project, and previews runtime export.
+This repository currently contains design documentation, runtime examples, a TypeScript core, a React + React Flow story canvas, and a Tauri desktop shell. The UI loads the generic bridge project, shows collapsible Canon and PathBranching Files panels, keeps the narrative canvas always open, inspects selected nodes/edges/canon refs/project data objects, validates modular conditions and rules, and previews runtime export.
+
+The near-term export target is the SINPO-style Unity ecosystem: Ink-centered narrative output plus GameData-compatible runtime structures. Longer term, PathBranching should support additional narrative exports such as Twine and other engine/story formats without making those formats the authoring source of truth.
 
 ## Development
 
@@ -48,8 +50,11 @@ The current Tauri config builds a native executable and keeps bundling disabled 
 - Variables
 - Conditions
 - Consequences
+- Condition sets
+- Rule sets
 - Canon references
-- Ink script references
+- Project data objects
+- Ink script references and Ink-oriented export
 - Data classes
 - Projection rules
 - Graph modules
@@ -57,7 +62,7 @@ The current Tauri config builds a native executable and keeps bundling disabled 
 
 ## Output
 
-PathBranching exports JSON/YAML runtime packages that engine plugins can execute without the authoring app installed.
+PathBranching exports JSON/YAML runtime packages that engine plugins can execute without the authoring app installed. The first practical adapter should also produce SINPO-compatible Ink/GameData output. Future exporters may target Twine and other branching narrative formats as projections from the same story graph.
 
 ## Related Repositories
 

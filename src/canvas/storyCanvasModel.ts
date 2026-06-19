@@ -1,16 +1,19 @@
 import type { Edge, Node, Viewport } from "@xyflow/react";
 import type {
+  Branch,
   BranchingProject,
-  Condition,
+  ConditionInput,
   Consequence,
   EventNode,
   Outcome,
   ScriptRef,
   ValidationFinding,
-} from "../domain";
+} from "../domain.js";
+import { conditionCount, conditionLabels, consequenceLabel, walkConditions } from "../logic.js";
 
 export type StoryCanvasNodeKind =
   | "sequence"
+  | "start"
   | "branch"
   | "event"
   | "decision"
@@ -35,12 +38,13 @@ export type StoryCanvasNodeData = {
   badges: string[];
   details?: Record<string, unknown>;
   collapsed?: boolean;
+  isContainer?: boolean;
 } & Record<string, unknown>;
 
 export type StoryCanvasEdgeData = {
   kind: StoryCanvasEdgeKind;
   label: string;
-  conditions?: Condition[];
+  conditions?: ConditionInput;
   consequences?: Consequence[];
 } & Record<string, unknown>;
 
@@ -59,6 +63,7 @@ export type StoryCanvasModel = {
   edges: StoryCanvasEdge[];
   files: PathBranchingFileItem[];
   viewport?: Viewport;
+  activeSequenceId?: string;
 };
 
 type LayoutCursor = {
@@ -71,6 +76,10 @@ type LayoutCursor = {
 };
 
 const NODE_WIDTH = 230;
+const BRANCH_WIDTH = 390;
+const BRANCH_PADDING_TOP = 82;
+const BRANCH_PADDING_X = 22;
+const BRANCH_EVENT_GAP = 144;
 
 function positionFor(project: BranchingProject, id: string, x: number, y: number) {
   return project.canvas?.nodes?.[id]?.position ?? { x, y };
@@ -87,12 +96,19 @@ function pushNode(
   y: number,
   badges: string[] = [],
   details: Record<string, unknown> = {},
+  options: {
+    parentId?: string;
+    width?: number;
+    height?: number;
+    isContainer?: boolean;
+  } = {},
 ) {
   const persisted = project.canvas?.nodes?.[id];
   nodes.push({
     id,
     type: "story",
     position: positionFor(project, id, x, y),
+    parentId: options.parentId,
     data: {
       kind,
       title,
@@ -101,8 +117,11 @@ function pushNode(
       badges,
       details,
       collapsed: persisted?.collapsed,
+      isContainer: options.isContainer,
     },
-    width: NODE_WIDTH,
+    width: options.width ?? NODE_WIDTH,
+    height: options.height,
+    style: options.width || options.height ? { width: options.width, height: options.height } : undefined,
   });
 }
 
@@ -135,27 +154,64 @@ function scriptSubtitle(script: ScriptRef) {
     .join(" - ");
 }
 
-function consequenceLabel(consequence: Consequence) {
-  if (consequence.type === "unlockCanonEntry") {
-    return "unlock";
-  }
-  if (consequence.type === "setVariable") {
-    return "set variable";
-  }
-  if (consequence.type === "engineSignal") {
-    return "engine signal";
-  }
-  return consequence.type;
+function logicBadges(availability: ConditionInput | undefined, ruleSetCount = 0) {
+  return [
+    ...(conditionCount(availability) > 0 ? ["conditional"] : []),
+    ...(ruleSetCount > 0 ? [`${ruleSetCount} rules`] : []),
+  ];
 }
 
-function conditionBadge(condition: Condition) {
-  if (condition.type === "canonEntryUnlocked") {
-    return condition.negate ? "unless knowledge" : "requires knowledge";
+function dataUseBadges(project: BranchingProject, input: ConditionInput | undefined) {
+  const badges = new Set<string>();
+  walkConditions(input, (condition) => {
+    if (
+      (condition.type === "dataObjectExists" || condition.type === "dataObjectField") &&
+      project.projectDataObjects?.some((dataObject) => dataObject.id === condition.objectId)
+    ) {
+      badges.add("uses data");
+    }
+  });
+  return Array.from(badges);
+}
+
+function activeSequence(project: BranchingProject) {
+  const preferredId = project.canvas?.activeSequenceId ?? project.entrySequenceId ?? project.sequences[0]?.id;
+  return project.sequences.find((sequence) => sequence.id === preferredId) ?? project.sequences[0];
+}
+
+function branchesForSequence(project: BranchingProject, sequenceId: string | undefined) {
+  const sequence = project.sequences.find((item) => item.id === sequenceId);
+  if (!sequence) {
+    return [];
   }
-  if (condition.type === "variable") {
-    return `${condition.name} ${condition.operator}`;
+
+  if (sequence.branchIds?.length) {
+    const branchIds = new Set(sequence.branchIds);
+    return project.branches.filter((branch) => branchIds.has(branch.id));
   }
-  return condition.type;
+
+  const sequenceEventIds = new Set(sequence.eventIds);
+  return project.branches.filter((branch) =>
+    branch.eventIds.some((eventId) => sequenceEventIds.has(eventId)) ||
+    project.events.some((eventNode) => eventNode.branchRef === branch.id && sequenceEventIds.has(eventNode.id)),
+  );
+}
+
+function eventBadges(project: BranchingProject, eventNode: EventNode) {
+  return [
+    eventNode.type,
+    ...(eventNode.type === "final" ? ["terminal"] : []),
+    `${eventNode.canonRefs?.length ?? 0} refs`,
+    eventNode.script ? "ink" : "no script",
+    ...(eventNode.decisions?.length ? [`${eventNode.decisions.length} decisions`] : []),
+    ...(eventNode.unlocks?.length ? ["unlocks"] : []),
+    ...logicBadges(eventNode.availability, eventNode.ruleSets?.length ?? 0),
+    ...dataUseBadges(project, eventNode.availability),
+  ];
+}
+
+function branchHeight(branch: Branch) {
+  return Math.max(230, BRANCH_PADDING_TOP + Math.max(1, branch.eventIds.length) * BRANCH_EVENT_GAP + 24);
 }
 
 function ensureKnowledgeNode(
@@ -192,6 +248,8 @@ function addConsequenceNodes(
     const badges = [consequence.type];
     const ref =
       consequence.type === "unlockCanonEntry" && typeof consequence.ref === "string" ? consequence.ref : undefined;
+    const dataObjectId =
+      consequence.type === "unlockDataObject" && typeof consequence.objectId === "string" ? consequence.objectId : undefined;
 
     pushNode(project, nodes, id, "runtimeAction", title, ownerLabel, 1160, cursor.supportY, badges, { consequence });
     edges.push(edge(`edge:consequence:${ownerId}:${id}`, ownerId, id, "consequence", title, { consequences: [consequence] }));
@@ -199,6 +257,18 @@ function addConsequenceNodes(
     if (ref) {
       const knowledgeId = ensureKnowledgeNode(project, nodes, createdKnowledge, ref, 1440, cursor.supportY);
       edges.push(edge(`edge:consequence:${id}:${knowledgeId}`, id, knowledgeId, "consequence", "unlocks", { consequences: [consequence] }));
+    }
+
+    if (dataObjectId) {
+      const dataObject = project.projectDataObjects?.find((object) => object.id === dataObjectId);
+      const knowledgeId = ensureKnowledgeNode(project, nodes, createdKnowledge, dataObjectId, 1440, cursor.supportY);
+      const targetNode = nodes.find((node) => node.id === knowledgeId);
+      if (targetNode) {
+        targetNode.data.title = dataObject?.name ?? dataObjectId;
+        targetNode.data.subtitle = dataObject?.classId ?? "project data";
+        targetNode.data.badges = ["data"];
+      }
+      edges.push(edge(`edge:consequence:${id}:${knowledgeId}`, id, knowledgeId, "consequence", "unlocks data", { consequences: [consequence] }));
     }
 
     cursor.supportY += 150;
@@ -218,8 +288,10 @@ function addOutcomeNodes(
 ) {
   const outcomeId = `outcome:${event.id}:${decisionId}:${outcome.id}`;
   const badges = [
-    ...(outcome.conditions ?? []).map(conditionBadge),
+    ...conditionLabels(outcome.conditions),
     ...(outcome.consequences ?? []).map(consequenceLabel),
+    ...logicBadges(outcome.conditions, outcome.ruleSets?.length ?? 0),
+    ...dataUseBadges(project, outcome.conditions),
   ];
 
   pushNode(
@@ -287,7 +359,12 @@ function addEventSupportNodes(
       decision.description ?? decision.id,
       820,
       cursor.decisionY + decisionIndex * 190,
-      [decision.type, `${decision.outcomes.length} outcomes`],
+      [
+        decision.type,
+        `${decision.outcomes.length} outcomes`,
+        ...logicBadges(decision.availability, decision.ruleSets?.length ?? 0),
+        ...dataUseBadges(project, decision.availability),
+      ],
       { eventId: eventNode.id, decision },
     );
     edges.push(edge(`edge:contains:${eventNode.id}:${decisionId}`, eventNode.id, decisionId, "contains", "decision"));
@@ -307,6 +384,14 @@ export function buildStoryCanvasModel(project: BranchingProject): StoryCanvasMod
   const nodes: StoryCanvasNode[] = [];
   const edges: StoryCanvasEdge[] = [];
   const createdKnowledge = new Set<string>();
+  const sequence = activeSequence(project);
+  const activeSequenceId = sequence?.id;
+  const activeEventIds = new Set(sequence?.eventIds ?? []);
+  const activeBranches = branchesForSequence(project, activeSequenceId);
+  const activeBranchIds = new Set(activeBranches.map((branch) => branch.id));
+  const activeEvents = project.events.filter((eventNode) => activeEventIds.has(eventNode.id));
+  const eventIndexInSequence = new Map((sequence?.eventIds ?? []).map((eventId, index) => [eventId, index]));
+  const looseEvents = activeEvents.filter((eventNode) => !eventNode.branchRef || !activeBranchIds.has(eventNode.branchRef));
   const cursor: LayoutCursor = {
     sequenceY: 80,
     branchY: 80,
@@ -316,7 +401,8 @@ export function buildStoryCanvasModel(project: BranchingProject): StoryCanvasMod
     supportY: 320,
   };
 
-  project.sequences.forEach((sequence) => {
+  if (sequence) {
+    const startNodeId = `start:${sequence.id}`;
     pushNode(
       project,
       nodes,
@@ -326,34 +412,67 @@ export function buildStoryCanvasModel(project: BranchingProject): StoryCanvasMod
       sequence.characterRef ? `character ${sequence.characterRef}` : "sequence",
       80,
       cursor.sequenceY,
-      ["sequence", `${sequence.eventIds.length} events`],
+      [
+        "sequence",
+        `${sequence.eventIds.length} events`,
+        ...logicBadges(sequence.availability, sequence.ruleSets?.length ?? 0),
+        ...dataUseBadges(project, sequence.availability),
+      ],
       { sequence },
     );
 
-    if (sequence.entryEventId) {
-      edges.push(edge(`edge:entry:${sequence.id}:${sequence.entryEventId}`, sequence.id, sequence.entryEventId, "entry", "entry"));
+    pushNode(
+      project,
+      nodes,
+      startNodeId,
+      "start",
+      "Start",
+      sequence.name,
+      340,
+      cursor.sequenceY,
+      ["entry", sequence.entryEventId],
+      { sequenceId: sequence.id },
+    );
+
+    if (sequence.entryEventId && activeEventIds.has(sequence.entryEventId)) {
+      edges.push(edge(`edge:entry:${startNodeId}:${sequence.entryEventId}`, startNodeId, sequence.entryEventId, "entry", "entry"));
     }
-
-    sequence.eventIds
-      .filter((eventId) => eventId !== sequence.entryEventId)
-      .forEach((eventId) => {
-        edges.push(edge(`edge:contains:${sequence.id}:${eventId}`, sequence.id, eventId, "contains", "event"));
-      });
     cursor.sequenceY += 190;
-  });
+  }
 
-  project.branches.forEach((branch) => {
-    pushNode(project, nodes, branch.id, "branch", branch.title, branch.description ?? "branch", 360, cursor.branchY, ["branch"], {
-      branch,
-    });
+  activeBranches.forEach((branch, branchIndex) => {
+    const height = branchHeight(branch);
+    pushNode(
+      project,
+      nodes,
+      branch.id,
+      "branch",
+      branch.title,
+      branch.description ?? "branch",
+      620,
+      cursor.branchY + branchIndex * 330,
+      ["branch", ...logicBadges(branch.availability, branch.ruleSets?.length ?? 0), ...dataUseBadges(project, branch.availability)],
+      {
+        branch,
+      },
+      { width: BRANCH_WIDTH, height, isContainer: true },
+    );
     branch.eventIds.forEach((eventId) => {
-      edges.push(edge(`edge:contains:${branch.id}:${eventId}`, branch.id, eventId, "contains", "event"));
+      if (activeEventIds.has(eventId)) {
+        edges.push(edge(`edge:contains:${branch.id}:${eventId}`, branch.id, eventId, "contains", "event"));
+      }
     });
-    cursor.branchY += 190;
   });
 
-  project.events.forEach((eventNode, eventIndex) => {
-    const y = cursor.eventY + eventIndex * 220;
+  activeEvents.forEach((eventNode) => {
+    const sequenceIndex = eventIndexInSequence.get(eventNode.id) ?? 0;
+    const branch = eventNode.branchRef ? activeBranches.find((item) => item.id === eventNode.branchRef) : undefined;
+    const branchEventIndex = branch?.eventIds.findIndex((eventId) => eventId === eventNode.id) ?? -1;
+    const looseIndex = looseEvents.findIndex((item) => item.id === eventNode.id);
+    const eventX = branch ? BRANCH_PADDING_X : activeBranches.length > 0 ? 1080 : 620;
+    const eventY = branch
+      ? BRANCH_PADDING_TOP + Math.max(0, branchEventIndex) * BRANCH_EVENT_GAP
+      : cursor.eventY + Math.max(0, looseIndex >= 0 ? looseIndex : sequenceIndex) * 220;
     pushNode(
       project,
       nodes,
@@ -361,17 +480,18 @@ export function buildStoryCanvasModel(project: BranchingProject): StoryCanvasMod
       "event",
       eventNode.name,
       eventNode.type,
-      eventNode.branchRef ? 620 : 360,
-      y,
-      [
-        eventNode.type,
-        `${eventNode.canonRefs?.length ?? 0} refs`,
-        eventNode.script ? "ink" : "no script",
-      ],
+      eventX,
+      eventY,
+      eventBadges(project, eventNode),
       { event: eventNode },
+      branch ? { parentId: branch.id } : undefined,
     );
 
     eventNode.transitions?.forEach((transition) => {
+      if (!activeEventIds.has(transition.to)) {
+        return;
+      }
+
       edges.push(
         edge(`edge:transition:${transition.id}`, eventNode.id, transition.to, "transition", transition.label ?? "transition", {
           conditions: transition.conditions,
@@ -380,9 +500,10 @@ export function buildStoryCanvasModel(project: BranchingProject): StoryCanvasMod
       );
     });
 
-    cursor.decisionY = y;
-    cursor.outcomeY = y;
-    cursor.supportY = y + 160;
+    const supportBaseY = branch ? cursor.eventY + sequenceIndex * 220 : eventY;
+    cursor.decisionY = supportBaseY;
+    cursor.outcomeY = supportBaseY;
+    cursor.supportY = supportBaseY + 160;
     addEventSupportNodes(project, eventNode, nodes, edges, createdKnowledge, cursor);
   });
 
@@ -391,6 +512,7 @@ export function buildStoryCanvasModel(project: BranchingProject): StoryCanvasMod
     edges,
     files: buildPathBranchingFiles(project),
     viewport: project.canvas?.viewport,
+    activeSequenceId,
   };
 }
 
@@ -436,6 +558,12 @@ export function buildPathBranchingFiles(project: BranchingProject): PathBranchin
       id: `file:data-class:${dataClass.id}`,
       label: dataClass.label,
       detail: dataClass.id,
+      group: "data" as const,
+    })),
+    ...(project.projectDataObjects ?? []).map((dataObject) => ({
+      id: `file:data-object:${dataObject.id}`,
+      label: dataObject.name,
+      detail: dataObject.classId,
       group: "data" as const,
     })),
     ...(project.projectionRules ?? []).map((rule) => ({

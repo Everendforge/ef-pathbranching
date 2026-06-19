@@ -2,7 +2,7 @@
 
 Everend PathBranching is a standalone app for building playable branching story flow. It is inspired by the intent of tools like Articy Draft X: authors should feel that they are shaping a game narrative, not filling a database or configuring an exporter.
 
-PathBranching models interactive flow and exports runtime packages; it does not replace the canon vault.
+PathBranching models interactive flow and exports runtime packages and narrative format projections; it does not replace the canon vault.
 
 ## Relationship with WorldNotion
 
@@ -37,6 +37,7 @@ Data classes, graph modules, and projection rules exist behind this flow. They a
 - Canon reference: stable ID reference to a vault entity.
 - Data class: internal role used by modules and projections.
 - Projection rule: export mapping from narrative data to engine data.
+- Format exporter: projection from the story graph into a narrative format such as Ink or, later, Twine/Twee.
 
 ## App boundaries
 
@@ -48,6 +49,10 @@ Data classes, graph modules, and projection rules exist behind this flow. They a
 ## Export goal
 
 An export should contain package metadata, entry node, narrative nodes, choices, variables, conditions, consequences, events, scripts, localization keys, canon references, and optional projection metadata.
+
+The first concrete export target is the SINPO-compatible Ink/GameData pipeline. PathBranching should be able to generate or synchronize Ink-oriented output and produce GameData-compatible runtime structures from the same story graph.
+
+Later exports such as Twine/Twee should be added as alternate projections, not as alternate authoring sources.
 
 ## MVP direction
 

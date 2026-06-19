@@ -1,4 +1,4 @@
-import type { BranchingProject, CanonRef, ValidationFinding } from "./domain";
+import type { BranchingProject, CanonRef, ValidationFinding } from "./domain.js";
 
 export type WorldNotionVaultFile = {
   relativePath: string;

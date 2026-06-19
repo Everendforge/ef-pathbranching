@@ -2,26 +2,26 @@
 
 This document captures lessons from an existing Unity + Ink runtime without making that runtime the source of truth for WorldNotion or PathBranching.
 
-Unity is the first practical engine target. It should be treated as an adapter projection, not as the canonical data model.
+Unity is the first practical engine target. The immediate compatibility target is the current SINPO-style Unity implementation, where Ink drives narrative flow and GameData-style structures carry runtime data. This should still be treated as an adapter projection, not as the canonical data model.
 
 ## Purpose
 
-PathBranching should support a Unity + Ink workflow while remaining portable to other engines.
+PathBranching should support a Unity + Ink + GameData workflow while remaining portable to other engines and later narrative export formats.
 
 The target flow is:
 
 ~~~text
 WorldNotion
   -> PathBranching
-  -> Unity Ink adapter
+  -> SINPO Ink/GameData adapter
   -> later engine adapters
 ~~~
 
-WorldNotion owns canon. PathBranching owns narrative graphs, data classes, projections, and validation. Unity consumes exported runtime data and engine-specific assets.
+WorldNotion owns canon. PathBranching owns narrative graphs, data classes, projections, and validation. Unity/SINPO consumes exported Ink, GameData-compatible runtime data, and engine-specific assets.
 
 ## Unity Runtime Shape
 
-A Unity Ink adapter may use ScriptableObjects, compiled Ink JSON, and engine-specific presentation assets.
+A Unity Ink adapter may use ScriptableObjects, GameData-style data containers, compiled Ink JSON, and engine-specific presentation assets.
 
 Common adapter-side classes may include:
 
@@ -38,7 +38,7 @@ These are runtime data classes. They are not WorldNotion ontology classes.
 
 ## Ink Integration
 
-The first Unity adapter should treat Ink as a first-class script format.
+The first Unity/SINPO adapter should treat Ink as the first-class export and synchronization format.
 
 Ink content can contain:
 
@@ -73,19 +73,21 @@ Common generic external function families:
 
 Concrete projects can rename these functions. PathBranching should store the semantic mapping separately from the function name.
 
+For the current SINPO path, PathBranching should generate or synchronize Ink from the graph before trying to support broader export formats. Twine/Twee and other narrative formats should come later as additional projections from the same graph.
+
 ## Projection Mapping
 
 The Unity adapter should consume PathBranching projections.
 
-| PathBranching | Unity Adapter | Notes |
+| PathBranching | SINPO / Unity Adapter | Notes |
 | --- | --- | --- |
-| sequence | sequence ScriptableObject | Often tied to a playable character or route. |
-| branch | branch ScriptableObject | Optional grouping layer. |
-| event node | event ScriptableObject | High-level playable unit. |
-| script ref | Ink source/compiled JSON | References script assets. |
-| decision | decision ScriptableObject | Optional reusable decision metadata. |
+| sequence | sequence GameData / ScriptableObject | Often tied to a playable character or route. |
+| branch | branch GameData / ScriptableObject | Optional grouping layer. |
+| event node | event GameData / ScriptableObject | High-level playable unit. |
+| script ref | Ink source/compiled JSON | References or generates script assets. |
+| decision | decision GameData | Optional reusable decision metadata. |
 | outcome | state/outcome data | May be embedded or standalone. |
-| KnowledgeEntry | knowledge/compendium ScriptableObject | Projected from canon, not identical to canon. |
+| KnowledgeEntry | knowledge/compendium GameData | Projected from canon, not identical to canon. |
 | Speaker | character runtime data | May include engine-only presentation fields. |
 
 ## Projection Warning
@@ -97,8 +99,10 @@ WorldNotion can define project-specific categories such as concepts, documents, 
 ## First Unity Adapter Responsibilities
 
 - import an Everend runtime package
+- export or synchronize Ink files from the PathBranching graph
 - create or update sequence data
 - create or update event data
+- create or update SINPO GameData-compatible structures
 - preserve references to Ink JSON assets
 - resolve canon references where possible
 - report missing Ink files, missing events, and broken transitions
@@ -106,15 +110,15 @@ WorldNotion can define project-specific categories such as concepts, documents, 
 
 ## Later Responsibilities
 
-- generate Ink templates from graph nodes
 - compile Ink
 - sync selected WorldNotion entities into runtime knowledge data
+- export Twine/Twee from the graph for web/prototype branching stories
 - support playtest state import/export
 - support runtime execution without generating ScriptableObjects
 
 ## Open Questions
 
-- Should PathBranching own `.ink` files directly, or reference files in a project folder?
+- Should PathBranching own `.ink` files directly, reference files in a project folder, or support both with explicit sync direction?
 - Should runtime packages embed compiled Ink JSON, or only reference engine assets?
 - Should numeric legacy IDs be generated by projections, imported from old data, or manually assigned?
 - How much visual Ink editing is needed before the first useful release?

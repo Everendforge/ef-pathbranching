@@ -1,4 +1,4 @@
-import type { BranchingProject, RuntimeNode, RuntimePackage } from "./domain";
+import type { BranchingProject, RuntimeNode, RuntimePackage } from "./domain.js";
 
 export function exportRuntimePackage(project: BranchingProject): RuntimePackage {
   const entrySequence = project.entrySequenceId
@@ -17,9 +17,11 @@ export function exportRuntimePackage(project: BranchingProject): RuntimePackage 
       conditions: transition.conditions,
       consequences: transition.consequences,
     })),
+    conditions: event.availability,
     canonRefs: event.canonRefs,
     script: event.script,
     legacyId: event.legacyId,
+    ruleSets: event.ruleSets,
   }));
 
   return {
@@ -34,6 +36,7 @@ export function exportRuntimePackage(project: BranchingProject): RuntimePackage 
       projectId: project.projectId,
       sourceVault: project.sourceVault,
       dataClasses: project.dataClasses,
+      projectDataObjects: project.projectDataObjects,
       projectionRules: project.projectionRules,
       graphModules: project.graphModules,
       entrySequenceId: project.entrySequenceId,

@@ -1,4 +1,4 @@
-import type { BranchingProject, EventNode, Sequence } from "./domain";
+import type { BranchingProject, EventNode, Sequence } from "./domain.js";
 
 export type StoryFlowNodeKind = "sequence" | "event";
 

@@ -97,8 +97,11 @@ PathBranching should eventually support several graph views:
 - `Data Graph`: classes, subclasses, dependencies, required fields, relationships.
 - `Projection Graph`: mapping from canon entities to runtime data classes.
 - `Engine Graph`: mapping from runtime data classes to Unity/Godot/Unreal adapters.
+- `Format Export Graph`: mapping from story objects to Ink, Twine/Twee, and other narrative formats.
 
 The first UI should start with the narrative graph. Data and projection graphs are advanced views that support the story workflow.
+
+The first format target should be the current SINPO-compatible Ink/GameData path. Twine/Twee and other exports should come after the Ink/GameData pipeline is reliable.
 
 ## Layer 3: Engine Runtime Projection
 
@@ -232,7 +235,9 @@ PathBranching needs a strong story-flow experience first:
 - visual mapping between canon entities and runtime roles
 - import of WorldNotion vault indexes
 - export of engine-specific mapping profiles
+- SINPO-oriented Ink/GameData export
 - Ink parser and script graph
+- later Twine/Twee and other narrative format exporters
 - package validator before engine import
 
 The first PathBranching app should be built around playable story flow, supported by modules, not hardcoded Unity concepts.
@@ -255,10 +260,11 @@ The current Unity implementation works as proof, but the adapter layer will need
 3. Define PathBranching class and projection models as infrastructure behind story objects.
 4. Build the WorldNotion vault index bridge without assuming Unity output.
 5. Build advanced data/projection graph support for classes, dependencies, and projections.
-6. Add Ink parsing and script graph.
-7. Export a runtime package with projection metadata.
-8. Build the Unity adapter as one projection target.
-9. Add more engine adapters later.
+6. Add SINPO-oriented Ink/GameData export.
+7. Add Ink parsing and script graph.
+8. Export a runtime package with projection metadata.
+9. Build the Unity adapter as one projection target.
+10. Add Twine/Twee and more engine/narrative format exporters later.
 
 ## Design Rule
 

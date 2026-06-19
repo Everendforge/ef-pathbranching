@@ -11,9 +11,9 @@ WorldNotion
     | reads stable IDs and metadata
     v
 PathBranching
-  narrative graph, Ink script references, conditions, consequences, export
+  narrative graph, format projections, conditions, consequences, export
     |
-    | writes runtime package
+    | writes runtime package and format-specific projections
     v
 Engine adapter
   Unity first, then Godot, Unreal, and other runtimes
@@ -60,9 +60,9 @@ Useful outputs:
 
 This is optional for the first build. The first build only needs to read canon IDs from a vault.
 
-### PathBranching to Engine Adapters
+### PathBranching to Engine Adapters and Narrative Formats
 
-PathBranching exports runtime packages.
+PathBranching exports runtime packages and format-specific narrative projections.
 
 Engine adapters need:
 
@@ -82,6 +82,15 @@ Engine adapters need:
 - validation report
 
 The runtime package is the primary contract. Engine adapters should not read PathBranching private UI state.
+
+The first practical export target is the existing SINPO-style Unity workflow. That means PathBranching should produce:
+
+- Ink-oriented narrative output or synchronized Ink references
+- compiled Ink JSON references when available
+- GameData-compatible runtime structures for sequences, branches, events, decisions, outcomes, knowledge, items, and related state
+- projection metadata that can update or recreate Unity assets safely
+
+Later, PathBranching should support additional narrative formats such as Twine/Twee. These should be treated as exporters from the PathBranching graph, not as alternate sources of truth.
 
 ### Engine Adapters to PathBranching
 
@@ -175,11 +184,26 @@ An event is the main high-level graph node.
 
 In a Unity adapter, this may map to event data. An event may reference an Ink source file and compiled Ink JSON file.
 
+### Format Projection
+
+A format projection exports the same PathBranching story graph into a target narrative format.
+
+Initial target:
+
+- Ink + SINPO GameData for Unity
+
+Later targets:
+
+- Twine/Twee for web and prototype branching stories
+- other engine or narrative tool formats
+
+Format projections should preserve stable PathBranching IDs so exported files can be regenerated without losing authoring continuity.
+
 ### Script Section
 
 A script section is an internal Ink section, such as a knot or stitch.
 
-The first build can parse and display script sections without owning full visual Ink editing.
+The first build can parse and display script sections without owning full visual Ink editing. For the SINPO path, Ink is also the first export/synchronization format.
 
 ### Transition
 
@@ -233,6 +257,9 @@ PathBranching narrative data
 
 Engine adapter data
   unity, godot, unreal, custom engine hints
+
+Format projections
+  ink, twine/twee, custom narrative exports
 ~~~
 
 This keeps the package compatible with the current v0.1 schema while letting PathBranching express real engine adapter structures.
@@ -252,6 +279,8 @@ ProjectRoot/
     *.json
   Exports/
     runtime-package.json
+    story.ink
+    story.twee
     validation-report.yaml
 ~~~
 
@@ -295,11 +324,13 @@ The same models should power:
 2. Add data class and projection models before hardcoding Unity concepts.
 3. Add a vault index adapter that can read WorldNotion-style entities.
 4. Add a validator for broken event transitions, missing canon refs, and invalid projection inputs.
-5. Add an Ink scanner that detects sections, tags, choices, diverts, and external functions.
-6. Export a runtime package compatible with Everend Spec v0.1.
-7. Build a Unity importer around projection rules for sequence data, event data, and Ink JSON references.
-8. Build the event graph UI.
-9. Add suite integration after the core packages are reusable.
+5. Add a SINPO-oriented Ink/GameData exporter from the story graph.
+6. Add an Ink scanner that detects sections, tags, choices, diverts, and external functions.
+7. Export a runtime package compatible with Everend Spec v0.1.
+8. Build a Unity importer around projection rules for sequence data, event data, GameData, and Ink JSON references.
+9. Add Twine/Twee and other format exporters after the SINPO path is stable.
+10. Build the event graph UI.
+11. Add suite integration after the core packages are reusable.
 
 ## Tauri Strategy
 

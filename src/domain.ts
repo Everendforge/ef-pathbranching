@@ -34,6 +34,7 @@ export type DataFieldDefinition = {
   required?: boolean;
   options?: string[];
   acceptedClasses?: string[];
+  acceptedCanonKinds?: string[];
   defaultValue?: unknown;
 };
 
@@ -70,7 +71,7 @@ export type ProjectionRule = {
     adapter?: string;
   };
   fieldMappings: ProjectionFieldMapping[];
-  conditions?: Condition[];
+  conditions?: ConditionInput;
 };
 
 export type GraphPortDefinition = {
@@ -107,6 +108,9 @@ export type Sequence = {
   characterRef?: string;
   entryEventId: string;
   eventIds: string[];
+  branchIds?: string[];
+  availability?: ConditionInput;
+  ruleSets?: RuleSet[];
   legacyUnity?: Record<string, unknown>;
 };
 
@@ -115,6 +119,8 @@ export type Branch = {
   title: string;
   description?: string;
   eventIds: string[];
+  availability?: ConditionInput;
+  ruleSets?: RuleSet[];
   legacyUnity?: Record<string, unknown>;
 };
 
@@ -128,9 +134,11 @@ export type EventNode = {
   branchRef?: string | null;
   script?: ScriptRef;
   canonRefs?: string[];
+  availability?: ConditionInput;
   decisions?: Decision[];
   unlocks?: Consequence[];
   transitions?: Transition[];
+  ruleSets?: RuleSet[];
   legacyUnity?: Record<string, unknown>;
 };
 
@@ -141,6 +149,8 @@ export type Decision = {
   name: string;
   description?: string;
   type: DecisionType;
+  availability?: ConditionInput;
+  ruleSets?: RuleSet[];
   outcomes: Outcome[];
 };
 
@@ -149,8 +159,9 @@ export type Outcome = {
   name: string;
   description?: string;
   requiredCanonRefs?: string[];
-  conditions?: Condition[];
+  conditions?: ConditionInput;
   consequences?: Consequence[];
+  ruleSets?: RuleSet[];
 };
 
 export type Condition =
@@ -171,46 +182,122 @@ export type Condition =
       arguments?: unknown[];
     }
   | {
+      type: "dataObjectExists";
+      objectId: string;
+    }
+  | {
+      type: "dataObjectField";
+      objectId: string;
+      field: string;
+      operator: "==" | "!=" | ">" | ">=" | "<" | "<=" | "contains" | "exists";
+      value?: unknown;
+    }
+  | {
+      type: "runtimeItem";
+      itemId: string;
+      operator?: "has" | "missing";
+    }
+  | {
+      type: "visited";
+      targetType: "sequence" | "branch" | "event" | "decision" | "outcome";
+      targetId: string;
+      negate?: boolean;
+    }
+  | {
       type: string;
       [key: string]: unknown;
     };
+
+export type ConditionSet =
+  | {
+      all: ConditionExpression[];
+      label?: string;
+    }
+  | {
+      any: ConditionExpression[];
+      label?: string;
+    }
+  | {
+      not: ConditionExpression;
+      label?: string;
+    };
+
+export type ConditionExpression = Condition | ConditionSet;
+
+export type ConditionInput = ConditionExpression | ConditionExpression[];
 
 export type Consequence =
   | {
       type: "unlockCanonEntry";
       ref: string;
       sourceFunction?: string;
+      conditions?: ConditionInput;
     }
   | {
       type: "setVariable";
       name: string;
       value: unknown;
+      conditions?: ConditionInput;
+    }
+  | {
+      type: "unlockDataObject";
+      objectId: string;
+      conditions?: ConditionInput;
     }
   | {
       type: "externalFunction";
       name: string;
       arguments?: unknown[];
+      conditions?: ConditionInput;
     }
   | {
       type: "engineSignal";
       name: string;
       arguments?: unknown[];
+      conditions?: ConditionInput;
     }
   | {
       type: string;
       [key: string]: unknown;
     };
 
+export type RuleSet = {
+  id: string;
+  label?: string;
+  when: ConditionInput;
+  then: Consequence[];
+  else?: Consequence[];
+};
+
 export type Transition = {
   id: string;
   from: string;
   to: string;
   label?: string;
-  conditions?: Condition[];
+  conditions?: ConditionInput;
   consequences?: Consequence[];
   source?: "graph" | "inkDivert" | "inkExternalFunction" | "engine" | string;
   function?: string;
   arguments?: unknown[];
+};
+
+export type ProjectDataObjectScope = {
+  sequenceId?: string;
+  branchId?: string;
+  eventId?: string;
+  global?: boolean;
+};
+
+export type ProjectDataObject = {
+  id: string;
+  classId: string;
+  name: string;
+  canonRefs?: string[];
+  fields: Record<string, unknown>;
+  tags?: string[];
+  scope?: ProjectDataObjectScope;
+  availability?: ConditionInput;
+  ruleSets?: RuleSet[];
 };
 
 export type ExternalFunction = {
@@ -238,6 +325,7 @@ export type CanvasNodeAuthoringState = {
 };
 
 export type CanvasAuthoringState = {
+  activeSequenceId?: string;
   nodes?: Record<string, CanvasNodeAuthoringState>;
   viewport?: {
     x: number;
@@ -261,6 +349,7 @@ export type BranchingProject = {
     absolutePath?: string;
   };
   dataClasses?: DataClassDefinition[];
+  projectDataObjects?: ProjectDataObject[];
   projectionRules?: ProjectionRule[];
   graphModules?: GraphModuleDefinition[];
   canvas?: CanvasAuthoringState;
@@ -280,7 +369,7 @@ export type RuntimeChoice = {
   id: string;
   textKey: string;
   targetNodeId: string;
-  conditions?: Condition[];
+  conditions?: ConditionInput;
   consequences?: Consequence[];
 };
 
@@ -290,7 +379,7 @@ export type RuntimeNode = {
   textKey?: string;
   speakerRef?: string;
   choices?: RuntimeChoice[];
-  conditions?: Condition[];
+  conditions?: ConditionInput;
   consequences?: Consequence[];
   [key: string]: unknown;
 };
@@ -315,10 +404,18 @@ export type ValidationFinding = {
     | "missing_entry_event"
     | "missing_event"
     | "missing_script"
+    | "missing_branch"
     | "missing_canon_ref"
     | "duplicate_id"
     | "broken_transition"
-    | "invalid_projection";
+    | "invalid_branch_membership"
+    | "invalid_final_transition"
+    | "invalid_projection"
+    | "missing_data_class"
+    | "missing_data_object"
+    | "missing_required_field"
+    | "invalid_condition"
+    | "invalid_rule_set";
   severity: ValidationSeverity;
   message: string;
   id?: string;

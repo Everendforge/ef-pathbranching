@@ -56,6 +56,51 @@
         { "name": "Title", "type": "text", "required": true },
         { "name": "parrafos", "type": "text" }
       ]
+    },
+    {
+      "id": "class:RuntimeItem",
+      "label": "Runtime Item",
+      "category": "runtime",
+      "roles": ["conditionTarget", "inventory"],
+      "fields": [
+        { "name": "sourceRef", "type": "canonRef" },
+        { "name": "title", "type": "text", "required": true },
+        { "name": "runtimeKey", "type": "text", "required": true }
+      ]
+    }
+  ],
+  "projectDataObjects": [
+    {
+      "id": "data:knowledge:seasonal-signal",
+      "classId": "class:KnowledgeEntry",
+      "name": "Seasonal Signal Knowledge",
+      "canonRefs": ["concept:seasonal-signal", "knowledge:seasonal-signal"],
+      "fields": {
+        "sourceRef": "concept:seasonal-signal",
+        "title": "Seasonal Signal",
+        "body": "Playable knowledge derived from canon for branching conditions.",
+        "legacyNumericId": 1
+      },
+      "tags": ["canon-derived", "unlockable"],
+      "scope": { "sequenceId": "sequence:example-protagonist" }
+    },
+    {
+      "id": "data:item:signal-token",
+      "classId": "class:RuntimeItem",
+      "name": "Signal Token",
+      "canonRefs": ["item:signal-token"],
+      "fields": {
+        "sourceRef": "item:signal-token",
+        "title": "Signal Token",
+        "runtimeKey": "signal_token"
+      },
+      "tags": ["runtime", "inventory"],
+      "scope": { "global": true },
+      "availability": {
+        "all": [
+          { "type": "dataObjectExists", "objectId": "data:knowledge:seasonal-signal" }
+        ]
+      }
     }
   ],
   "projectionRules": [
@@ -131,6 +176,7 @@
       "characterRef": "character:example-protagonist",
       "entryEventId": "event:opening-signal",
       "eventIds": ["event:opening-signal"],
+      "branchIds": [],
       "legacyUnity": {
         "scriptableObject": "SequenceData",
         "assetName": "ExampleProtagonist"
@@ -162,6 +208,15 @@
       ],
       "unlocks": [
         {
+          "type": "unlockDataObject",
+          "objectId": "data:knowledge:seasonal-signal",
+          "conditions": {
+            "all": [
+              { "type": "dataObjectExists", "objectId": "data:knowledge:seasonal-signal" }
+            ]
+          }
+        },
+        {
           "type": "unlockCanonEntry",
           "ref": "knowledge:seasonal-signal",
           "sourceFunction": "UnlockKnowledge"
@@ -170,6 +225,24 @@
           "type": "unlockCanonEntry",
           "ref": "knowledge:messenger-report",
           "sourceFunction": "UnlockKnowledge"
+        }
+      ],
+      "ruleSets": [
+        {
+          "id": "rule:opening-signal-token-check",
+          "label": "Signal token route check",
+          "when": {
+            "any": [
+              { "type": "runtimeItem", "itemId": "data:item:signal-token", "operator": "has" },
+              { "type": "canonEntryUnlocked", "ref": "knowledge:seasonal-signal" }
+            ]
+          },
+          "then": [
+            { "type": "setVariable", "name": "openingSignalReady", "value": true }
+          ],
+          "else": [
+            { "type": "setVariable", "name": "openingSignalReady", "value": false }
+          ]
         }
       ],
       "transitions": [],
