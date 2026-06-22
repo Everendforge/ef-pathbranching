@@ -6,8 +6,8 @@ import { fileURLToPath } from "node:url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const packageRoot = path.resolve(__dirname, "..");
 const candidates = [
-  path.join(packageRoot, "node_modules/.bin/tsc"),
-  path.join(packageRoot, "../worldnotion/node_modules/.bin/tsc"),
+  path.join(packageRoot, "node_modules/typescript/bin/tsc"),
+  path.join(packageRoot, "../worldnotion/node_modules/typescript/bin/tsc"),
 ];
 
 let tsc;
@@ -26,7 +26,7 @@ if (!tsc) {
   process.exit(127);
 }
 
-const child = spawn(tsc, process.argv.slice(2), {
+const child = spawn(process.execPath, [tsc, ...process.argv.slice(2)], {
   cwd: packageRoot,
   stdio: "inherit",
 });

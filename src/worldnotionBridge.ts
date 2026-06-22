@@ -119,7 +119,10 @@ function toCanonRef(entity: WorldNotionEntity): CanonRef {
   return {
     id: entity.id,
     kind: entity.type,
+    label: entity.name,
+    preview: entity.body.trim().slice(0, 800) || undefined,
     source: "worldnotion",
+    canonSourcePath: entity.path,
   };
 }
 

@@ -517,10 +517,16 @@ export function buildStoryCanvasModel(project: BranchingProject): StoryCanvasMod
 }
 
 export function buildPathBranchingFiles(project: BranchingProject): PathBranchingFileItem[] {
+  const projectLabel = project.storyId
+    ? `${project.storyId}.pathbranching.json`
+    : project.projectId
+      ? `${project.projectId.replace(/^pathbranching:/, "")}.pathbranching.json`
+      : "branching-story.pathbranching.json";
+
   return [
     {
       id: "file:project",
-      label: "worldnotion-bridge-demo-project.json",
+      label: projectLabel,
       detail: project.projectId,
       group: "project",
     },

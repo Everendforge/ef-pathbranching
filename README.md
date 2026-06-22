@@ -6,7 +6,7 @@ PathBranching references canon entities by stable IDs from WorldNotion-compatibl
 
 ## Current Status
 
-This repository currently contains design documentation, runtime examples, a TypeScript core, a React + React Flow story canvas, and a Tauri desktop shell. The UI loads the generic bridge project, shows collapsible Canon and PathBranching Files panels, keeps the narrative canvas always open, inspects selected nodes/edges/canon refs/project data objects, validates modular conditions and rules, and previews runtime export.
+This repository currently contains design documentation, runtime examples, a TypeScript core, a React + React Flow story canvas, and a Tauri desktop shell. The UI opens the same universe folder used by WorldNotion, previews Markdown canon as references, stores branching metadata under `.everend/.pathbranching`, keeps the narrative canvas always open, validates modular conditions and rules, and previews runtime export.
 
 The near-term export target is the SINPO-style Unity ecosystem: Ink-centered narrative output plus GameData-compatible runtime structures. Longer term, PathBranching should support additional narrative exports such as Twine and other engine/story formats without making those formats the authoring source of truth.
 
@@ -15,7 +15,7 @@ The near-term export target is the SINPO-style Unity ecosystem: Ink-centered nar
 ~~~bash
 npm install
 npm run typecheck
-npm run demo:bridge
+npm run build
 ~~~
 
 ## Desktop Shell
@@ -28,7 +28,15 @@ npm run tauri:dev
 npm run tauri:build
 ~~~
 
-The current Tauri config builds a native executable and keeps bundling disabled until app icons, signing, and distribution targets are finalized.
+The Tauri shell supports Windows and macOS development and packaging with the same local-folder workflow as WorldNotion: open universe, save branching story into `.everend/.pathbranching`, runtime export, window-state restore, and desktop dialog permissions.
+
+## Everend Forge Suite Compatibility
+
+PathBranching remains a standalone app, but its core modules are exported so a future Everend Forge suite can mount it as the Branch page in a DaVinci Resolve-style workspace. Suite code should use the public exports from `src/index.ts` for domain types, project serialization, workspace loading, validation, runtime export, canvas modeling, environment helpers, and the `PathBranchingApp` component. It should not read private React state or Tauri command internals.
+
+The future suite should share the same active universe folder that WorldNotion edits by default. PathBranching should continue to treat canon Markdown as read-mostly source data and store branching authoring state under `.everend/.pathbranching`.
+
+Until WorldNotion and PathBranching reach beta-quality integration surfaces, Everend Forge should pin compatible releases or commits for suite integration rather than tracking every latest app change automatically.
 
 ## Implementation Starting Point
 
@@ -37,7 +45,7 @@ The current Tauri config builds a native executable and keeps bundling disabled 
 - [Ontology and Projection Reanalysis](docs/ONTOLOGY_PROJECTION_REANALYSIS.md): revised model separating WorldNotion canon, PathBranching data classes, and engine runtime projections.
 - [MVP](docs/MVP.md): first build boundary.
 - [Unity Ink Adapter Notes](docs/UNITY_INK_ADAPTER_NOTES.md): practical notes for the first Unity + Ink engine adapter.
-- [WorldNotion Bridge Demo Project](examples/worldnotion-bridge-demo-project.json): generic bridge project using the demo vault.
+- [WorldNotion Bridge Fixture](examples/worldnotion-bridge-demo-project.json): generic bridge fixture for tests and documentation.
 - [Unity Ink Runtime Package Example](examples/unity-ink-runtime-package.json): extended v0.1-compatible package example for Unity Ink import.
 
 ## Core Concepts

@@ -16,8 +16,10 @@ import {
   Handle,
   Position,
 } from "@xyflow/react";
+import { listen } from "@tauri-apps/api/event";
 import {
   ArrowLeft,
+  Crown,
   Database,
   Download,
   FilePlus2,
@@ -25,16 +27,19 @@ import {
   Focus,
   GitBranch,
   Home,
-  Palette,
-  Play,
+  Moon,
   RotateCcw,
   Save,
   SearchCheck,
+  Settings,
+  Sun,
+  X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import type {
   Branch,
   BranchingProject,
+  CanonRef,
   ConditionInput,
   Consequence,
   DataFieldDefinition,
@@ -55,15 +60,25 @@ import * as mutations from "./projectMutations.js";
 import {
   exportRuntimeDialog,
   normalizeProject,
-  openProjectDialog,
-  openProjectPath,
+  openUniverseDialog,
+  openUniversePath,
   projectFileName,
   exportTextDialog,
-  saveProjectAsDialog,
-  saveProjectFile,
+  saveWorkingCopy,
+  saveUniverseStory,
   type ProjectFileState,
 } from "./projectPersistence.js";
-import { THEMES, normalizeThemeId, themeById, type ThemeId } from "./themes.js";
+import { workingCopyPathForCanonRef, type PathBranchingWorkspace } from "./pathBranchingWorkspace.js";
+import {
+  THEMES,
+  isDarkTheme,
+  normalizeThemeId,
+  themeById,
+  themeForFamilyAndMode,
+  toggledThemeMode,
+  type ThemeFamily,
+  type ThemeId,
+} from "./themes.js";
 import { validateProject } from "./validate.js";
 import {
   buildStoryCanvasModel,
@@ -73,6 +88,7 @@ import {
   type StoryCanvasNode,
   type StoryCanvasNodeData,
 } from "./canvas/storyCanvasModel.js";
+import { isTauriRuntime, shortcutMatches } from "./utils/appEnvironment.js";
 
 type Selection =
   | { type: "node"; id: string }
@@ -84,20 +100,84 @@ type Selection =
 type CanvasMode = "branching" | "focus";
 type AppView = "home" | "workspace";
 type ExportPreviewMode = "runtime" | "ink" | "gameData";
+type MarkdownDraftFormat = "markdown" | "ink" | "gameData" | "frontmatter";
 
-const DEMO_PROJECT_PATH = "/examples/worldnotion-bridge-demo-project.json";
+type MarkdownEditorTab = {
+  id: string;
+  canonRefId: string;
+  title: string;
+  sourcePath?: string;
+  workingCopyPath?: string;
+  format: MarkdownDraftFormat;
+  content: string;
+  dirty: boolean;
+  saving?: boolean;
+  lastSavedAt?: number;
+  modifiedMs?: number;
+};
+
 const SETTINGS_KEY = "pathbranching.settings.v1";
+
+type PathBranchingWorkspaceSession = {
+  view?: AppView;
+  selection?: Selection;
+  canonOpen?: boolean;
+  filesOpen?: boolean;
+  exportOpen?: boolean;
+  dataOpen?: boolean;
+  canvasMode?: CanvasMode;
+  focusNodeId?: string;
+  markdownTabs?: MarkdownEditorTab[];
+  activeMarkdownTabId?: string;
+};
+
+const MARKDOWN_FORMAT_LABELS: Record<MarkdownDraftFormat, string> = {
+  markdown: "Markdown",
+  ink: "Ink Beat",
+  gameData: "GameData",
+  frontmatter: "Frontmatter",
+};
+
+function canonMarkdownDraft(ref: CanonRef): string {
+  const title = ref.label ?? ref.id;
+  const lines = [
+    `# ${title}`,
+    "",
+    `> Canon source: ${ref.canonSourcePath ?? ref.id}`,
+    "",
+    ref.preview?.trim() ?? "",
+  ];
+  return `${lines.filter((line, index) => index < 4 || line.length > 0).join("\n")}\n`;
+}
+
+function markdownFormatTemplate(format: MarkdownDraftFormat, ref: CanonRef): string {
+  const title = ref.label ?? ref.id;
+  switch (format) {
+    case "ink":
+      return `# ${title}\n\n## Ink Beat\n\n\`\`\`ink\n=== ${ref.id.replace(/[^a-zA-Z0-9_]+/g, "_")} ===\n${title}\n+ [Continue]\n  -> DONE\n\`\`\`\n`;
+    case "gameData":
+      return `# ${title}\n\n## GameData Note\n\n\`\`\`json\n{\n  "canonRef": "${ref.id}",\n  "source": "${ref.canonSourcePath ?? ""}",\n  "tags": []\n}\n\`\`\`\n`;
+    case "frontmatter":
+      return `---\ncanonRef: ${ref.id}\ncanonSourcePath: ${ref.canonSourcePath ?? ""}\nformat: pathbranching-working-copy\n---\n\n# ${title}\n\n`;
+    case "markdown":
+    default:
+      return canonMarkdownDraft(ref);
+  }
+}
 
 type AppSettings = {
   theme: ThemeId;
   recentProjects: string[];
   lastOpenedProject?: string;
   lastView?: AppView;
+  workspaceSessions?: Record<string, PathBranchingWorkspaceSession>;
 };
 
 function loadSettings(): AppSettings {
   try {
     const parsed = JSON.parse(localStorage.getItem(SETTINGS_KEY) ?? "{}") as Partial<AppSettings>;
+    const workspaceSessions =
+      parsed.workspaceSessions && typeof parsed.workspaceSessions === "object" ? parsed.workspaceSessions : {};
     return {
       theme: normalizeThemeId(parsed.theme),
       recentProjects: Array.isArray(parsed.recentProjects)
@@ -105,9 +185,10 @@ function loadSettings(): AppSettings {
         : [],
       lastOpenedProject: typeof parsed.lastOpenedProject === "string" ? parsed.lastOpenedProject : undefined,
       lastView: parsed.lastView === "workspace" || parsed.lastView === "home" ? parsed.lastView : "home",
+      workspaceSessions,
     };
   } catch {
-    return { theme: "worldnotion-light", recentProjects: [], lastView: "home" };
+    return { theme: "worldnotion-light", recentProjects: [], lastView: "home", workspaceSessions: {} };
   }
 }
 
@@ -124,6 +205,58 @@ function rememberRecentProject(settings: AppSettings, path: string): AppSettings
     ...settings,
     lastOpenedProject: path,
     recentProjects: [path, ...settings.recentProjects.filter((candidate) => candidate !== path)].slice(0, 8),
+    workspaceSessions: settings.workspaceSessions ?? {},
+  };
+}
+
+function storableMarkdownTabs(tabs: MarkdownEditorTab[]): MarkdownEditorTab[] {
+  return tabs.map((tab) => ({ ...tab, saving: false })).slice(-5);
+}
+
+function isSelection(value: unknown): value is Selection {
+  if (!value || typeof value !== "object" || !("type" in value) || !("id" in value)) return false;
+  const selection = value as { type?: unknown; id?: unknown };
+  return (
+    typeof selection.id === "string" &&
+    (selection.type === "node" ||
+      selection.type === "edge" ||
+      selection.type === "canon" ||
+      selection.type === "file" ||
+      selection.type === "dataObject")
+  );
+}
+
+function sessionMarkdownTabs(value: unknown): MarkdownEditorTab[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((tab): tab is MarkdownEditorTab => {
+      return (
+        tab &&
+        typeof tab === "object" &&
+        typeof tab.id === "string" &&
+        typeof tab.canonRefId === "string" &&
+        typeof tab.title === "string" &&
+        typeof tab.content === "string" &&
+        (tab.format === "markdown" || tab.format === "ink" || tab.format === "gameData" || tab.format === "frontmatter")
+      );
+    })
+    .map((tab) => ({ ...tab, saving: false }))
+    .slice(-5);
+}
+
+function normalizeWorkspaceSession(session: PathBranchingWorkspaceSession | undefined): PathBranchingWorkspaceSession {
+  if (!session) return {};
+  return {
+    view: session.view === "home" || session.view === "workspace" ? session.view : undefined,
+    selection: isSelection(session.selection) ? session.selection : undefined,
+    canonOpen: typeof session.canonOpen === "boolean" ? session.canonOpen : undefined,
+    filesOpen: typeof session.filesOpen === "boolean" ? session.filesOpen : undefined,
+    exportOpen: typeof session.exportOpen === "boolean" ? session.exportOpen : undefined,
+    dataOpen: typeof session.dataOpen === "boolean" ? session.dataOpen : undefined,
+    canvasMode: session.canvasMode === "branching" || session.canvasMode === "focus" ? session.canvasMode : undefined,
+    focusNodeId: typeof session.focusNodeId === "string" ? session.focusNodeId : undefined,
+    markdownTabs: sessionMarkdownTabs(session.markdownTabs),
+    activeMarkdownTabId: typeof session.activeMarkdownTabId === "string" ? session.activeMarkdownTabId : undefined,
   };
 }
 
@@ -804,6 +937,8 @@ function Topbar({
   exportOpen,
   dataOpen,
   theme,
+  onOpenSettings,
+  onToggleTheme,
   onOpenProject,
   onSaveProject,
   onSaveProjectAs,
@@ -813,14 +948,12 @@ function Topbar({
   onRedo,
   canUndo,
   canRedo,
-  onReload,
   onCreateSequence,
   onValidate,
   onToggleExport,
   onToggleData,
   onCreateDataObject,
   onResetLayout,
-  onThemeChange,
 }: {
   project?: BranchingProject;
   fileState?: ProjectFileState;
@@ -828,6 +961,8 @@ function Topbar({
   exportOpen: boolean;
   dataOpen: boolean;
   theme: ThemeId;
+  onOpenSettings: () => void;
+  onToggleTheme: () => void;
   onOpenProject: () => void;
   onSaveProject: () => void;
   onSaveProjectAs: () => void;
@@ -837,94 +972,116 @@ function Topbar({
   onRedo: () => void;
   canUndo: boolean;
   canRedo: boolean;
-  onReload: () => void;
   onCreateSequence: () => void;
   onValidate: () => void;
   onToggleExport: () => void;
   onToggleData: () => void;
   onCreateDataObject: () => void;
   onResetLayout: () => void;
-  onThemeChange: (theme: ThemeId) => void;
 }) {
   const errorCount = findings.filter((finding) => finding.severity === "error").length;
   const status = findings.length === 0 ? "Clean" : `${findings.length} findings`;
+  const universeName = project?.name ?? project?.projectId ?? "No universe loaded";
+  const universePath = projectFileName(fileState?.universePath ?? fileState?.path);
+  const storyPath = projectFileName(fileState?.storyPath ?? fileState?.path);
 
   return (
-    <header className="topbar">
-      <div className="brand">
-        <strong>Everend PathBranching</strong>
-        <span>
-          {projectFileName(fileState?.path)}{fileState?.dirty ? " *" : ""} - {project?.name ?? "Loading project"} - {status}
-          {errorCount > 0 ? ` (${errorCount} errors)` : ""}
-        </span>
-      </div>
-      <div className="topbar-actions">
-        <button type="button" title="Dashboard" onClick={onHome}>
+    <header className="topbar dock-top-bar pathbranching-topbar" aria-label="Workspace controls">
+      <div className="dock-top-left">
+        <div className="forge-corner-menu">
+          <button type="button" className="forge-corner-button" title="Everend Forge">
+            <Crown size={16} />
+          </button>
+        </div>
+
+        <button type="button" className="dock-icon-button" title="Home" onClick={onHome}>
           <Home size={15} />
-          <span>Home</span>
         </button>
-        <button type="button" title="Open project" onClick={onOpenProject}>
-          <FolderOpen size={15} />
-          <span>Open</span>
+
+        <div className="dock-top-divider" />
+
+        <button type="button" className="dock-universe-button" onClick={onOpenSettings} title="Universe settings">
+          <span className="pathbranching-universe-icon" aria-hidden="true">
+            <GitBranch size={16} />
+          </span>
+          <span className="dock-universe-copy">
+            <strong>{universeName}</strong>
+            <span>
+              {universePath}{storyPath ? ` / ${storyPath}` : ""}
+              {fileState?.dirty ? " *" : ""}
+            </span>
+          </span>
         </button>
-        <button type="button" title="Save project" onClick={onSaveProject}>
-          <Save size={15} />
-          <span>Save</span>
+        <button type="button" className="dock-icon-button dock-settings-button" onClick={onOpenSettings} title="Application settings">
+          <Settings size={14} />
         </button>
-        <button type="button" title="Save project as" onClick={onSaveProjectAs}>
-          <Save size={15} />
-          <span>Save As</span>
+      </div>
+
+      <div className="dock-top-right">
+        <div className="dock-command-group" aria-label="Universe">
+          <button type="button" title="Open universe" onClick={onOpenProject}>
+            <FolderOpen size={14} />
+            <span>Open</span>
+          </button>
+          <button type="button" title="Save branching story" onClick={onSaveProject}>
+            <Save size={14} />
+            <span>Save</span>
+          </button>
+          <button type="button" title="Export current preview" onClick={onExportRuntime}>
+            <Download size={14} />
+            <span>Export</span>
+          </button>
+        </div>
+
+        <div className="dock-command-group" aria-label="History">
+          <button type="button" title="Undo" onClick={onUndo} disabled={!canUndo}>
+            <ArrowLeft size={14} />
+            <span>Undo</span>
+          </button>
+          <button type="button" title="Redo" onClick={onRedo} disabled={!canRedo}>
+            <ArrowLeft size={14} style={{ transform: "scaleX(-1)" }} />
+            <span>Redo</span>
+          </button>
+        </div>
+
+        <div className="dock-command-group" aria-label="Authoring">
+          <button type="button" title="New sequence" onClick={onCreateSequence}>
+            <FilePlus2 size={14} />
+            <span>Sequence</span>
+          </button>
+          <button type="button" title="Validate project" onClick={onValidate}>
+            <SearchCheck size={14} />
+            <span>Validate</span>
+          </button>
+        </div>
+
+        <div className="dock-command-group" aria-label="Panels">
+          <button type="button" title="Toggle runtime export preview" className={exportOpen ? "active" : ""} onClick={onToggleExport}>
+            <Download size={14} />
+            <span>Export View</span>
+          </button>
+          <button type="button" title="Toggle project data drawer" className={dataOpen ? "active" : ""} onClick={onToggleData}>
+            <Database size={14} />
+            <span>Data</span>
+          </button>
+          <button type="button" title="Create knowledge data object" onClick={onCreateDataObject}>
+            <FilePlus2 size={14} />
+            <span>Knowledge</span>
+          </button>
+          <button type="button" title="Reset canvas layout" onClick={onResetLayout}>
+            <RotateCcw size={14} />
+            <span>Layout</span>
+          </button>
+        </div>
+
+        <span className={`pathbranching-status ${errorCount > 0 ? "has-errors" : ""}`} title={status}>
+          {status}
+          {errorCount > 0 ? ` (${errorCount})` : ""}
+        </span>
+
+        <button type="button" className="dock-icon-button" onClick={onToggleTheme} title={`Toggle theme (${themeById(theme).label})`}>
+          {isDarkTheme(theme) ? <Sun size={15} /> : <Moon size={15} />}
         </button>
-        <button type="button" title="Undo" onClick={onUndo} disabled={!canUndo}>
-          <ArrowLeft size={15} />
-          <span>Undo</span>
-        </button>
-        <button type="button" title="Redo" onClick={onRedo} disabled={!canRedo}>
-          <ArrowLeft size={15} style={{ transform: "scaleX(-1)" }} />
-          <span>Redo</span>
-        </button>
-        <button type="button" title="Load demo" onClick={onReload}>
-          <Play size={15} />
-          <span>Demo</span>
-        </button>
-        <button type="button" title="New sequence" onClick={onCreateSequence}>
-          <FilePlus2 size={15} />
-          <span>Sequence</span>
-        </button>
-        <button type="button" title="Validate project" onClick={onValidate}>
-          <SearchCheck size={15} />
-          <span>Validate</span>
-        </button>
-        <button type="button" title="Toggle runtime export preview" className={exportOpen ? "active" : ""} onClick={onToggleExport}>
-          <Download size={15} />
-          <span>{exportOpen ? "Hide Export" : "Export"}</span>
-        </button>
-        <button type="button" title="Export runtime package" onClick={onExportRuntime}>
-          <Download size={15} />
-          <span>Export File</span>
-        </button>
-        <button type="button" title="Toggle project data drawer" className={dataOpen ? "active" : ""} onClick={onToggleData}>
-          <Database size={15} />
-          <span>{dataOpen ? "Hide Data" : "Data"}</span>
-        </button>
-        <button type="button" title="Create knowledge data object" onClick={onCreateDataObject}>
-          <FilePlus2 size={15} />
-          <span>Knowledge</span>
-        </button>
-        <button type="button" title="Reset canvas layout" onClick={onResetLayout}>
-          <RotateCcw size={15} />
-          <span>Layout</span>
-        </button>
-        <label className="window-style-select" title={`Window style: ${themeById(theme).label}`}>
-          <Palette size={15} />
-          <select value={theme} onChange={(event) => onThemeChange(normalizeThemeId(event.target.value))}>
-            {THEMES.map((themeOption) => (
-              <option key={themeOption.id} value={themeOption.id}>
-                {themeOption.label}
-              </option>
-            ))}
-          </select>
-        </label>
       </div>
     </header>
   );
@@ -937,12 +1094,12 @@ function HomeDashboard({
   missingRecentProjects,
   findings,
   theme,
-  onThemeChange,
+  onOpenSettings,
+  onToggleTheme,
   onEnterWorkspace,
   onOpenProject,
   onOpenRecentProject,
   onRemoveRecentProject,
-  onLoadDemo,
   onSaveProject,
   onSaveProjectAs,
   onExportRuntime,
@@ -953,12 +1110,12 @@ function HomeDashboard({
   missingRecentProjects: Set<string>;
   findings: ValidationFinding[];
   theme: ThemeId;
-  onThemeChange: (theme: ThemeId) => void;
+  onOpenSettings: () => void;
+  onToggleTheme: () => void;
   onEnterWorkspace: () => void;
   onOpenProject: () => void;
   onOpenRecentProject: (path: string) => void;
   onRemoveRecentProject: (path: string) => void;
-  onLoadDemo: () => void;
   onSaveProject: () => void;
   onSaveProjectAs: () => void;
   onExportRuntime: () => void;
@@ -978,26 +1135,24 @@ function HomeDashboard({
             <p>Story-flow authoring workspace</p>
           </div>
         </div>
-        <label className="window-style-select" title={`Window style: ${themeById(theme).label}`}>
-          <Palette size={15} />
-          <select value={theme} onChange={(event) => onThemeChange(normalizeThemeId(event.target.value))}>
-            {THEMES.map((themeOption) => (
-              <option key={themeOption.id} value={themeOption.id}>
-                {themeOption.label}
-              </option>
-            ))}
-          </select>
-        </label>
+        <div className="home-topbar-actions">
+          <button type="button" className="dock-icon-button" onClick={onOpenSettings} title="PathBranching settings">
+            <Settings size={15} />
+          </button>
+          <button type="button" className="dock-icon-button" onClick={onToggleTheme} title={`Toggle theme (${themeById(theme).label})`}>
+            {isDarkTheme(theme) ? <Sun size={15} /> : <Moon size={15} />}
+          </button>
+        </div>
       </header>
 
       <section className="home-panel">
         <div className="home-hero">
           <div className="home-copy">
             <p className="eyebrow">Dashboard</p>
-            <h2>Controla tu branching narrativo</h2>
+            <h2>Open a universe</h2>
             <p>
-              Abre un proyecto, revisa salud del flujo, exporta runtime y entra al canvas cuando quieras editar secuencias,
-              branches, eventos, decisiones y outcomes.
+              PathBranching reads the same universe folder as WorldNotion, previews its Markdown canon, and stores branching
+              stories in `.everend/.pathbranching`.
             </p>
           </div>
 
@@ -1008,7 +1163,7 @@ function HomeDashboard({
               </span>
               <span>
                 <strong>{project.name ?? project.projectId}</strong>
-                <small>{projectFileName(fileState.path)}{fileState.dirty ? " - unsaved changes" : ""}</small>
+                <small>{projectFileName(fileState.universePath)}{fileState.dirty ? " - unsaved changes" : ""}</small>
               </span>
               <Home size={16} />
             </button>
@@ -1018,11 +1173,7 @@ function HomeDashboard({
         <div className="home-actions">
           <button type="button" className="primary-action" onClick={onOpenProject}>
             <FolderOpen size={16} />
-            Open Project
-          </button>
-          <button type="button" onClick={onLoadDemo}>
-            <Play size={16} />
-            Load Demo
+            Open Universe
           </button>
           <button type="button" onClick={onEnterWorkspace} disabled={!project}>
             <GitBranch size={16} />
@@ -1034,7 +1185,7 @@ function HomeDashboard({
           </button>
           <button type="button" onClick={onSaveProjectAs} disabled={!project}>
             <Save size={16} />
-            Save As
+            Save Into Universe
           </button>
           <button type="button" onClick={onExportRuntime} disabled={!project}>
             <Download size={16} />
@@ -1085,7 +1236,7 @@ function HomeDashboard({
 
         {settings.recentProjects.length ? (
           <section className="recent-section">
-            <h3>Recent projects</h3>
+            <h3>Recent universes</h3>
             <div className="recent-list">
               {settings.recentProjects.map((path, itemIndex) => (
                 <button
@@ -1100,7 +1251,7 @@ function HomeDashboard({
                   </span>
                   <span>
                     <strong>{projectFileName(path)}</strong>
-                    <small>{missingRecentProjects.has(path) ? "Missing file - click to remove" : path}</small>
+                    <small>{missingRecentProjects.has(path) ? "Missing folder - click to remove" : path}</small>
                   </span>
                   {missingRecentProjects.has(path) ? <span>x</span> : <FolderOpen size={14} />}
                 </button>
@@ -1140,6 +1291,237 @@ function DiscardChangesDialog({
           </button>
         </div>
       </section>
+    </div>
+  );
+}
+
+type PathBranchingSettingsSection = "overview" | "authoring" | "markdown" | "workspace" | "recents";
+
+function PathBranchingSettingsModal({
+  project,
+  fileState,
+  settings,
+  findings,
+  theme,
+  onThemeChange,
+  onToggleTheme,
+  onOpenUniverse,
+  onOpenRecentUniverse,
+  onRemoveRecentUniverse,
+  onClose,
+}: {
+  project?: BranchingProject;
+  fileState: ProjectFileState;
+  settings: AppSettings;
+  findings: ValidationFinding[];
+  theme: ThemeId;
+  onThemeChange: (theme: ThemeId) => void;
+  onToggleTheme: () => void;
+  onOpenUniverse: () => void;
+  onOpenRecentUniverse: (path: string) => void;
+  onRemoveRecentUniverse: (path: string) => void;
+  onClose: () => void;
+}) {
+  const [activeSection, setActiveSection] = useState<PathBranchingSettingsSection>(project ? "overview" : "workspace");
+  const errorCount = findings.filter((finding) => finding.severity === "error").length;
+  const warningCount = findings.filter((finding) => finding.severity === "warning").length;
+
+  return (
+    <div className="settings-backdrop" role="dialog" aria-modal="true" aria-label="PathBranching settings">
+      <div className="settings-modal pathbranching-settings-modal">
+        <header className="settings-header">
+          <div>
+            <p className="eyebrow">{project ? "Universe settings" : "Application settings"}</p>
+            <h2>{project?.name ?? "PathBranching"}</h2>
+          </div>
+          <button type="button" onClick={onClose} title="Close settings">
+            <X size={16} />
+          </button>
+        </header>
+
+        <div className="settings-body">
+          <nav className="settings-nav">
+            <div className="settings-nav-group">
+              <p>Universe</p>
+              <button className={activeSection === "overview" ? "active" : ""} onClick={() => setActiveSection("overview")} type="button">
+                <Settings size={14} />
+                Overview
+              </button>
+              <button className={activeSection === "authoring" ? "active" : ""} onClick={() => setActiveSection("authoring")} type="button">
+                <GitBranch size={14} />
+                Branching
+              </button>
+              <button className={activeSection === "markdown" ? "active" : ""} onClick={() => setActiveSection("markdown")} type="button">
+                <FilePlus2 size={14} />
+                Markdown
+              </button>
+            </div>
+
+            <div className="settings-nav-group app-settings-group">
+              <p>Application</p>
+              <button className={activeSection === "workspace" ? "active" : ""} onClick={() => setActiveSection("workspace")} type="button">
+                <Home size={14} />
+                Workspace
+              </button>
+              <button className={activeSection === "recents" ? "active" : ""} onClick={() => setActiveSection("recents")} type="button">
+                <FolderOpen size={14} />
+                Recents
+              </button>
+            </div>
+          </nav>
+
+          <section className="settings-section">
+            {activeSection === "overview" ? (
+              <div className="settings-panel">
+                <div className="settings-page-title">
+                  <h3>{project?.name ?? "No universe loaded"}</h3>
+                  <p>{fileState.universePath ?? "Open a universe folder to begin."}</p>
+                </div>
+                <div className="universe-stats">
+                  <div>
+                    <strong>{project?.sequences.length ?? 0}</strong>
+                    <span>Sequences</span>
+                  </div>
+                  <div>
+                    <strong>{project?.branches.length ?? 0}</strong>
+                    <span>Branches</span>
+                  </div>
+                  <div>
+                    <strong>{project?.events.length ?? 0}</strong>
+                    <span>Events</span>
+                  </div>
+                  <div>
+                    <strong>{errorCount}/{warningCount}</strong>
+                    <span>Errors / warnings</span>
+                  </div>
+                </div>
+                <div className="settings-action-list">
+                  <button type="button" onClick={onOpenUniverse}>
+                    <FolderOpen size={15} />
+                    Open universe folder
+                  </button>
+                  <button type="button" onClick={onToggleTheme}>
+                    {isDarkTheme(theme) ? <Sun size={15} /> : <Moon size={15} />}
+                    Toggle {isDarkTheme(theme) ? "light" : "dark"} mode
+                  </button>
+                </div>
+              </div>
+            ) : null}
+
+            {activeSection === "authoring" ? (
+              <div className="settings-panel">
+                <div className="settings-page-title">
+                  <h3>Branching authoring</h3>
+                  <p>PathBranching stores story graph data inside `.everend/.pathbranching`.</p>
+                </div>
+                <div className="settings-grid">
+                  <label>
+                    <span>Story file</span>
+                    <input value={fileState.storyPath ?? "Not created yet"} readOnly />
+                  </label>
+                  <label>
+                    <span>Runtime validation</span>
+                    <input value={findings.length ? `${findings.length} finding(s)` : "Clean"} readOnly />
+                  </label>
+                  <label>
+                    <span>Unsaved changes</span>
+                    <input value={fileState.dirty ? "Yes" : "No"} readOnly />
+                  </label>
+                </div>
+              </div>
+            ) : null}
+
+            {activeSection === "markdown" ? (
+              <div className="settings-panel">
+                <div className="settings-page-title">
+                  <h3>Markdown working copies</h3>
+                  <p>Canon Markdown remains owned by WorldNotion. Editable variants are saved as working copies.</p>
+                </div>
+                <div className="settings-grid">
+                  <label>
+                    <span>Working copy folder</span>
+                    <input value=".everend/.pathbranching/working-copies" readOnly />
+                  </label>
+                  <label>
+                    <span>Supported draft formats</span>
+                    <input value="Markdown, Ink Beat, GameData, Frontmatter" readOnly />
+                  </label>
+                  <label>
+                    <span>Canon editing</span>
+                    <input value="Read-only from PathBranching" readOnly />
+                  </label>
+                </div>
+              </div>
+            ) : null}
+
+            {activeSection === "workspace" ? (
+              <div className="settings-panel">
+                <div className="settings-page-title">
+                  <h3>Workspace</h3>
+                  <p>Theme and onboarding behavior are shared with the desktop shell.</p>
+                </div>
+                <div className="settings-grid">
+                  <label>
+                    <span>Active style</span>
+                    <select value={theme} onChange={(event) => onThemeChange(normalizeThemeId(event.target.value))}>
+                      {THEMES.map((themeOption) => (
+                        <option key={themeOption.id} value={themeOption.id}>
+                          {themeOption.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    <span>Theme mode</span>
+                    <button type="button" onClick={onToggleTheme}>
+                      {isDarkTheme(theme) ? "Switch to light" : "Switch to dark"}
+                    </button>
+                  </label>
+                  <label>
+                    <span>Last universe</span>
+                    <input value={settings.lastOpenedProject ?? "None"} readOnly />
+                  </label>
+                </div>
+              </div>
+            ) : null}
+
+            {activeSection === "recents" ? (
+              <div className="settings-panel">
+                <div className="settings-page-title">
+                  <h3>Recent universes</h3>
+                  <p>PathBranching opens the latest valid universe automatically on startup.</p>
+                </div>
+                <div className="space-list">
+                  {settings.recentProjects.map((path) => (
+                    <button type="button" key={path} onClick={() => onOpenRecentUniverse(path)}>
+                      <GitBranch size={15} />
+                      <span>{path}</span>
+                      <span
+                        role="button"
+                        tabIndex={0}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          onRemoveRecentUniverse(path);
+                        }}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter" || event.key === " ") {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            onRemoveRecentUniverse(path);
+                          }
+                        }}
+                      >
+                        remove
+                      </span>
+                    </button>
+                  ))}
+                  {settings.recentProjects.length === 0 ? <span className="empty-line">No recent universes yet.</span> : null}
+                </div>
+              </div>
+            ) : null}
+          </section>
+        </div>
+      </div>
     </div>
   );
 }
@@ -1325,6 +1707,83 @@ function DataDrawer({
             <span className="empty-line">Create Knowledge entries or manual data objects from canon refs.</span>
           </section>
         ) : null}
+      </div>
+    </aside>
+  );
+}
+
+function MarkdownEditorDock({
+  tabs,
+  activeTabId,
+  onActivate,
+  onClose,
+  onChangeContent,
+  onChangeFormat,
+  onSave,
+}: {
+  tabs: MarkdownEditorTab[];
+  activeTabId?: string;
+  onActivate: (id: string) => void;
+  onClose: (id: string) => void;
+  onChangeContent: (id: string, content: string) => void;
+  onChangeFormat: (id: string, format: MarkdownDraftFormat) => void;
+  onSave: (id: string) => void;
+}) {
+  const activeTab = tabs.find((tab) => tab.id === activeTabId) ?? tabs[0];
+  if (!activeTab) return null;
+
+  return (
+    <aside className="markdown-dock" aria-label="Markdown working copy editor">
+      <div className="markdown-tab-stack" role="tablist" aria-label="Open Markdown drafts">
+        {tabs.map((tab, index) => (
+          <button
+            type="button"
+            role="tab"
+            aria-selected={tab.id === activeTab.id}
+            className={tab.id === activeTab.id ? "active" : ""}
+            key={tab.id}
+            style={{ transform: `translateY(${index * -3}px)` }}
+            onClick={() => onActivate(tab.id)}
+          >
+            <span>{tab.title}</span>
+            {tab.dirty ? <i aria-label="unsaved changes" /> : null}
+          </button>
+        ))}
+      </div>
+
+      <div className="markdown-editor-panel">
+        <div className="markdown-editor-header">
+          <div>
+            <strong>{activeTab.title}</strong>
+            <span>{activeTab.workingCopyPath ?? activeTab.sourcePath ?? "new working copy"}</span>
+          </div>
+          <div className="markdown-editor-actions">
+            <select
+              value={activeTab.format}
+              title="Draft format"
+              onChange={(event) => onChangeFormat(activeTab.id, event.target.value as MarkdownDraftFormat)}
+            >
+              {Object.entries(MARKDOWN_FORMAT_LABELS).map(([value, label]) => (
+                <option key={value} value={value}>
+                  {label}
+                </option>
+              ))}
+            </select>
+            <button type="button" title="Save working copy" disabled={activeTab.saving} onClick={() => onSave(activeTab.id)}>
+              <Save size={14} />
+              <span>{activeTab.saving ? "Saving" : "Save"}</span>
+            </button>
+            <button type="button" title="Close tab" onClick={() => onClose(activeTab.id)}>
+              x
+            </button>
+          </div>
+        </div>
+
+        <textarea
+          spellCheck
+          value={activeTab.content}
+          onChange={(event) => onChangeContent(activeTab.id, event.target.value)}
+        />
       </div>
     </aside>
   );
@@ -2015,17 +2474,30 @@ function Inspector({
 
         {selectedCanon ? (
           <section className="inspector-section">
-            <h2>{selectedCanon.kind ?? "canon"}</h2>
+            <h2>{selectedCanon.label ?? selectedCanon.kind ?? "Canon"}</h2>
             <dl>
               <div>
                 <dt>ID</dt>
                 <dd>{selectedCanon.id}</dd>
               </div>
               <div>
+                <dt>Kind</dt>
+                <dd>{selectedCanon.kind ?? "canon"}</dd>
+              </div>
+              <div>
                 <dt>Source</dt>
                 <dd>{selectedCanon.source ?? "unknown"}</dd>
               </div>
+              <div>
+                <dt>Canon Path</dt>
+                <dd>{selectedCanon.canonSourcePath ?? "none"}</dd>
+              </div>
+              <div>
+                <dt>Working Copy</dt>
+                <dd>{selectedCanon.workingCopyPath ?? "not created"}</dd>
+              </div>
             </dl>
+            {selectedCanon.preview ? <pre>{selectedCanon.preview}</pre> : <span className="empty-line">No preview available.</span>}
           </section>
         ) : null}
 
@@ -2264,6 +2736,8 @@ function StoryCanvas({
   exportOpen,
   exportPreviewMode,
   dataOpen,
+  markdownTabs,
+  activeMarkdownTabId,
   onNodesChange,
   onEdgesChange,
   onConnect,
@@ -2292,6 +2766,11 @@ function StoryCanvas({
   onDeleteDataObject,
   onUpdateEdgeLabel,
   onDeleteSelection,
+  onActivateMarkdownTab,
+  onCloseMarkdownTab,
+  onChangeMarkdownContent,
+  onChangeMarkdownFormat,
+  onSaveMarkdownTab,
 }: {
   project: BranchingProject;
   files: PathBranchingFileItem[];
@@ -2305,6 +2784,8 @@ function StoryCanvas({
   exportOpen: boolean;
   exportPreviewMode: ExportPreviewMode;
   dataOpen: boolean;
+  markdownTabs: MarkdownEditorTab[];
+  activeMarkdownTabId?: string;
   onNodesChange: (changes: NodeChange<StoryCanvasNode>[]) => void;
   onEdgesChange: (changes: EdgeChange<StoryCanvasEdge>[]) => void;
   onConnect: OnConnect;
@@ -2333,6 +2814,11 @@ function StoryCanvas({
   onDeleteDataObject: (id: string) => void;
   onUpdateEdgeLabel: (edgeId: string, label: string) => void;
   onDeleteSelection: (selection: Selection) => void;
+  onActivateMarkdownTab: (id: string) => void;
+  onCloseMarkdownTab: (id: string) => void;
+  onChangeMarkdownContent: (id: string, content: string) => void;
+  onChangeMarkdownFormat: (id: string, format: MarkdownDraftFormat) => void;
+  onSaveMarkdownTab: (id: string) => void;
 }) {
   const shellRef = useRef<HTMLElement | null>(null);
   const [reactFlowInstance, setReactFlowInstance] = useState<ReactFlowInstance<StoryCanvasNode, StoryCanvasEdge>>();
@@ -2456,6 +2942,7 @@ function StoryCanvas({
           fitView
           fitViewOptions={{ padding: 0.24 }}
           defaultViewport={project.canvas?.viewport}
+          proOptions={{ hideAttribution: true }}
         >
           <MiniMap pannable zoomable nodeStrokeWidth={3} />
           <Controls />
@@ -2533,6 +3020,15 @@ function StoryCanvas({
         onUpdateEdgeLabel={onUpdateEdgeLabel}
         onDeleteSelection={onDeleteSelection}
       />
+      <MarkdownEditorDock
+        tabs={markdownTabs}
+        activeTabId={activeMarkdownTabId}
+        onActivate={onActivateMarkdownTab}
+        onClose={onCloseMarkdownTab}
+        onChangeContent={onChangeMarkdownContent}
+        onChangeFormat={onChangeMarkdownFormat}
+        onSave={onSaveMarkdownTab}
+      />
     </main>
   );
 }
@@ -2540,6 +3036,10 @@ function StoryCanvas({
 export function App() {
   const [settings, setSettings] = useState<AppSettings>(() => loadSettings());
   const [view, setView] = useState<AppView>(() => loadSettings().lastView ?? "home");
+  const settingsRef = useRef(settings);
+  const [initialLoading, setInitialLoading] = useState(true);
+  const [showSettings, setShowSettings] = useState(false);
+  const [workspace, setWorkspace] = useState<PathBranchingWorkspace>();
   const [project, setProject] = useState<BranchingProject>();
   const [fileState, setFileState] = useState<ProjectFileState>({ dirty: false });
   const [nodes, setNodes] = useState<StoryCanvasNode[]>([]);
@@ -2551,6 +3051,8 @@ export function App() {
   const [exportOpen, setExportOpen] = useState(false);
   const [exportPreviewMode, setExportPreviewMode] = useState<ExportPreviewMode>("runtime");
   const [dataOpen, setDataOpen] = useState(false);
+  const [markdownTabs, setMarkdownTabs] = useState<MarkdownEditorTab[]>([]);
+  const [activeMarkdownTabId, setActiveMarkdownTabId] = useState<string>();
   const [canvasMode, setCanvasMode] = useState<CanvasMode>("branching");
   const [focusNodeId, setFocusNodeId] = useState<string>();
   const [undoStack, setUndoStack] = useState<BranchingProject[]>([]);
@@ -2560,7 +3062,7 @@ export function App() {
   const [error, setError] = useState<string>();
   const [message, setMessage] = useState<string>();
 
-  const applyProject = useCallback((nextProject: BranchingProject, options: { dirty?: boolean; path?: string; modifiedMs?: number } = {}) => {
+  const applyProject = useCallback((nextProject: BranchingProject, options: { dirty?: boolean; path?: string; universePath?: string; storyPath?: string; modifiedMs?: number } = {}) => {
     const normalizedProject = normalizeProject(nextProject);
     const model = buildStoryCanvasModel(normalizedProject);
     setProject(normalizedProject);
@@ -2569,11 +3071,51 @@ export function App() {
     setFiles(model.files);
     setFileState((current) => ({
       path: options.path ?? current.path,
+      universePath: options.universePath ?? current.universePath,
+      storyPath: options.storyPath ?? current.storyPath,
       dirty: options.dirty ?? current.dirty,
       lastSavedAt: options.dirty === false ? Date.now() : current.lastSavedAt,
       modifiedMs: options.modifiedMs ?? current.modifiedMs,
     }));
   }, []);
+
+  const applyWorkspace = useCallback(
+    (nextWorkspace: PathBranchingWorkspace, universePath: string) => {
+      const savedSession = normalizeWorkspaceSession(settingsRef.current.workspaceSessions?.[universePath]);
+      const activeProject = normalizeProject({
+        ...nextWorkspace.activeProject,
+        universeRootPath: universePath,
+      });
+      const model = buildStoryCanvasModel(activeProject);
+      setWorkspace(nextWorkspace);
+      setProject(activeProject);
+      setNodes(model.nodes);
+      setEdges(model.edges);
+      setFiles(model.files);
+      setFileState({
+        path: nextWorkspace.activeStory?.path,
+        storyPath: nextWorkspace.activeStory?.path,
+        universePath,
+        dirty: false,
+        lastSavedAt: nextWorkspace.createdDefaultStory ? undefined : Date.now(),
+        modifiedMs: nextWorkspace.storyModifiedMs,
+      });
+      setUndoStack([]);
+      setRedoStack([]);
+      setMarkdownTabs(savedSession.markdownTabs ?? []);
+      setActiveMarkdownTabId(savedSession.activeMarkdownTabId);
+      setCanonOpen(savedSession.canonOpen ?? activeProject.panels?.canonOpen ?? true);
+      setFilesOpen(savedSession.filesOpen ?? activeProject.panels?.filesOpen ?? true);
+      setExportOpen(savedSession.exportOpen ?? false);
+      setDataOpen(savedSession.dataOpen ?? false);
+      const initialSelectionId = activeProject.canvas?.activeSequenceId ?? activeProject.entrySequenceId ?? activeProject.sequences[0]?.id ?? model.nodes[0]?.id;
+      setSelection(savedSession.selection ?? (initialSelectionId ? { type: "node", id: initialSelectionId } : undefined));
+      setCanvasMode(savedSession.canvasMode ?? "branching");
+      setFocusNodeId(savedSession.focusNodeId);
+      setError(undefined);
+    },
+    [],
+  );
 
   const updateProject = useCallback(
     (nextProject: BranchingProject, nextSelection?: Selection) => {
@@ -2603,6 +3145,119 @@ export function App() {
       setMessage(result.message);
     },
     [applyProject, project],
+  );
+
+  const openMarkdownTabForCanon = useCallback((ref: CanonRef) => {
+    const tabId = `canon:${ref.id}`;
+    setMarkdownTabs((current) => {
+      if (current.some((tab) => tab.id === tabId)) {
+        return current;
+      }
+      return [
+        ...current,
+        {
+          id: tabId,
+          canonRefId: ref.id,
+          title: ref.label ?? ref.id,
+          sourcePath: ref.canonSourcePath,
+          workingCopyPath: ref.workingCopyPath,
+          format: "markdown" as const,
+          content: canonMarkdownDraft(ref),
+          dirty: false,
+        },
+      ].slice(-5);
+    });
+    setActiveMarkdownTabId(tabId);
+  }, []);
+
+  useEffect(() => {
+    if (!project || selection?.type !== "canon") return;
+    const ref = project.canonRefs.find((canonRef) => canonRef.id === selection.id);
+    if (ref) openMarkdownTabForCanon(ref);
+  }, [openMarkdownTabForCanon, project, selection]);
+
+  const changeMarkdownContent = useCallback((id: string, content: string) => {
+    setMarkdownTabs((current) => current.map((tab) => (tab.id === id ? { ...tab, content, dirty: true } : tab)));
+  }, []);
+
+  const changeMarkdownFormat = useCallback(
+    (id: string, format: MarkdownDraftFormat) => {
+      setMarkdownTabs((current) =>
+        current.map((tab) => {
+          if (tab.id !== id) return tab;
+          const ref = project?.canonRefs.find((canonRef) => canonRef.id === tab.canonRefId);
+          if (!ref) return { ...tab, format };
+          const template = markdownFormatTemplate(format, ref);
+          return {
+            ...tab,
+            format,
+            content: tab.dirty ? `${tab.content.trimEnd()}\n\n---\n\n${template}` : template,
+            dirty: true,
+          };
+        }),
+      );
+    },
+    [project],
+  );
+
+  const closeMarkdownTab = useCallback((id: string) => {
+    setMarkdownTabs((current) => {
+      const nextTabs = current.filter((tab) => tab.id !== id);
+      setActiveMarkdownTabId((activeId) => {
+        if (activeId !== id) return activeId;
+        return nextTabs[nextTabs.length - 1]?.id;
+      });
+      return nextTabs;
+    });
+  }, []);
+
+  const saveMarkdownTab = useCallback(
+    async (id: string) => {
+      const tab = markdownTabs.find((item) => item.id === id);
+      if (!tab || !fileState.universePath) {
+        setMessage("Open a universe before saving a Markdown working copy.");
+        return;
+      }
+
+      setMarkdownTabs((current) => current.map((item) => (item.id === id ? { ...item, saving: true } : item)));
+      try {
+        const result = await saveWorkingCopy(fileState.universePath, tab.canonRefId, tab.content, tab.modifiedMs);
+        if (!result.ok) {
+          throw new Error(result.message ?? "Could not save Markdown working copy.");
+        }
+        const workingCopyPath = workingCopyPathForCanonRef(tab.canonRefId);
+        setMarkdownTabs((current) =>
+          current.map((item) =>
+            item.id === id
+              ? {
+                  ...item,
+                  workingCopyPath,
+                  dirty: false,
+                  saving: false,
+                  lastSavedAt: Date.now(),
+                  modifiedMs: result.modifiedMs,
+                }
+              : item,
+          ),
+        );
+        setProject((currentProject) =>
+          currentProject
+            ? {
+                ...currentProject,
+                canonRefs: currentProject.canonRefs.map((ref) =>
+                  ref.id === tab.canonRefId ? { ...ref, workingCopyPath } : ref,
+                ),
+              }
+            : currentProject,
+        );
+        setFileState((current) => ({ ...current, dirty: true }));
+        setMessage(`Saved working copy: ${workingCopyPath}.`);
+      } catch (saveError) {
+        setMarkdownTabs((current) => current.map((item) => (item.id === id ? { ...item, saving: false } : item)));
+        setMessage(saveError instanceof Error ? saveError.message : String(saveError));
+      }
+    },
+    [fileState.universePath, markdownTabs],
   );
 
   const confirmDiscardChanges = useCallback(async () => {
@@ -2643,63 +3298,29 @@ export function App() {
     [project, updateProject],
   );
 
-  const loadDemo = useCallback(async () => {
-    if (!(await confirmDiscardChanges())) {
-      return;
-    }
-    try {
-      const response = await fetch(DEMO_PROJECT_PATH);
-      if (!response.ok) {
-        throw new Error(`Could not load demo project: ${response.status}`);
-      }
-
-      const rawProject = (await response.json()) as BranchingProject;
-      const loadedProject = normalizeProject({
-        ...rawProject,
-        canvas: {
-          ...rawProject.canvas,
-          activeSequenceId: rawProject.canvas?.activeSequenceId ?? rawProject.entrySequenceId ?? rawProject.sequences[0]?.id,
-        },
-      });
-      const model = buildStoryCanvasModel(loadedProject);
-      setProject(loadedProject);
-      setNodes(model.nodes);
-      setEdges(model.edges);
-      setFiles(model.files);
-      setFileState({ dirty: false });
-      setUndoStack([]);
-      setRedoStack([]);
-      setCanonOpen(loadedProject.panels?.canonOpen ?? true);
-      setFilesOpen(loadedProject.panels?.filesOpen ?? true);
-      setSelection({ type: "node", id: loadedProject.entrySequenceId ?? loadedProject.sequences[0]?.id ?? model.nodes[0]?.id });
-      setCanvasMode("branching");
-      setFocusNodeId(undefined);
-      setError(undefined);
-    } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : String(loadError));
-    }
-  }, [confirmDiscardChanges]);
-
   useEffect(() => {
     let disposed = false;
     async function loadInitialProject() {
       if (settings.lastOpenedProject) {
         try {
-          const opened = await openProjectPath(settings.lastOpenedProject);
+          const opened = await openUniversePath(settings.lastOpenedProject);
           if (disposed) {
             return;
           }
-          applyProject(opened.project, { dirty: false, path: opened.path, modifiedMs: opened.modifiedMs });
-          setFileState({ path: opened.path, dirty: false, lastSavedAt: Date.now(), modifiedMs: opened.modifiedMs });
-          setCanonOpen(opened.project.panels?.canonOpen ?? true);
-          setFilesOpen(opened.project.panels?.filesOpen ?? true);
-          setSelection({ type: "node", id: opened.project.canvas?.activeSequenceId ?? opened.project.entrySequenceId ?? opened.project.sequences[0]?.id });
+          applyWorkspace(opened.workspace, opened.path);
+          setSettings((current) => rememberRecentProject(current, opened.path));
+          setView("workspace");
+          setInitialLoading(false);
           return;
         } catch {
           setMissingRecentProjects((current) => new Set(current).add(settings.lastOpenedProject as string));
         }
       }
-      await loadDemo();
+      setProject(undefined);
+      setWorkspace(undefined);
+      setFileState({ dirty: false });
+      setView("home");
+      setInitialLoading(false);
     }
     void loadInitialProject();
     return () => {
@@ -2710,6 +3331,7 @@ export function App() {
   }, []);
 
   useEffect(() => {
+    settingsRef.current = settings;
     document.documentElement.dataset.theme = settings.theme;
     saveSettings({ ...settings, lastView: view });
   }, [settings, view]);
@@ -2718,74 +3340,115 @@ export function App() {
     setSettings((current) => ({ ...current, theme }));
   }, []);
 
+  useEffect(() => {
+    if (!fileState.universePath || initialLoading) return;
+    const session: PathBranchingWorkspaceSession = {
+      view,
+      selection,
+      canonOpen,
+      filesOpen,
+      exportOpen,
+      dataOpen,
+      canvasMode,
+      focusNodeId,
+      markdownTabs: storableMarkdownTabs(markdownTabs),
+      activeMarkdownTabId,
+    };
+    setSettings((current) => {
+      const currentSession = current.workspaceSessions?.[fileState.universePath as string];
+      if (JSON.stringify(currentSession ?? {}) === JSON.stringify(session)) {
+        return current;
+      }
+      return {
+        ...current,
+        workspaceSessions: {
+          ...(current.workspaceSessions ?? {}),
+          [fileState.universePath as string]: session,
+        },
+      };
+    });
+  }, [
+    activeMarkdownTabId,
+    canonOpen,
+    canvasMode,
+    dataOpen,
+    exportOpen,
+    fileState.universePath,
+    filesOpen,
+    focusNodeId,
+    initialLoading,
+    markdownTabs,
+    selection,
+    view,
+  ]);
+
+  const toggleTheme = useCallback(() => {
+    setSettings((current) => ({ ...current, theme: toggledThemeMode(current.theme) }));
+  }, []);
+
+  const changeThemeFamily = useCallback((family: ThemeFamily) => {
+    setSettings((current) => ({ ...current, theme: themeForFamilyAndMode(family, themeById(current.theme).mode) }));
+  }, []);
+
   const openProject = useCallback(async () => {
     if (!(await confirmDiscardChanges())) {
       return;
     }
     try {
-      const opened = await openProjectDialog();
+      const opened = await openUniverseDialog();
       if (!opened) {
         return;
       }
-      applyProject(opened.project, { dirty: false, path: opened.path });
-      setFileState({ path: opened.path, dirty: false, lastSavedAt: Date.now(), modifiedMs: opened.modifiedMs });
-      setUndoStack([]);
-      setRedoStack([]);
+      applyWorkspace(opened.workspace, opened.path);
       setSettings((current) => rememberRecentProject(current, opened.path));
-      setCanonOpen(opened.project.panels?.canonOpen ?? true);
-      setFilesOpen(opened.project.panels?.filesOpen ?? true);
-      setSelection({ type: "node", id: opened.project.canvas?.activeSequenceId ?? opened.project.entrySequenceId ?? opened.project.sequences[0]?.id });
       setView("workspace");
       setError(undefined);
-      setMessage(`Opened ${projectFileName(opened.path)}.`);
+      setMessage(
+        opened.workspace.createdDefaultStory
+          ? `Opened ${projectFileName(opened.path)}. Save to create PathBranching metadata.`
+          : `Opened ${projectFileName(opened.path)}.`,
+      );
     } catch (openError) {
       setError(openError instanceof Error ? openError.message : String(openError));
     }
-  }, [applyProject, confirmDiscardChanges]);
+  }, [applyWorkspace, confirmDiscardChanges]);
 
   const saveProject = useCallback(async () => {
     if (!project) {
       return;
     }
     try {
-      const result = fileState.path
-        ? await saveProjectFile(fileState.path, project, fileState.modifiedMs)
-        : await saveProjectAsDialog(project);
+      if (!workspace || !fileState.universePath) {
+        throw new Error("Open a universe before saving a PathBranching story.");
+      }
+      const result = await saveUniverseStory(fileState.universePath, workspace, project, fileState.modifiedMs);
       if (!result) {
         return;
       }
       if (!result.ok) {
         throw new Error(result.message ?? "Could not save project.");
       }
-      setFileState({ path: result.path, dirty: false, lastSavedAt: Date.now(), modifiedMs: result.modifiedMs });
-      setSettings((current) => rememberRecentProject(current, result.path));
-      setMessage(`Saved ${projectFileName(result.path)}.`);
+      setFileState((current) => ({ ...current, path: current.storyPath, dirty: false, lastSavedAt: Date.now(), modifiedMs: result.modifiedMs }));
+      setSettings((current) => rememberRecentProject(current, fileState.universePath as string));
+      setWorkspace((current) => current ? { ...current, createdDefaultStory: false } : current);
+      setMessage(`Saved branching story in ${projectFileName(fileState.universePath)}.`);
     } catch (saveError) {
       setError(saveError instanceof Error ? saveError.message : String(saveError));
     }
-  }, [fileState.modifiedMs, fileState.path, project]);
+  }, [fileState.modifiedMs, fileState.universePath, project, workspace]);
 
   const saveProjectAs = useCallback(async () => {
     if (!project) {
       return;
     }
     try {
-      const result = await saveProjectAsDialog(project);
-      if (!result) {
-        return;
-      }
-      if (!result.ok) {
-        throw new Error(result.message ?? "Could not save project.");
-      }
-      setFileState({ path: result.path, dirty: false, lastSavedAt: Date.now(), modifiedMs: result.modifiedMs });
-      setSettings((current) => rememberRecentProject(current, result.path));
-      setMessage(`Saved ${projectFileName(result.path)}.`);
+      await saveProject();
     } catch (saveError) {
       setError(saveError instanceof Error ? saveError.message : String(saveError));
     }
-  }, [project]);
+  }, [project, saveProject]);
 
-  const exportRuntime = useCallback(async () => {
+  const exportRuntime = useCallback(async (mode: ExportPreviewMode = exportPreviewMode) => {
     if (!project) {
       return;
     }
@@ -2794,9 +3457,9 @@ export function App() {
       const inkExport = exportInkProject(project);
       const gameDataExport = exportSinpoGameData(project);
       const result =
-        exportPreviewMode === "ink"
+        mode === "ink"
           ? await exportTextDialog(inkExport.files.map((file) => `// ${file.path}\n${file.content}`).join("\n\n"), "story.ink")
-          : exportPreviewMode === "gameData"
+          : mode === "gameData"
             ? await exportTextDialog(`${JSON.stringify(gameDataExport, null, 2)}\n`, "sinpo-game-data.json")
             : await exportRuntimeDialog(runtimePackage);
       if (!result) {
@@ -2813,19 +3476,17 @@ export function App() {
 
   const openRecentProject = useCallback(
     async (path: string) => {
+      if (fileState.universePath === path) {
+        setView("workspace");
+        return;
+      }
       if (!(await confirmDiscardChanges())) {
         return;
       }
       try {
-        const opened = await openProjectPath(path);
-        applyProject(opened.project, { dirty: false, path: opened.path });
-        setFileState({ path: opened.path, dirty: false, lastSavedAt: Date.now(), modifiedMs: opened.modifiedMs });
-        setUndoStack([]);
-        setRedoStack([]);
+        const opened = await openUniversePath(path);
+        applyWorkspace(opened.workspace, opened.path);
         setSettings((current) => rememberRecentProject(current, opened.path));
-        setCanonOpen(opened.project.panels?.canonOpen ?? true);
-        setFilesOpen(opened.project.panels?.filesOpen ?? true);
-        setSelection({ type: "node", id: opened.project.canvas?.activeSequenceId ?? opened.project.entrySequenceId ?? opened.project.sequences[0]?.id });
         setView("workspace");
         setError(undefined);
         setMessage(`Opened ${projectFileName(opened.path)}.`);
@@ -2834,7 +3495,7 @@ export function App() {
         setError(openError instanceof Error ? openError.message : String(openError));
       }
     },
-    [applyProject, confirmDiscardChanges],
+    [applyWorkspace, confirmDiscardChanges, fileState.universePath],
   );
 
   const removeRecentProject = useCallback((path: string) => {
@@ -2874,22 +3535,19 @@ export function App() {
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (!(event.metaKey || event.ctrlKey)) {
-        return;
-      }
-      if (event.key.toLowerCase() === "s") {
+      if (shortcutMatches(event, "Mod+S")) {
         event.preventDefault();
         void saveProject();
       }
-      if (event.key.toLowerCase() === "z") {
+      if (shortcutMatches(event, "Mod+Z")) {
         event.preventDefault();
-        if (event.shiftKey) {
-          redoProject();
-        } else {
-          undoProject();
-        }
+        undoProject();
       }
-      if (event.key.toLowerCase() === "o") {
+      if (shortcutMatches(event, "Mod+Shift+Z")) {
+        event.preventDefault();
+        redoProject();
+      }
+      if (shortcutMatches(event, "Mod+O")) {
         event.preventDefault();
         void openProject();
       }
@@ -3422,6 +4080,115 @@ export function App() {
     });
   }, []);
 
+  useEffect(() => {
+    if (!isTauriRuntime()) {
+      return;
+    }
+
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+
+    void listen<string>("pathbranching-menu", (event) => {
+      switch (event.payload) {
+        case "pb:file:open":
+          void openProject();
+          break;
+        case "pb:file:save":
+          void saveProject();
+          break;
+        case "pb:file:save-as":
+          void saveProjectAs();
+          break;
+        case "pb:file:export-runtime":
+          void exportRuntime("runtime");
+          break;
+        case "pb:file:export-ink":
+          void exportRuntime("ink");
+          break;
+        case "pb:file:export-game-data":
+          void exportRuntime("gameData");
+          break;
+        case "pb:edit:undo":
+          undoProject();
+          break;
+        case "pb:edit:redo":
+          redoProject();
+          break;
+        case "pb:view:home":
+          setView("home");
+          break;
+        case "pb:view:workspace":
+          setView("workspace");
+          break;
+        case "pb:view:toggle-canon":
+          toggleCanon();
+          break;
+        case "pb:view:toggle-files":
+          toggleFiles();
+          break;
+        case "pb:view:toggle-data":
+          setDataOpen((open) => !open);
+          break;
+        case "pb:view:toggle-export":
+          setExportOpen((open) => !open);
+          break;
+        case "pb:view:reset-layout":
+          resetLayout();
+          break;
+        case "pb:style:worldnotion":
+          changeThemeFamily("worldnotion");
+          break;
+        case "pb:style:github":
+          changeThemeFamily("github");
+          break;
+        case "pb:style:one":
+          changeThemeFamily("one");
+          break;
+        case "pb:style:dracula":
+          changeThemeFamily("dracula");
+          break;
+        case "pb:style:owl":
+          changeThemeFamily("owl");
+          break;
+        case "pb:style:material":
+          changeThemeFamily("material");
+          break;
+        case "pb:style:toggle-mode":
+          toggleTheme();
+          break;
+        case "pb:help:about":
+          setMessage("Everend PathBranching 0.1.0 - branching narrative editor for the Everend Forge suite.");
+          break;
+        case "pb:help:docs":
+          setMessage("Docs live in the PathBranching README and docs folder for now.");
+          break;
+      }
+    }).then((nextUnlisten) => {
+      if (disposed) {
+        nextUnlisten();
+        return;
+      }
+      unlisten = nextUnlisten;
+    });
+
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [
+    changeThemeFamily,
+    exportRuntime,
+    openProject,
+    redoProject,
+    resetLayout,
+    saveProject,
+    saveProjectAs,
+    toggleCanon,
+    toggleFiles,
+    toggleTheme,
+    undoProject,
+  ]);
+
   const handleFileSelect = useCallback(
     (id: string) => {
       const sequencePrefix = "file:sequence:";
@@ -3448,6 +4215,22 @@ export function App() {
     [setActiveSequence],
   );
 
+  const settingsModal = showSettings ? (
+    <PathBranchingSettingsModal
+      project={project}
+      fileState={fileState}
+      settings={settings}
+      findings={findings}
+      theme={settings.theme}
+      onThemeChange={changeTheme}
+      onToggleTheme={toggleTheme}
+      onOpenUniverse={openProject}
+      onOpenRecentUniverse={openRecentProject}
+      onRemoveRecentUniverse={removeRecentProject}
+      onClose={() => setShowSettings(false)}
+    />
+  ) : null;
+
   if (error) {
     return (
       <>
@@ -3458,6 +4241,8 @@ export function App() {
             exportOpen={exportOpen}
             dataOpen={dataOpen}
             theme={settings.theme}
+            onOpenSettings={() => setShowSettings(true)}
+            onToggleTheme={toggleTheme}
             onOpenProject={openProject}
             onSaveProject={saveProject}
             onSaveProjectAs={saveProjectAs}
@@ -3467,23 +4252,22 @@ export function App() {
             onRedo={redoProject}
             canUndo={undoStack.length > 0}
             canRedo={redoStack.length > 0}
-            onReload={loadDemo}
             onCreateSequence={createSequence}
             onValidate={() => setSelection(undefined)}
             onToggleExport={() => setExportOpen((open) => !open)}
             onToggleData={() => setDataOpen((open) => !open)}
             onCreateDataObject={createKnowledgeObject}
             onResetLayout={resetLayout}
-            onThemeChange={changeTheme}
           />
           <div className="error-state">{error}</div>
         </div>
+        {settingsModal}
         <DiscardChangesDialog open={Boolean(discardDialog)} onDiscard={() => resolveDiscardDialog(true)} onCancel={() => resolveDiscardDialog(false)} />
       </>
     );
   }
 
-  if (!project) {
+  if (initialLoading) {
     return (
       <>
         <div className="app-shell">
@@ -3493,6 +4277,8 @@ export function App() {
             exportOpen={exportOpen}
             dataOpen={dataOpen}
             theme={settings.theme}
+            onOpenSettings={() => setShowSettings(true)}
+            onToggleTheme={toggleTheme}
             onOpenProject={openProject}
             onSaveProject={saveProject}
             onSaveProjectAs={saveProjectAs}
@@ -3502,23 +4288,24 @@ export function App() {
             onRedo={redoProject}
             canUndo={undoStack.length > 0}
             canRedo={redoStack.length > 0}
-            onReload={loadDemo}
             onCreateSequence={createSequence}
             onValidate={() => setSelection(undefined)}
             onToggleExport={() => setExportOpen((open) => !open)}
             onToggleData={() => setDataOpen((open) => !open)}
             onCreateDataObject={createKnowledgeObject}
             onResetLayout={resetLayout}
-            onThemeChange={changeTheme}
           />
-          <div className="loading-state">Loading bridge demo project...</div>
+          <div className="loading-state">
+            {settings.lastOpenedProject ? "Loading last universe..." : "Preparing dashboard..."}
+          </div>
         </div>
+        {settingsModal}
         <DiscardChangesDialog open={Boolean(discardDialog)} onDiscard={() => resolveDiscardDialog(true)} onCancel={() => resolveDiscardDialog(false)} />
       </>
     );
   }
 
-  if (view === "home") {
+  if (view === "home" || !project) {
     return (
       <>
         <HomeDashboard
@@ -3528,16 +4315,17 @@ export function App() {
           missingRecentProjects={missingRecentProjects}
           findings={findings}
           theme={settings.theme}
-          onThemeChange={changeTheme}
+          onOpenSettings={() => setShowSettings(true)}
+          onToggleTheme={toggleTheme}
           onEnterWorkspace={() => setView("workspace")}
           onOpenProject={openProject}
           onOpenRecentProject={openRecentProject}
           onRemoveRecentProject={removeRecentProject}
-          onLoadDemo={loadDemo}
           onSaveProject={saveProject}
           onSaveProjectAs={saveProjectAs}
           onExportRuntime={exportRuntime}
         />
+        {settingsModal}
         <DiscardChangesDialog open={Boolean(discardDialog)} onDiscard={() => resolveDiscardDialog(true)} onCancel={() => resolveDiscardDialog(false)} />
       </>
     );
@@ -3553,6 +4341,8 @@ export function App() {
         exportOpen={exportOpen}
         dataOpen={dataOpen}
         theme={settings.theme}
+        onOpenSettings={() => setShowSettings(true)}
+        onToggleTheme={toggleTheme}
         onOpenProject={openProject}
         onSaveProject={saveProject}
         onSaveProjectAs={saveProjectAs}
@@ -3562,14 +4352,12 @@ export function App() {
         onRedo={redoProject}
         canUndo={undoStack.length > 0}
         canRedo={redoStack.length > 0}
-        onReload={loadDemo}
         onCreateSequence={createSequence}
         onValidate={() => setSelection(undefined)}
         onToggleExport={() => setExportOpen((open) => !open)}
         onToggleData={() => setDataOpen((open) => !open)}
         onCreateDataObject={createKnowledgeObject}
         onResetLayout={resetLayout}
-        onThemeChange={changeTheme}
       />
 
         <div
@@ -3605,6 +4393,8 @@ export function App() {
           exportOpen={exportOpen}
           exportPreviewMode={exportPreviewMode}
           dataOpen={dataOpen}
+          markdownTabs={markdownTabs}
+          activeMarkdownTabId={activeMarkdownTabId}
           onNodesChange={handleNodesChange}
           onEdgesChange={handleEdgesChange}
           onConnect={handleConnect}
@@ -3633,9 +4423,15 @@ export function App() {
           onDeleteDataObject={deleteDataObject}
           onUpdateEdgeLabel={updateEdgeLabel}
           onDeleteSelection={deleteSelection}
+          onActivateMarkdownTab={setActiveMarkdownTabId}
+          onCloseMarkdownTab={closeMarkdownTab}
+          onChangeMarkdownContent={changeMarkdownContent}
+          onChangeMarkdownFormat={changeMarkdownFormat}
+          onSaveMarkdownTab={saveMarkdownTab}
         />
         </div>
       </div>
+      {settingsModal}
       <DiscardChangesDialog open={Boolean(discardDialog)} onDiscard={() => resolveDiscardDialog(true)} onCancel={() => resolveDiscardDialog(false)} />
     </>
   );

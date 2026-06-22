@@ -1,7 +1,11 @@
 export type CanonRef = {
   id: string;
   kind?: string;
+  label?: string;
+  preview?: string;
   source?: "worldnotion" | "engine-legacy" | "manual" | string;
+  canonSourcePath?: string;
+  workingCopyPath?: string;
 };
 
 export type ScriptRef = {
@@ -342,6 +346,8 @@ export type PanelAuthoringState = {
 export type BranchingProject = {
   specVersion: "0.1";
   projectId: string;
+  storyId?: string;
+  universeRootPath?: string;
   name?: string;
   sourceVault?: {
     kind: "worldnotion" | string;

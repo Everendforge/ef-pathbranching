@@ -6,8 +6,8 @@ import { fileURLToPath } from "node:url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const packageRoot = path.resolve(__dirname, "..");
 const candidates = [
-  path.join(packageRoot, "node_modules/.bin/vite"),
-  path.join(packageRoot, "../worldnotion/node_modules/.bin/vite"),
+  path.join(packageRoot, "node_modules/vite/bin/vite.js"),
+  path.join(packageRoot, "../worldnotion/node_modules/vite/bin/vite.js"),
 ];
 
 let vite;
@@ -26,7 +26,7 @@ if (!vite) {
   process.exit(127);
 }
 
-const child = spawn(vite, process.argv.slice(2), {
+const child = spawn(process.execPath, [vite, ...process.argv.slice(2)], {
   cwd: packageRoot,
   stdio: "inherit",
 });

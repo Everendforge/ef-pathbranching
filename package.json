@@ -12,7 +12,7 @@
     "demo:bridge": "npm run build:core && node scripts/demo-worldnotion-bridge.mjs",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build"
+    "tauri:build": "node scripts/run-tauri-build.mjs"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.11.2",

@@ -1,8 +1,12 @@
 use serde::Serialize;
 use std::fs;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
+use tauri::menu::{
+    Menu, MenuItem, PredefinedMenuItem, Submenu, HELP_SUBMENU_ID, WINDOW_SUBMENU_ID,
+};
+use tauri::Emitter;
 use tauri_plugin_dialog::DialogExt;
 
 #[derive(Serialize)]
@@ -15,11 +19,183 @@ struct ProjectFilePayload {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+struct UniverseFilePayload {
+    relative_path: String,
+    absolute_path: String,
+    content: String,
+    modified_ms: Option<u128>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UniverseReadError {
+    relative_path: String,
+    message: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UniverseReadResult {
+    root_path: String,
+    files: Vec<UniverseFilePayload>,
+    directories: Vec<String>,
+    errors: Vec<UniverseReadError>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct WriteResult {
     ok: bool,
     path: String,
     modified_ms: Option<u128>,
     message: Option<String>,
+}
+
+fn menu_item(
+    app: &tauri::AppHandle,
+    id: &str,
+    label: &str,
+    accelerator: Option<&str>,
+) -> tauri::Result<MenuItem<tauri::Wry>> {
+    MenuItem::with_id(app, id, label, true, accelerator)
+}
+
+fn build_app_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
+    let file_menu = Submenu::with_items(
+        app,
+        "File",
+        true,
+        &[
+            &menu_item(app, "pb:file:open", "Open Universe...", Some("CmdOrCtrl+O"))?,
+            &menu_item(app, "pb:file:save", "Save", Some("CmdOrCtrl+S"))?,
+            &menu_item(
+                app,
+                "pb:file:save-as",
+                "Save Into Universe...",
+                Some("CmdOrCtrl+Shift+S"),
+            )?,
+            &PredefinedMenuItem::separator(app)?,
+            &menu_item(
+                app,
+                "pb:file:export-runtime",
+                "Export Runtime Package...",
+                Some("CmdOrCtrl+E"),
+            )?,
+            &menu_item(app, "pb:file:export-ink", "Export Ink...", None)?,
+            &menu_item(
+                app,
+                "pb:file:export-game-data",
+                "Export SINPO GameData...",
+                None,
+            )?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::quit(app, None)?,
+        ],
+    )?;
+
+    let edit_menu = Submenu::with_items(
+        app,
+        "Edit",
+        true,
+        &[
+            &menu_item(app, "pb:edit:undo", "Undo", Some("CmdOrCtrl+Z"))?,
+            &menu_item(app, "pb:edit:redo", "Redo", Some("CmdOrCtrl+Shift+Z"))?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::cut(app, None)?,
+            &PredefinedMenuItem::copy(app, None)?,
+            &PredefinedMenuItem::paste(app, None)?,
+            &PredefinedMenuItem::select_all(app, None)?,
+        ],
+    )?;
+
+    let style_menu = Submenu::with_items(
+        app,
+        "Style",
+        true,
+        &[
+            &menu_item(app, "pb:style:worldnotion", "WorldNotion", None)?,
+            &menu_item(app, "pb:style:github", "GitHub", None)?,
+            &menu_item(app, "pb:style:one", "One Pro", None)?,
+            &menu_item(app, "pb:style:dracula", "Dracula", None)?,
+            &menu_item(app, "pb:style:owl", "Owl", None)?,
+            &menu_item(app, "pb:style:material", "Material", None)?,
+            &PredefinedMenuItem::separator(app)?,
+            &menu_item(
+                app,
+                "pb:style:toggle-mode",
+                "Toggle Light/Dark",
+                Some("CmdOrCtrl+Shift+T"),
+            )?,
+        ],
+    )?;
+
+    let view_menu = Submenu::with_items(
+        app,
+        "View",
+        true,
+        &[
+            &menu_item(app, "pb:view:home", "Home", Some("CmdOrCtrl+1"))?,
+            &menu_item(app, "pb:view:workspace", "Workspace", Some("CmdOrCtrl+2"))?,
+            &PredefinedMenuItem::separator(app)?,
+            &menu_item(
+                app,
+                "pb:view:toggle-canon",
+                "Toggle Canon Panel",
+                Some("CmdOrCtrl+Shift+C"),
+            )?,
+            &menu_item(
+                app,
+                "pb:view:toggle-files",
+                "Toggle Files Panel",
+                Some("CmdOrCtrl+Shift+F"),
+            )?,
+            &menu_item(
+                app,
+                "pb:view:toggle-data",
+                "Toggle Data Panel",
+                Some("CmdOrCtrl+Shift+D"),
+            )?,
+            &menu_item(
+                app,
+                "pb:view:toggle-export",
+                "Toggle Export Panel",
+                Some("CmdOrCtrl+Shift+E"),
+            )?,
+            &PredefinedMenuItem::separator(app)?,
+            &style_menu,
+            &PredefinedMenuItem::separator(app)?,
+            &menu_item(app, "pb:view:reset-layout", "Reset Layout", None)?,
+        ],
+    )?;
+
+    let window_menu = Submenu::with_id_and_items(
+        app,
+        WINDOW_SUBMENU_ID,
+        "Window",
+        true,
+        &[
+            &PredefinedMenuItem::minimize(app, None)?,
+            &PredefinedMenuItem::close_window(app, None)?,
+            #[cfg(target_os = "macos")]
+            &PredefinedMenuItem::bring_all_to_front(app, None)?,
+        ],
+    )?;
+
+    let help_menu = Submenu::with_id_and_items(
+        app,
+        HELP_SUBMENU_ID,
+        "Help",
+        true,
+        &[
+            &menu_item(app, "pb:help:about", "About PathBranching", None)?,
+            &menu_item(app, "pb:help:docs", "Everend Docs", None)?,
+        ],
+    )?;
+
+    Menu::with_items(
+        app,
+        &[&file_menu, &edit_menu, &view_menu, &window_menu, &help_menu],
+    )
 }
 
 fn modified_ms(path: &Path) -> Option<u128> {
@@ -31,6 +207,16 @@ fn modified_ms(path: &Path) -> Option<u128> {
 }
 
 fn write_text_file(path: &Path, content: &str) -> WriteResult {
+    if let Some(parent) = path.parent() {
+        if let Err(error) = fs::create_dir_all(parent) {
+            return WriteResult {
+                ok: false,
+                path: path.to_string_lossy().to_string(),
+                modified_ms: modified_ms(path),
+                message: Some(error.to_string()),
+            };
+        }
+    }
     let result = fs::File::create(path).and_then(|mut file| file.write_all(content.as_bytes()));
     WriteResult {
         ok: result.is_ok(),
@@ -38,6 +224,161 @@ fn write_text_file(path: &Path, content: &str) -> WriteResult {
         modified_ms: modified_ms(path),
         message: result.err().map(|error| error.to_string()),
     }
+}
+
+fn relative_path(root: &Path, path: &Path) -> String {
+    path.strip_prefix(root)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .replace('\\', "/")
+}
+
+fn normalize_relative_path(path: &str) -> Result<PathBuf, String> {
+    if path.trim().is_empty()
+        || path.contains('\0')
+        || path.contains('\\')
+        || path.starts_with('/')
+        || path.contains(':')
+    {
+        return Err("Universe paths must be safe relative paths.".to_string());
+    }
+    let mut normalized = PathBuf::new();
+    for segment in path.split('/') {
+        if segment.is_empty() || segment == "." || segment == ".." {
+            return Err("Universe paths cannot contain empty or traversal segments.".to_string());
+        }
+        normalized.push(segment);
+    }
+    Ok(normalized)
+}
+
+fn should_read_universe_file(path: &Path) -> bool {
+    matches!(
+        path.extension().and_then(|value| value.to_str()),
+        Some("md" | "json" | "yaml" | "yml")
+    )
+}
+
+fn walk_universe(
+    root: &Path,
+    current: &Path,
+    files: &mut Vec<UniverseFilePayload>,
+    directories: &mut Vec<String>,
+    errors: &mut Vec<UniverseReadError>,
+) {
+    let entries = match fs::read_dir(current) {
+        Ok(entries) => entries,
+        Err(error) => {
+            errors.push(UniverseReadError {
+                relative_path: relative_path(root, current),
+                message: error.to_string(),
+            });
+            return;
+        }
+    };
+
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                errors.push(UniverseReadError {
+                    relative_path: relative_path(root, current),
+                    message: error.to_string(),
+                });
+                continue;
+            }
+        };
+        let path = entry.path();
+        if path.is_dir() {
+            if entry.file_name().to_string_lossy().starts_with('.') && entry.file_name() != ".everend" {
+                continue;
+            }
+            directories.push(relative_path(root, &path));
+            walk_universe(root, &path, files, directories, errors);
+            continue;
+        }
+        if !should_read_universe_file(&path) {
+            continue;
+        }
+        match fs::read_to_string(&path) {
+            Ok(content) => files.push(UniverseFilePayload {
+                relative_path: relative_path(root, &path),
+                absolute_path: path.to_string_lossy().to_string(),
+                content,
+                modified_ms: modified_ms(&path),
+            }),
+            Err(error) => errors.push(UniverseReadError {
+                relative_path: relative_path(root, &path),
+                message: error.to_string(),
+            }),
+        }
+    }
+}
+
+fn read_universe(root: PathBuf) -> Result<UniverseReadResult, String> {
+    if !root.exists() {
+        return Err(format!("Universe path does not exist: {}", root.display()));
+    }
+    if !root.is_dir() {
+        return Err(format!("Universe path is not a directory: {}", root.display()));
+    }
+
+    let mut files = Vec::new();
+    let mut directories = Vec::new();
+    let mut errors = Vec::new();
+    walk_universe(&root, &root, &mut files, &mut directories, &mut errors);
+    files.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
+    directories.sort();
+
+    Ok(UniverseReadResult {
+        root_path: root.to_string_lossy().to_string(),
+        files,
+        directories,
+        errors,
+    })
+}
+
+#[tauri::command]
+async fn open_universe_dialog(app: tauri::AppHandle) -> Result<Option<UniverseReadResult>, String> {
+    let Some(folder_path) = app.dialog().file().blocking_pick_folder() else {
+        return Ok(None);
+    };
+    let path = folder_path.into_path().map_err(|error| error.to_string())?;
+    read_universe(path).map(Some)
+}
+
+#[tauri::command]
+fn read_universe_folder(path: String) -> Result<UniverseReadResult, String> {
+    read_universe(PathBuf::from(path))
+}
+
+#[tauri::command]
+fn save_universe_text_file(
+    universe_path: String,
+    relative_path: String,
+    content: String,
+    expected_modified_ms: Option<u128>,
+) -> Result<WriteResult, String> {
+    let root = PathBuf::from(&universe_path);
+    if !root.exists() {
+        return Err(format!("Universe path does not exist: {}", root.display()));
+    }
+    if !root.is_dir() {
+        return Err(format!("Universe path is not a directory: {}", root.display()));
+    }
+    let relative = normalize_relative_path(&relative_path)?;
+    let path = root.join(relative);
+    if let (Some(expected), Some(current)) = (expected_modified_ms, modified_ms(&path)) {
+        if expected != current {
+            return Ok(WriteResult {
+                ok: false,
+                path: path.to_string_lossy().to_string(),
+                modified_ms: Some(current),
+                message: Some("Universe file changed on disk. Reopen before overwriting.".to_string()),
+            });
+        }
+    }
+    Ok(write_text_file(&path, &content))
 }
 
 #[tauri::command]
@@ -74,7 +415,10 @@ fn save_project_file(
                 ok: false,
                 path,
                 modified_ms: Some(current),
-                message: Some("Project file changed on disk. Use Save As or reopen before overwriting.".to_string()),
+                message: Some(
+                    "Project file changed on disk. Save into a universe or reopen before overwriting."
+                        .to_string(),
+                ),
             });
         }
     }
@@ -135,8 +479,20 @@ async fn export_runtime_dialog(
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .menu(build_app_menu)
+        .on_menu_event(|app, event| {
+            let id = event.id().as_ref();
+            if id.starts_with("pb:") {
+                let _ = app.emit("pathbranching-menu", id);
+            }
+        })
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_window_state::Builder::default().build())
         .invoke_handler(tauri::generate_handler![
+            open_universe_dialog,
+            read_universe_folder,
+            save_universe_text_file,
             open_project_dialog,
             read_project_file,
             save_project_file,

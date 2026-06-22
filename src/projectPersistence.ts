@@ -1,8 +1,23 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { BranchingProject, RuntimePackage } from "./domain.js";
+import {
+  loadPathBranchingWorkspace,
+  pathBranchingMetadataPaths,
+  serializePathBranchingManifest,
+  serializePathBranchingStory,
+  workingCopyPathForCanonRef,
+  type PathBranchingWorkspace,
+  type UniverseFile,
+} from "./pathBranchingWorkspace.js";
+import { normalizeProject, parseProject, projectFileName, serializeProject } from "./projectSerialization.js";
+import { isTauriRuntime } from "./utils/appEnvironment.js";
+
+export { normalizeProject, parseProject, projectFileName, serializeProject } from "./projectSerialization.js";
 
 export type ProjectFileState = {
   path?: string;
+  universePath?: string;
+  storyPath?: string;
   dirty: boolean;
   lastSavedAt?: number;
   modifiedMs?: number;
@@ -21,52 +36,21 @@ export type WriteResult = {
   message?: string;
 };
 
-export function projectFileName(path: string | undefined) {
-  if (!path) {
-    return "Untitled.pathbranching.json";
+export type UniverseReadResult = {
+  rootPath: string;
+  files: Array<UniverseFile & { absolutePath?: string }>;
+  directories: string[];
+  errors: Array<{ relativePath: string; message: string }>;
+};
+
+function assertDesktopRuntime(action: string) {
+  if (!isTauriRuntime()) {
+    throw new Error(`${action} requires the Everend PathBranching desktop app.`);
   }
-  return path.split(/[\\/]/).pop() ?? path;
-}
-
-export function normalizeProject(project: BranchingProject): BranchingProject {
-  const entrySequenceId = project.entrySequenceId ?? project.sequences[0]?.id;
-  const activeSequenceId = project.canvas?.activeSequenceId ?? entrySequenceId ?? project.sequences[0]?.id;
-
-  return {
-    ...project,
-    specVersion: project.specVersion ?? "0.1",
-    dataClasses: project.dataClasses ?? [],
-    projectDataObjects: project.projectDataObjects ?? [],
-    projectionRules: project.projectionRules ?? [],
-    graphModules: project.graphModules ?? [],
-    panels: {
-      canonOpen: project.panels?.canonOpen ?? true,
-      filesOpen: project.panels?.filesOpen ?? true,
-    },
-    canvas: {
-      ...project.canvas,
-      activeSequenceId,
-    },
-    entrySequenceId,
-    canonRefs: project.canonRefs ?? [],
-    sequences: project.sequences ?? [],
-    branches: project.branches ?? [],
-    events: project.events ?? [],
-    scripts: project.scripts ?? [],
-    externalFunctions: project.externalFunctions ?? [],
-    variables: project.variables ?? {},
-  };
-}
-
-export function serializeProject(project: BranchingProject) {
-  return `${JSON.stringify(project, null, 2)}\n`;
-}
-
-export function parseProject(content: string): BranchingProject {
-  return normalizeProject(JSON.parse(content) as BranchingProject);
 }
 
 export async function openProjectDialog(): Promise<{ project: BranchingProject; path: string; modifiedMs?: number } | undefined> {
+  assertDesktopRuntime("Opening a local project");
   const payload = await invoke<ProjectFilePayload | null>("open_project_dialog");
   if (!payload) {
     return undefined;
@@ -78,7 +62,35 @@ export async function openProjectDialog(): Promise<{ project: BranchingProject; 
   };
 }
 
+export async function openUniverseDialog(): Promise<
+  { workspace: PathBranchingWorkspace; path: string; files: UniverseReadResult["files"] } | undefined
+> {
+  assertDesktopRuntime("Opening a local universe");
+  const payload = await invoke<UniverseReadResult | null>("open_universe_dialog");
+  if (!payload) return undefined;
+  return {
+    workspace: loadPathBranchingWorkspace(payload.files),
+    path: payload.rootPath,
+    files: payload.files,
+  };
+}
+
+export async function openUniversePath(path: string): Promise<{
+  workspace: PathBranchingWorkspace;
+  path: string;
+  files: UniverseReadResult["files"];
+}> {
+  assertDesktopRuntime("Opening a recent universe");
+  const payload = await invoke<UniverseReadResult>("read_universe_folder", { path });
+  return {
+    workspace: loadPathBranchingWorkspace(payload.files),
+    path: payload.rootPath,
+    files: payload.files,
+  };
+}
+
 export async function openProjectPath(path: string): Promise<{ project: BranchingProject; path: string; modifiedMs?: number }> {
+  assertDesktopRuntime("Opening a recent local project");
   const payload = await invoke<ProjectFilePayload>("read_project_file", { path });
   return {
     project: parseProject(payload.content),
@@ -88,6 +100,7 @@ export async function openProjectPath(path: string): Promise<{ project: Branchin
 }
 
 export async function saveProjectFile(path: string, project: BranchingProject, expectedModifiedMs?: number): Promise<WriteResult> {
+  assertDesktopRuntime("Saving a local project");
   return invoke<WriteResult>("save_project_file", {
     path,
     content: serializeProject(project),
@@ -95,7 +108,69 @@ export async function saveProjectFile(path: string, project: BranchingProject, e
   });
 }
 
+async function saveUniverseTextFile(
+  universePath: string,
+  relativePath: string,
+  content: string,
+  expectedModifiedMs?: number,
+): Promise<WriteResult> {
+  assertDesktopRuntime("Saving universe app data");
+  return invoke<WriteResult>("save_universe_text_file", {
+    universePath,
+    relativePath,
+    content,
+    expectedModifiedMs,
+  });
+}
+
+export async function saveUniverseStory(
+  universePath: string,
+  workspace: PathBranchingWorkspace,
+  project: BranchingProject,
+  expectedModifiedMs?: number,
+): Promise<WriteResult> {
+  const story = workspace.activeStory;
+  if (!story) {
+    throw new Error("No active PathBranching story is available for this universe.");
+  }
+  const storyResult = await saveUniverseTextFile(
+    universePath,
+    story.path,
+    serializePathBranchingStory({
+      ...project,
+      storyId: story.id,
+      universeRootPath: universePath,
+    }),
+    expectedModifiedMs,
+  );
+  if (!storyResult.ok) return storyResult;
+
+  const manifest = {
+    ...workspace.manifest,
+    activeStoryId: story.id,
+    stories: workspace.manifest.stories.map((item) =>
+      item.id === story.id ? { ...item, updatedAt: new Date().toISOString() } : item,
+    ),
+  };
+  const manifestResult = await saveUniverseTextFile(
+    universePath,
+    pathBranchingMetadataPaths.manifest,
+    serializePathBranchingManifest(manifest),
+  );
+  return manifestResult.ok ? storyResult : manifestResult;
+}
+
+export async function saveWorkingCopy(
+  universePath: string,
+  canonRefId: string,
+  content: string,
+  expectedModifiedMs?: number,
+): Promise<WriteResult> {
+  return saveUniverseTextFile(universePath, workingCopyPathForCanonRef(canonRefId), content, expectedModifiedMs);
+}
+
 export async function saveProjectAsDialog(project: BranchingProject): Promise<WriteResult | undefined> {
+  assertDesktopRuntime("Saving a local project");
   const result = await invoke<WriteResult | null>("save_project_as_dialog", {
     content: serializeProject(project),
     defaultName: `${project.projectId || "pathbranching-project"}.pathbranching.json`,
@@ -108,6 +183,7 @@ export async function exportRuntimeDialog(runtimePackage: RuntimePackage): Promi
 }
 
 export async function exportTextDialog(content: string, defaultName: string): Promise<WriteResult | undefined> {
+  assertDesktopRuntime("Exporting local files");
   const result = await invoke<WriteResult | null>("export_runtime_dialog", {
     content,
     defaultName,
