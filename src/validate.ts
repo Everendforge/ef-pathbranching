@@ -25,6 +25,10 @@ function findDuplicates(values: string[]): string[] {
   return Array.from(duplicates);
 }
 
+function isTerminalEventType(project: BranchingProject, type: string | undefined) {
+  return Boolean(type && (type === "final" || project.eventCategories?.some((category) => category.id === type && category.terminal)));
+}
+
 function validateCanonRef(
   findings: ValidationFinding[],
   canonIds: Set<string>,
@@ -322,9 +326,9 @@ export function validateProject(project: BranchingProject): ValidationFinding[] 
       }
     }
 
-    if (event.type === "final" && event.transitions?.length) {
+    if (isTerminalEventType(project, event.type) && event.transitions?.length) {
       findings.push(
-        finding("invalid_final_transition", "error", `Final event "${event.id}" has outgoing transition(s).`, {
+        finding("invalid_final_transition", "error", `Terminal event "${event.id}" has outgoing transition(s).`, {
           id: event.id,
         }),
       );

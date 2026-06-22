@@ -8,6 +8,7 @@ import {
   workingCopyPathForCanonRef,
   type PathBranchingWorkspace,
   type UniverseFile,
+  type UniverseProfile,
 } from "./pathBranchingWorkspace.js";
 import { normalizeProject, parseProject, projectFileName, serializeProject } from "./projectSerialization.js";
 import { isTauriRuntime } from "./utils/appEnvironment.js";
@@ -21,6 +22,7 @@ export type ProjectFileState = {
   dirty: boolean;
   lastSavedAt?: number;
   modifiedMs?: number;
+  universeProfile?: UniverseProfile;
 };
 
 export type ProjectFilePayload = {
@@ -34,6 +36,13 @@ export type WriteResult = {
   path: string;
   modifiedMs?: number;
   message?: string;
+};
+
+export type SaveUniverseStoryResult = WriteResult & {
+  storyPath?: string;
+  storyModifiedMs?: number;
+  manifest?: PathBranchingWorkspace["manifest"];
+  manifestModifiedMs?: number;
 };
 
 export type UniverseReadResult = {
@@ -128,7 +137,7 @@ export async function saveUniverseStory(
   workspace: PathBranchingWorkspace,
   project: BranchingProject,
   expectedModifiedMs?: number,
-): Promise<WriteResult> {
+): Promise<SaveUniverseStoryResult> {
   const story = workspace.activeStory;
   if (!story) {
     throw new Error("No active PathBranching story is available for this universe.");
@@ -157,7 +166,14 @@ export async function saveUniverseStory(
     pathBranchingMetadataPaths.manifest,
     serializePathBranchingManifest(manifest),
   );
-  return manifestResult.ok ? storyResult : manifestResult;
+  if (!manifestResult.ok) return manifestResult;
+  return {
+    ...storyResult,
+    storyPath: story.path,
+    storyModifiedMs: storyResult.modifiedMs,
+    manifest,
+    manifestModifiedMs: manifestResult.modifiedMs,
+  };
 }
 
 export async function saveWorkingCopy(

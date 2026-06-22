@@ -61,6 +61,10 @@ export function findEvent(project: BranchingProject, id: string): EventNode | un
   return project.events.find((event) => event.id === id);
 }
 
+export function isTerminalEventType(project: BranchingProject, type: string | undefined) {
+  return Boolean(type && (type === "final" || project.eventCategories?.some((category) => category.id === type && category.terminal)));
+}
+
 export function updateSequence(project: BranchingProject, id: string, updates: Partial<Sequence>): MutationResult {
   return {
     project: {
@@ -84,6 +88,7 @@ export function createSequence(project: BranchingProject): MutationResult {
     id: eventId,
     name: "Opening Event",
     type: "normal",
+    text: { format: "plain", content: "" },
     canonRefs: [],
     transitions: [],
   };
@@ -153,13 +158,14 @@ export function createEvent(
     return { project, message: "Create a sequence before adding events." };
   }
 
-  const safeType = type === "final" ? "final" : type === "exploration" ? "exploration" : "normal";
+  const safeType = type || "normal";
   const eventId = uniqueId(`event:${slugify(sequenceId)}:${safeType}`, project.events.map((event) => event.id));
   const targetBranch = branchId ? project.branches.find((branch) => branch.id === branchId) : undefined;
   const newEvent: EventNode = {
     id: eventId,
     name: safeType === "final" ? "Final Event" : "New Event",
     type: safeType,
+    text: { format: "plain", content: "" },
     branchRef: targetBranch?.id,
     canonRefs: [],
     transitions: [],

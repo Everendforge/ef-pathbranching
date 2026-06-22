@@ -19,6 +19,7 @@ export function exportRuntimePackage(project: BranchingProject): RuntimePackage 
     })),
     conditions: event.availability,
     canonRefs: event.canonRefs,
+    storyText: event.text,
     script: event.script,
     legacyId: event.legacyId,
     ruleSets: event.ruleSets,
@@ -30,7 +31,12 @@ export function exportRuntimePackage(project: BranchingProject): RuntimePackage 
     entryNodeId,
     canonRefs: project.canonRefs,
     variables: project.variables,
-    localization: Object.fromEntries(project.events.map((event) => [`event.${event.id}.name`, event.name])),
+    localization: Object.fromEntries(
+      project.events.flatMap((event) => [
+        [`event.${event.id}.name`, event.name],
+        ...(event.text?.content ? [[`event.${event.id}.text`, event.text.content] as const] : []),
+      ]),
+    ),
     nodes,
     pathBranching: {
       projectId: project.projectId,
@@ -39,6 +45,7 @@ export function exportRuntimePackage(project: BranchingProject): RuntimePackage 
       projectDataObjects: project.projectDataObjects,
       projectionRules: project.projectionRules,
       graphModules: project.graphModules,
+      eventCategories: project.eventCategories,
       entrySequenceId: project.entrySequenceId,
       sequences: project.sequences,
       branches: project.branches,

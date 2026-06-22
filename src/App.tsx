@@ -35,7 +35,18 @@ import {
   Sun,
   X,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type DragEvent as ReactDragEvent,
+  type MouseEvent as ReactMouseEvent,
+  type PointerEvent as ReactPointerEvent,
+  type ReactNode,
+} from "react";
 import type {
   Branch,
   BranchingProject,
@@ -44,6 +55,7 @@ import type {
   Consequence,
   DataFieldDefinition,
   Decision,
+  EventCategoryDefinition,
   EventNode,
   EventType,
   Outcome,
@@ -68,7 +80,7 @@ import {
   saveUniverseStory,
   type ProjectFileState,
 } from "./projectPersistence.js";
-import { workingCopyPathForCanonRef, type PathBranchingWorkspace } from "./pathBranchingWorkspace.js";
+import { workingCopyPathForCanonRef, type PathBranchingWorkspace, type UniverseProfile } from "./pathBranchingWorkspace.js";
 import {
   THEMES,
   isDarkTheme,
@@ -85,6 +97,7 @@ import {
   validateStoryCanvasEdges,
   type PathBranchingFileItem,
   type StoryCanvasEdge,
+  type StoryCanvasEdgeData,
   type StoryCanvasNode,
   type StoryCanvasNodeData,
 } from "./canvas/storyCanvasModel.js";
@@ -117,12 +130,19 @@ type MarkdownEditorTab = {
 };
 
 const SETTINGS_KEY = "pathbranching.settings.v1";
+const DEFAULT_PANEL_WIDTH = 282;
+const MIN_PANEL_WIDTH = 220;
+const MAX_PANEL_WIDTH = 420;
+const COLLAPSED_RAIL_WIDTH = 36;
+const NEW_SEQUENCE_SELECT_VALUE = "__new_sequence__";
 
 type PathBranchingWorkspaceSession = {
   view?: AppView;
   selection?: Selection;
   canonOpen?: boolean;
   filesOpen?: boolean;
+  canonWidth?: number;
+  storiesWidth?: number;
   exportOpen?: boolean;
   dataOpen?: boolean;
   canvasMode?: CanvasMode;
@@ -200,6 +220,11 @@ function badgeText(value: string) {
   return value.length > 22 ? `${value.slice(0, 19)}...` : value;
 }
 
+function clampPanelWidth(value: unknown) {
+  const numericValue = typeof value === "number" && Number.isFinite(value) ? value : DEFAULT_PANEL_WIDTH;
+  return Math.min(MAX_PANEL_WIDTH, Math.max(MIN_PANEL_WIDTH, Math.round(numericValue)));
+}
+
 function rememberRecentProject(settings: AppSettings, path: string): AppSettings {
   return {
     ...settings,
@@ -251,6 +276,8 @@ function normalizeWorkspaceSession(session: PathBranchingWorkspaceSession | unde
     selection: isSelection(session.selection) ? session.selection : undefined,
     canonOpen: typeof session.canonOpen === "boolean" ? session.canonOpen : undefined,
     filesOpen: typeof session.filesOpen === "boolean" ? session.filesOpen : undefined,
+    canonWidth: session.canonWidth === undefined ? undefined : clampPanelWidth(session.canonWidth),
+    storiesWidth: session.storiesWidth === undefined ? undefined : clampPanelWidth(session.storiesWidth),
     exportOpen: typeof session.exportOpen === "boolean" ? session.exportOpen : undefined,
     dataOpen: typeof session.dataOpen === "boolean" ? session.dataOpen : undefined,
     canvasMode: session.canvasMode === "branching" || session.canvasMode === "focus" ? session.canvasMode : undefined,
@@ -263,12 +290,13 @@ function normalizeWorkspaceSession(session: PathBranchingWorkspaceSession | unde
 function StoryNode({ data, selected }: NodeProps<StoryCanvasNode>) {
   const nodeData = data as StoryCanvasNodeData;
   const isFinalEvent = nodeData.kind === "event" && nodeData.badges.includes("terminal");
+  const focusClass = typeof nodeData.focusState === "string" ? ` focus-${nodeData.focusState}` : "";
   const canReceive = nodeData.kind !== "start" && nodeData.kind !== "sequence";
   const canSource = nodeData.kind === "start" || (nodeData.kind !== "sequence" && !isFinalEvent);
 
   if (nodeData.isContainer) {
     return (
-      <div className={`story-node branch-container ${selected ? "selected" : ""}`}>
+      <div className={`story-node branch-container${focusClass} ${selected ? "selected" : ""}`}>
         {canReceive ? <Handle type="target" position={Position.Left} /> : null}
         <div className="node-kind">{nodeData.kind}</div>
         <div className="node-title">{nodeData.title}</div>
@@ -286,7 +314,7 @@ function StoryNode({ data, selected }: NodeProps<StoryCanvasNode>) {
   }
 
   return (
-    <div className={`story-node ${nodeData.kind}${isFinalEvent ? " terminal" : ""}${selected ? " selected" : ""}`}>
+    <div className={`story-node ${nodeData.kind}${focusClass}${isFinalEvent ? " terminal" : ""}${selected ? " selected" : ""}`}>
       {canReceive ? <Handle type="target" position={Position.Left} /> : null}
       <div className="node-kind">{nodeData.kind}</div>
       <div className="node-title">{nodeData.title}</div>
@@ -314,6 +342,141 @@ function groupCanon(project: BranchingProject) {
     groups[kind].push(ref);
     return groups;
   }, {});
+}
+
+type CanonTreeNode = {
+  kind: "folder" | "ref";
+  name: string;
+  path: string;
+  ref?: CanonRef;
+  children: CanonTreeNode[];
+};
+
+function pathDirectory(path: string) {
+  const normalized = path.replace(/\\/g, "/");
+  const index = normalized.lastIndexOf("/");
+  return index === -1 ? "" : normalized.slice(0, index);
+}
+
+function pathBasename(path: string) {
+  return path.replace(/\\/g, "/").split("/").pop()?.replace(/\.md$/i, "") ?? path;
+}
+
+function canonRefPath(ref: CanonRef) {
+  return ref.canonSourcePath ?? ref.id;
+}
+
+function canonRefMatches(ref: CanonRef, query: string) {
+  if (!query) return true;
+  return [ref.id, ref.label, ref.kind, ref.status, ref.canonSourcePath, ref.identityWarning, ...(ref.tags ?? [])]
+    .filter(Boolean)
+    .some((value) => String(value).toLowerCase().includes(query));
+}
+
+function folderPathForFolderDescription(ref: CanonRef) {
+  if (!ref.folderDescription) return undefined;
+  const sourcePath = canonRefPath(ref).replace(/\\/g, "/");
+  const folderPath = pathDirectory(sourcePath);
+  if (folderPath) return folderPath;
+  const normalized = sourcePath.replace(/\.md$/i, "");
+  return normalized.includes("/") ? undefined : normalized;
+}
+
+function buildCanonFileTree(refs: CanonRef[]): CanonTreeNode[] {
+  const root: CanonTreeNode[] = [];
+  const folders = new Map<string, CanonTreeNode>();
+
+  const ensureFolder = (folderPath: string) => {
+    const existing = folders.get(folderPath);
+    if (existing) return existing;
+    const node: CanonTreeNode = {
+      kind: "folder",
+      name: pathBasename(folderPath),
+      path: folderPath,
+      children: [],
+    };
+    folders.set(folderPath, node);
+    const parentPath = pathDirectory(folderPath);
+    if (parentPath) {
+      ensureFolder(parentPath).children.push(node);
+    } else {
+      root.push(node);
+    }
+    return node;
+  };
+
+  refs.forEach((ref) => {
+    const describedFolder = folderPathForFolderDescription(ref);
+    if (describedFolder) {
+      const folder = ensureFolder(describedFolder);
+      folder.ref = ref;
+      return;
+    }
+
+    const refPath = canonRefPath(ref);
+    const folderPath = pathDirectory(refPath);
+    const node: CanonTreeNode = {
+      kind: "ref",
+      name: ref.label ?? pathBasename(refPath),
+      path: refPath,
+      ref,
+      children: [],
+    };
+    if (folderPath) {
+      ensureFolder(folderPath).children.push(node);
+    } else {
+      root.push(node);
+    }
+  });
+
+  const sort = (nodes: CanonTreeNode[]) => {
+    nodes.sort((a, b) => {
+      if (a.kind !== b.kind) return a.kind === "folder" ? -1 : 1;
+      return a.name.localeCompare(b.name);
+    });
+    nodes.forEach((node) => sort(node.children));
+  };
+
+  sort(root);
+  return root;
+}
+
+function groupCanonByTag(refs: CanonRef[]) {
+  return refs.reduce<Record<string, CanonRef[]>>((groups, ref) => {
+    const tags = ref.tags?.length ? ref.tags : ["_untagged"];
+    tags.forEach((tag) => {
+      groups[tag] ??= [];
+      groups[tag].push(ref);
+    });
+    return groups;
+  }, {});
+}
+
+function universeDisplayName(project?: BranchingProject, fileState?: ProjectFileState) {
+  return fileState?.universeProfile?.name ?? project?.name ?? project?.projectId ?? "No universe loaded";
+}
+
+function universeDisplayPath(fileState?: ProjectFileState) {
+  const universePath = projectFileName(fileState?.universePath ?? fileState?.path);
+  const storyPath = projectFileName(fileState?.storyPath ?? fileState?.path);
+  return [universePath, storyPath].filter(Boolean).join(" / ");
+}
+
+function UniverseIconFrame({ profile, size = 28 }: { profile?: UniverseProfile; size?: number }) {
+  const icon = profile?.icon;
+  if (icon?.type === "image" && icon.value) {
+    return (
+      <span className="pathbranching-universe-icon" style={{ width: size, height: size }}>
+        <img src={icon.value} alt="" />
+      </span>
+    );
+  }
+
+  return (
+    <span className="pathbranching-universe-icon" style={{ width: size, height: size }}>
+      {icon?.type === "preset" && icon.value ? <span className="universe-preset-icon">{icon.value.slice(0, 2).toUpperCase()}</span> : <GitBranch size={16} />}
+    </span>
+  );
 }
 
 function updateProjectCanvas(project: BranchingProject, nodes: StoryCanvasNode[]): BranchingProject {
@@ -354,6 +517,32 @@ function findEvent(project: BranchingProject, id: string): EventNode | undefined
 
 function findBranch(project: BranchingProject, id: string): Branch | undefined {
   return project.branches.find((branch) => branch.id === id);
+}
+
+function eventIdFromSelection(project: BranchingProject, nodes: StoryCanvasNode[], selection?: Selection): string | undefined {
+  if (!selection) return undefined;
+  if (selection.type === "node") {
+    if (findEvent(project, selection.id)) return selection.id;
+    const selectedNode = nodes.find((node) => node.id === selection.id);
+    const detailEventId = selectedNode?.data.details?.eventId;
+    return typeof detailEventId === "string" && findEvent(project, detailEventId) ? detailEventId : undefined;
+  }
+  if (selection.type === "file" && selection.id.startsWith("file:event:")) {
+    const eventId = selection.id.slice("file:event:".length);
+    return findEvent(project, eventId) ? eventId : undefined;
+  }
+  return undefined;
+}
+
+function storyExplorerSelectionId(project: BranchingProject, selection?: Selection) {
+  if (selection?.type === "file") return selection.id;
+  if (selection?.type === "dataObject") return `file:data-object:${selection.id}`;
+  if (selection?.type === "node") {
+    if (project.sequences.some((sequence) => sequence.id === selection.id)) return `file:sequence:${selection.id}`;
+    if (project.branches.some((branch) => branch.id === selection.id)) return `file:branch:${selection.id}`;
+    if (project.events.some((event) => event.id === selection.id)) return `file:event:${selection.id}`;
+  }
+  return `file:sequence:${activeSequenceId(project) ?? ""}`;
 }
 
 function slugify(value: string) {
@@ -411,47 +600,55 @@ function isPointInside(node: StoryCanvasNode, x: number, y: number) {
   return x >= node.position.x && x <= node.position.x + width && y >= node.position.y && y <= node.position.y + height;
 }
 
-function focusedGraph(nodes: StoryCanvasNode[], edges: StoryCanvasEdge[], focusNodeId: string | undefined) {
+function canvasGraph(
+  nodes: StoryCanvasNode[],
+  edges: StoryCanvasEdge[],
+  mode: CanvasMode,
+  focusNodeId: string | undefined,
+) {
+  if (mode === "branching") {
+    const visibleKinds = new Set<StoryCanvasNodeData["kind"]>(["sequence", "start", "branch", "event"]);
+    const visibleEdgeKinds = new Set<StoryCanvasEdgeData["kind"]>(["entry", "transition"]);
+    const visibleNodes = nodes.filter((node) => visibleKinds.has(node.data.kind));
+    const visibleIds = new Set(visibleNodes.map((node) => node.id));
+    return {
+      nodes: visibleNodes,
+      edges: edges.filter((edgeItem) => {
+        const kind = edgeItem.data?.kind;
+        return Boolean(kind && visibleEdgeKinds.has(kind) && visibleIds.has(edgeItem.source) && visibleIds.has(edgeItem.target));
+      }),
+    };
+  }
+
   if (!focusNodeId || !nodes.some((node) => node.id === focusNodeId)) {
     return { nodes, edges };
   }
 
-  const ids = new Set([focusNodeId]);
-  const componentKinds = new Set(["contains", "choice", "condition", "consequence", "transition", "entry"]);
-
-  for (let depth = 0; depth < 6; depth += 1) {
-    let changed = false;
-    edges.forEach((edgeItem) => {
-      const kind = edgeItem.data?.kind;
-      if (!kind || !componentKinds.has(kind)) {
-        return;
-      }
-      if (ids.has(edgeItem.source) || ids.has(edgeItem.target)) {
-        if (!ids.has(edgeItem.source)) {
-          ids.add(edgeItem.source);
-          changed = true;
-        }
-        if (!ids.has(edgeItem.target)) {
-          ids.add(edgeItem.target);
-          changed = true;
-        }
-      }
-    });
-    if (!changed) {
-      break;
-    }
-  }
-
+  const adjacentIds = new Set<string>();
   edges.forEach((edgeItem) => {
-    if ((edgeItem.data?.kind === "entry" || edgeItem.data?.kind === "transition") && (edgeItem.source === focusNodeId || edgeItem.target === focusNodeId)) {
-      ids.add(edgeItem.source);
-      ids.add(edgeItem.target);
-    }
+    if (edgeItem.source === focusNodeId) adjacentIds.add(edgeItem.target);
+    if (edgeItem.target === focusNodeId) adjacentIds.add(edgeItem.source);
   });
 
   return {
-    nodes: nodes.filter((node) => ids.has(node.id)),
-    edges: edges.filter((edgeItem) => ids.has(edgeItem.source) && ids.has(edgeItem.target)),
+    nodes: nodes.map((node) => ({
+      ...node,
+      data: {
+        ...node.data,
+        focusState: node.id === focusNodeId ? "focused" : adjacentIds.has(node.id) ? "adjacent" : "dimmed",
+      },
+    })),
+    edges: edges.map((edgeItem) => {
+      const direct = edgeItem.source === focusNodeId || edgeItem.target === focusNodeId;
+      return {
+        ...edgeItem,
+        animated: direct || edgeItem.animated,
+        style: {
+          ...edgeItem.style,
+          opacity: direct ? 1 : 0.22,
+        },
+      };
+    }),
   };
 }
 
@@ -930,6 +1127,90 @@ function RuleSetEditor({
   );
 }
 
+function CanonRefsPicker({
+  title = "Canon Refs",
+  value,
+  canonRefs,
+  onChange,
+}: {
+  title?: string;
+  value?: string[];
+  canonRefs: CanonRef[];
+  onChange: (value: string[] | undefined) => void;
+}) {
+  const [query, setQuery] = useState("");
+  const refs = value ?? [];
+  const refSet = new Set(refs);
+  const normalizedQuery = query.trim().toLowerCase();
+  const matches = normalizedQuery
+    ? canonRefs
+        .filter((ref) =>
+          [ref.id, ref.label, ref.kind, ref.canonSourcePath]
+            .filter(Boolean)
+            .some((candidate) => String(candidate).toLowerCase().includes(normalizedQuery)),
+        )
+        .slice(0, 24)
+    : [];
+  const addRef = (id: string) => {
+    if (!id || refSet.has(id)) return;
+    onChange([...refs, id]);
+    setQuery("");
+  };
+  const removeRef = (id: string) => {
+    const nextRefs = refs.filter((ref) => ref !== id);
+    onChange(nextRefs.length ? nextRefs : undefined);
+  };
+
+  return (
+    <div
+      className="inspector-section canon-ref-dropzone"
+      onDragOver={(event) => {
+        if (event.dataTransfer.types.includes("application/x-pathbranching-canon-ref") || event.dataTransfer.types.includes("text/plain")) {
+          event.preventDefault();
+          event.dataTransfer.dropEffect = "copy";
+        }
+      }}
+      onDrop={(event) => {
+        const id =
+          event.dataTransfer.getData("application/x-pathbranching-canon-ref") ||
+          event.dataTransfer.getData("text/plain");
+        if (!id) return;
+        event.preventDefault();
+        addRef(id.trim());
+      }}
+    >
+      <h2>{title}</h2>
+      <div className="canon-ref-search">
+        <input
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+          placeholder="Search or drop canon ref"
+          aria-label={`Search ${title}`}
+        />
+        {normalizedQuery ? (
+          <div className="canon-ref-results">
+            {matches.map((ref) => (
+              <button key={ref.id} type="button" disabled={refSet.has(ref.id)} onClick={() => addRef(ref.id)}>
+                <strong>{ref.label ?? ref.id}</strong>
+                <span>{ref.kind ?? "canon"}</span>
+              </button>
+            ))}
+            {matches.length === 0 ? <span className="empty-line">No canon refs found.</span> : null}
+          </div>
+        ) : null}
+      </div>
+      <div className="tag-list canon-ref-chips">
+        {refs.map((ref) => (
+          <button key={ref} type="button" onClick={() => removeRef(ref)} title="Remove canon ref">
+            {canonRefs.find((canonRef) => canonRef.id === ref)?.label ?? ref}
+          </button>
+        ))}
+        {refs.length === 0 ? <span className="empty-line">Drop canon refs here or search to add them.</span> : null}
+      </div>
+    </div>
+  );
+}
+
 function Topbar({
   project,
   fileState,
@@ -981,9 +1262,8 @@ function Topbar({
 }) {
   const errorCount = findings.filter((finding) => finding.severity === "error").length;
   const status = findings.length === 0 ? "Clean" : `${findings.length} findings`;
-  const universeName = project?.name ?? project?.projectId ?? "No universe loaded";
-  const universePath = projectFileName(fileState?.universePath ?? fileState?.path);
-  const storyPath = projectFileName(fileState?.storyPath ?? fileState?.path);
+  const universeName = universeDisplayName(project, fileState);
+  const universePath = universeDisplayPath(fileState);
 
   return (
     <header className="topbar dock-top-bar pathbranching-topbar" aria-label="Workspace controls">
@@ -1001,13 +1281,11 @@ function Topbar({
         <div className="dock-top-divider" />
 
         <button type="button" className="dock-universe-button" onClick={onOpenSettings} title="Universe settings">
-          <span className="pathbranching-universe-icon" aria-hidden="true">
-            <GitBranch size={16} />
-          </span>
+          <UniverseIconFrame profile={fileState?.universeProfile} />
           <span className="dock-universe-copy">
             <strong>{universeName}</strong>
             <span>
-              {universePath}{storyPath ? ` / ${storyPath}` : ""}
+              {universePath || "Open a universe"}
               {fileState?.dirty ? " *" : ""}
             </span>
           </span>
@@ -1297,12 +1575,93 @@ function DiscardChangesDialog({
 
 type PathBranchingSettingsSection = "overview" | "authoring" | "markdown" | "workspace" | "recents";
 
+function EventCategoriesSettings({
+  categories,
+  usedCategoryIds,
+  onChange,
+}: {
+  categories: EventCategoryDefinition[];
+  usedCategoryIds: Set<string>;
+  onChange: (categories: EventCategoryDefinition[]) => void;
+}) {
+  const fixedCategoryIds = new Set(["normal", "final"]);
+  const updateCategory = (id: string, updates: Partial<EventCategoryDefinition>) => {
+    onChange(
+      categories.map((category) =>
+        category.id === id
+          ? {
+              ...category,
+              ...updates,
+              terminal: category.id === "final" ? true : category.id === "normal" ? false : updates.terminal ?? category.terminal,
+            }
+          : category,
+      ),
+    );
+  };
+  const addCategory = () => {
+    const id = uniqueId("custom", categories.map((category) => category.id));
+    onChange([...categories, { id, label: "Custom" }]);
+  };
+  const deleteCategory = (id: string) => {
+    if (fixedCategoryIds.has(id) || usedCategoryIds.has(id)) return;
+    onChange(categories.filter((category) => category.id !== id));
+  };
+
+  return (
+    <section className="settings-subsection">
+      <div className="settings-page-title compact">
+        <h3>Event categories</h3>
+        <p>Project-level categories used by event nodes. Terminal categories cannot create outgoing transitions.</p>
+      </div>
+      <div className="settings-category-list">
+        {categories.map((category) => {
+          const isFixed = fixedCategoryIds.has(category.id);
+          const isUsed = usedCategoryIds.has(category.id);
+          return (
+            <div className="mini-card category-editor" key={category.id}>
+              <label className="field-label">
+                Label
+                <input value={category.label} onChange={(event) => updateCategory(category.id, { label: event.target.value })} />
+              </label>
+              <label className="checkbox-label">
+                <input
+                  type="checkbox"
+                  checked={Boolean(category.terminal)}
+                  disabled={category.id === "final" || category.id === "normal"}
+                  onChange={(event) => updateCategory(category.id, { terminal: event.target.checked })}
+                />
+                Terminal
+              </label>
+              <span>{category.id}{isUsed ? " - in use" : ""}</span>
+              <button
+                type="button"
+                className="danger"
+                disabled={isFixed || isUsed}
+                title={isFixed ? "Default categories cannot be deleted." : isUsed ? "Category is used by one or more events." : "Delete category"}
+                onClick={() => deleteCategory(category.id)}
+              >
+                Delete
+              </button>
+            </div>
+          );
+        })}
+      </div>
+      <div className="inspector-actions">
+        <button type="button" onClick={addCategory}>
+          Add Category
+        </button>
+      </div>
+    </section>
+  );
+}
+
 function PathBranchingSettingsModal({
   project,
   fileState,
   settings,
   findings,
   theme,
+  onUpdateEventCategories,
   onThemeChange,
   onToggleTheme,
   onOpenUniverse,
@@ -1315,6 +1674,7 @@ function PathBranchingSettingsModal({
   settings: AppSettings;
   findings: ValidationFinding[];
   theme: ThemeId;
+  onUpdateEventCategories: (categories: EventCategoryDefinition[]) => void;
   onThemeChange: (theme: ThemeId) => void;
   onToggleTheme: () => void;
   onOpenUniverse: () => void;
@@ -1325,6 +1685,8 @@ function PathBranchingSettingsModal({
   const [activeSection, setActiveSection] = useState<PathBranchingSettingsSection>(project ? "overview" : "workspace");
   const errorCount = findings.filter((finding) => finding.severity === "error").length;
   const warningCount = findings.filter((finding) => finding.severity === "warning").length;
+  const universeName = universeDisplayName(project, fileState);
+  const universePath = universeDisplayPath(fileState);
 
   return (
     <div className="settings-backdrop" role="dialog" aria-modal="true" aria-label="PathBranching settings">
@@ -1332,7 +1694,7 @@ function PathBranchingSettingsModal({
         <header className="settings-header">
           <div>
             <p className="eyebrow">{project ? "Universe settings" : "Application settings"}</p>
-            <h2>{project?.name ?? "PathBranching"}</h2>
+            <h2>{project ? universeName : "PathBranching"}</h2>
           </div>
           <button type="button" onClick={onClose} title="Close settings">
             <X size={16} />
@@ -1373,9 +1735,26 @@ function PathBranchingSettingsModal({
           <section className="settings-section">
             {activeSection === "overview" ? (
               <div className="settings-panel">
-                <div className="settings-page-title">
-                  <h3>{project?.name ?? "No universe loaded"}</h3>
-                  <p>{fileState.universePath ?? "Open a universe folder to begin."}</p>
+                <div className="settings-page-title universe-profile-summary">
+                  <UniverseIconFrame profile={fileState.universeProfile} size={42} />
+                  <div>
+                    <h3>{universeName}</h3>
+                    <p>{fileState.universePath ?? "Open a universe folder to begin."}</p>
+                  </div>
+                </div>
+                <div className="settings-grid">
+                  <label>
+                    <span>Universe metadata</span>
+                    <input value={fileState.universeProfile ? ".everend/universe.json" : "No WorldNotion metadata found"} readOnly />
+                  </label>
+                  <label>
+                    <span>Universe profile</span>
+                    <input value={fileState.universeProfile?.name ?? "Unnamed universe"} readOnly />
+                  </label>
+                  <label>
+                    <span>Taxonomy version</span>
+                    <input value={fileState.universeProfile?.taxonomyVersion ?? "Not specified"} readOnly />
+                  </label>
                 </div>
                 <div className="universe-stats">
                   <div>
@@ -1412,7 +1791,7 @@ function PathBranchingSettingsModal({
               <div className="settings-panel">
                 <div className="settings-page-title">
                   <h3>Branching authoring</h3>
-                  <p>PathBranching stores story graph data inside `.everend/.pathbranching`.</p>
+                  <p>{universePath || "PathBranching stores story graph data inside `.everend/.pathbranching`."}</p>
                 </div>
                 <div className="settings-grid">
                   <label>
@@ -1428,6 +1807,13 @@ function PathBranchingSettingsModal({
                     <input value={fileState.dirty ? "Yes" : "No"} readOnly />
                   </label>
                 </div>
+                {project ? (
+                  <EventCategoriesSettings
+                    categories={project.eventCategories ?? []}
+                    usedCategoryIds={new Set(project.events.map((event) => event.type))}
+                    onChange={onUpdateEventCategories}
+                  />
+                ) : null}
               </div>
             ) : null}
 
@@ -1531,14 +1917,44 @@ function PanelShell({
   open,
   railLabel,
   onToggle,
+  resizable,
+  onResize,
+  onResetWidth,
+  onResizeStateChange,
   children,
 }: {
   title: string;
   open: boolean;
   railLabel: string;
   onToggle: () => void;
+  resizable?: boolean;
+  onResize?: (width: number) => void;
+  onResetWidth?: () => void;
+  onResizeStateChange?: (resizing: boolean) => void;
   children: ReactNode;
 }) {
+  const startResize = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    if (!resizable || !onResize) return;
+    event.preventDefault();
+    const startX = event.clientX;
+    const startWidth = event.currentTarget.closest(".side-panel")?.getBoundingClientRect().width ?? DEFAULT_PANEL_WIDTH;
+    onResizeStateChange?.(true);
+
+    const move = (moveEvent: PointerEvent) => {
+      onResize(startWidth + moveEvent.clientX - startX);
+    };
+    const end = () => {
+      onResizeStateChange?.(false);
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", end);
+      window.removeEventListener("pointercancel", end);
+    };
+
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", end);
+    window.addEventListener("pointercancel", end);
+  };
+
   if (!open) {
     return (
       <aside className="side-rail">
@@ -1560,6 +1976,16 @@ function PanelShell({
         </button>
       </div>
       {children}
+      {resizable ? (
+        <button
+          type="button"
+          className="resize-handle"
+          aria-label={`Resize ${title}`}
+          title={`Resize ${title}`}
+          onPointerDown={startResize}
+          onDoubleClick={onResetWidth}
+        />
+      ) : null}
     </aside>
   );
 }
@@ -1569,88 +1995,336 @@ function CanonPanel({
   open,
   selectedId,
   onToggle,
+  onResize,
+  onResetWidth,
+  onResizeStateChange,
   onSelect,
 }: {
   project: BranchingProject;
   open: boolean;
   selectedId?: string;
   onToggle: () => void;
+  onResize: (width: number) => void;
+  onResetWidth: () => void;
+  onResizeStateChange: (resizing: boolean) => void;
   onSelect: (id: string) => void;
 }) {
-  const groups = groupCanon(project);
+  const [query, setQuery] = useState("");
+  const [expandedFolders, setExpandedFolders] = useState<Record<string, boolean>>({});
+  const normalizedQuery = query.trim().toLowerCase();
+  const filteredRefs = project.canonRefs.filter((ref) => {
+    return canonRefMatches(ref, normalizedQuery);
+  });
+  const fileTree = buildCanonFileTree(filteredRefs);
+
+  const dragProps = (ref: CanonRef) => ({
+    draggable: true,
+    onDragStart: (event: ReactDragEvent<HTMLButtonElement>) => {
+      event.dataTransfer.setData("application/x-pathbranching-canon-ref", ref.id);
+      event.dataTransfer.setData("text/plain", ref.id);
+      event.dataTransfer.effectAllowed = "copy";
+    },
+  });
+
+  const renderRefButton = (ref: CanonRef) => (
+    <button
+      className={`list-item explorer-item canon-file-item ${selectedId === ref.id ? "active" : ""}`}
+      type="button"
+      key={ref.id}
+      {...dragProps(ref)}
+      onClick={() => onSelect(ref.id)}
+      title={canonRefPath(ref)}
+    >
+      <span className="explorer-item-title">
+        <strong>
+          {ref.missingIdentity ? <span className="canon-warning-mark" title={ref.identityWarning ?? "Missing canon identity"}>!</span> : null}
+          {ref.label ?? pathBasename(canonRefPath(ref))}
+        </strong>
+        {ref.missingIdentity ? <em>no id</em> : null}
+        {ref.folderDescription ? <em>folder note</em> : null}
+        {ref.workingCopyPath ? <em>draft</em> : null}
+      </span>
+    </button>
+  );
+
+  const renderTreeNodes = (nodes: CanonTreeNode[], depth = 0): ReactNode =>
+    nodes.map((node) => {
+      if (node.kind === "ref" && node.ref) {
+        return (
+          <div className="canon-tree-row" style={{ "--depth": depth } as CSSProperties} key={node.path}>
+            {renderRefButton(node.ref)}
+          </div>
+        );
+      }
+
+      const expanded = expandedFolders[node.path] ?? true;
+      const toggleExpanded = () => setExpandedFolders((current) => ({ ...current, [node.path]: !expanded }));
+      return (
+        <div className="canon-tree-folder" key={node.path}>
+          <button
+            type="button"
+            className={`canon-folder-button ${node.ref && selectedId === node.ref.id ? "active" : ""}`}
+            style={{ "--depth": depth } as CSSProperties}
+            {...(node.ref ? dragProps(node.ref) : {})}
+            onClick={() => {
+              if (node.ref) {
+                onSelect(node.ref.id);
+                return;
+              }
+              toggleExpanded();
+            }}
+            title={node.ref ? canonRefPath(node.ref) : node.path}
+          >
+            <span
+              aria-hidden="true"
+              onClick={(event) => {
+                event.stopPropagation();
+                toggleExpanded();
+              }}
+            >
+              {expanded ? "v" : ">"}
+            </span>
+            <strong>{node.name}</strong>
+            {node.ref?.missingIdentity ? <em>! no id</em> : null}
+            {node.ref ? <em>folder note</em> : null}
+            {node.ref?.workingCopyPath ? <em>draft</em> : null}
+          </button>
+          {expanded ? renderTreeNodes(node.children, depth + 1) : null}
+        </div>
+      );
+    });
 
   return (
-    <PanelShell title="Canon" open={open} railLabel="Canon" onToggle={onToggle}>
+    <PanelShell
+      title="Canon"
+      open={open}
+      railLabel="Canon"
+      onToggle={onToggle}
+      resizable
+      onResize={onResize}
+      onResetWidth={onResetWidth}
+      onResizeStateChange={onResizeStateChange}
+    >
+      <div className="explorer-toolbar">
+        <input
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+          placeholder="Search canon"
+          aria-label="Search canon refs"
+        />
+        <span>{filteredRefs.length}/{project.canonRefs.length}</span>
+      </div>
       <div className="panel-scroll">
-        {Object.entries(groups).map(([kind, refs]) => (
-          <section className="panel-group" key={kind}>
-            <h2>
-              {kind}
-              <span>{refs.length}</span>
-            </h2>
-            <div className="panel-list">
-              {refs.map((ref) => (
-                <button
-                  className={`list-item ${selectedId === ref.id ? "active" : ""}`}
-                  type="button"
-                  key={ref.id}
-                  onClick={() => onSelect(ref.id)}
-                >
-                  <strong>{ref.id}</strong>
-                  <span>{ref.source ?? "unknown source"}</span>
-                </button>
-              ))}
-            </div>
-          </section>
-        ))}
+        <section className="panel-group canon-file-tree">
+          {fileTree.length ? renderTreeNodes(fileTree) : <span className="empty-line">No canon files match this search.</span>}
+        </section>
       </div>
     </PanelShell>
   );
 }
 
+type StoryExplorerItem = {
+  id: string;
+  label: string;
+  detail?: string;
+  badges?: string[];
+};
+
+type StoryExplorerSection = {
+  id: string;
+  label: string;
+  items: StoryExplorerItem[];
+};
+
+function buildStoryExplorerSections(project: BranchingProject): StoryExplorerSection[] {
+  const sequenceId = activeSequenceId(project);
+  const activeSequence = sequenceId ? findSequence(project, sequenceId) : undefined;
+  const activeEventIds = new Set(activeSequence?.eventIds ?? []);
+  const sequenceEvents = project.events.filter((event) => activeEventIds.has(event.id));
+  const declaredBranchIds = new Set(activeSequence?.branchIds ?? []);
+  const sequenceBranches = project.branches.filter((branch) => declaredBranchIds.has(branch.id) || branch.eventIds.some((eventId) => activeEventIds.has(eventId)));
+  const activeBranchIds = new Set([...(activeSequence?.branchIds ?? []), ...sequenceBranches.map((branch) => branch.id)]);
+  return [
+    {
+      id: "sequence",
+      label: "Active Sequence",
+      items: activeSequence
+        ? [
+            {
+              id: `file:sequence:${activeSequence.id}`,
+              label: activeSequence.name,
+              detail: activeSequence.entryEventId ? `entry ${activeSequence.entryEventId}` : "no entry event",
+              badges: [
+                activeSequence.id === project.entrySequenceId ? "entry" : "",
+                `${activeSequence.branchIds?.length ?? 0} branches`,
+                `${activeSequence.eventIds.length} events`,
+              ].filter(Boolean),
+            },
+          ]
+        : [],
+    },
+    {
+      id: "branches",
+      label: "Branches",
+      items: sequenceBranches.map((branch) => ({
+        id: `file:branch:${branch.id}`,
+        label: branch.title,
+        detail: branch.description || branch.id,
+        badges: [`${branch.eventIds.filter((eventId) => activeEventIds.has(eventId)).length} events`],
+      })),
+    },
+    {
+      id: "events",
+      label: "Events",
+      items: sequenceEvents.map((event) => ({
+        id: `file:event:${event.id}`,
+        label: event.name,
+        detail: event.script?.sourcePath || event.branchRef || event.id,
+        badges: [event.type, event.script ? "ink" : "", event.canonRefs?.length ? `${event.canonRefs.length} refs` : ""].filter(Boolean),
+      })),
+    },
+    {
+      id: "scripts",
+      label: "Scripts",
+      items: project.scripts
+        .filter((script) =>
+          sequenceEvents.some((event) => event.script ? event.script.id === script.id || Boolean(event.script.sourcePath && event.script.sourcePath === script.sourcePath) : false),
+        )
+        .map((script) => ({
+          id: `file:script:${script.id}`,
+          label: script.id,
+          detail: script.sourcePath ?? script.entrySection ?? script.format,
+          badges: [script.format],
+        })),
+    },
+    {
+      id: "data",
+      label: "Data Objects",
+      items: (project.projectDataObjects ?? [])
+        .filter((dataObject) => {
+          const scope = dataObject.scope;
+          return !scope || scope.global || scope.sequenceId === activeSequence?.id || (scope.branchId ? activeBranchIds.has(scope.branchId) : false) || (scope.eventId ? activeEventIds.has(scope.eventId) : false);
+        })
+        .map((dataObject) => ({
+          id: `file:data-object:${dataObject.id}`,
+          label: dataObject.name,
+          detail: dataObject.classId,
+          badges: [dataObject.scope?.global ? "global" : "", dataObject.canonRefs?.length ? `${dataObject.canonRefs.length} refs` : ""].filter(Boolean),
+        })),
+    },
+  ].filter((section) => section.items.length > 0);
+}
+
 function FilesPanel({
+  project,
   files,
   open,
   selectedId,
   onToggle,
+  onResize,
+  onResetWidth,
+  onResizeStateChange,
+  onSequenceChange,
+  onCreateSequence,
   onSelect,
 }: {
+  project: BranchingProject;
   files: PathBranchingFileItem[];
   open: boolean;
   selectedId?: string;
   onToggle: () => void;
+  onResize: (width: number) => void;
+  onResetWidth: () => void;
+  onResizeStateChange: (resizing: boolean) => void;
+  onSequenceChange: (id: string) => void;
+  onCreateSequence: () => void;
   onSelect: (id: string) => void;
 }) {
-  const groups = files.reduce<Record<string, PathBranchingFileItem[]>>((acc, file) => {
-    acc[file.group] ??= [];
-    acc[file.group].push(file);
-    return acc;
-  }, {});
+  const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
+  const currentSequenceId = activeSequenceId(project) ?? "";
+  const activeSequence = currentSequenceId ? findSequence(project, currentSequenceId) : undefined;
+  const sections = buildStoryExplorerSections(project);
+  const totalItems = sections.reduce((total, section) => total + section.items.length, 0);
 
   return (
-    <PanelShell title="PathBranching Files" open={open} railLabel="Files" onToggle={onToggle}>
+    <PanelShell
+      title="Stories"
+      open={open}
+      railLabel="Stories"
+      onToggle={onToggle}
+      resizable
+      onResize={onResize}
+      onResetWidth={onResetWidth}
+      onResizeStateChange={onResizeStateChange}
+    >
+      <div className="stories-sequence-toolbar">
+        <label>
+          <span>Sequence</span>
+          <select
+            value={currentSequenceId}
+            onChange={(event) => {
+              if (event.target.value === NEW_SEQUENCE_SELECT_VALUE) {
+                onCreateSequence();
+                return;
+              }
+              onSequenceChange(event.target.value);
+            }}
+            aria-label="Select active sequence"
+          >
+            {project.sequences.map((sequence) => (
+              <option key={sequence.id} value={sequence.id}>
+                {sequence.name}
+              </option>
+            ))}
+            <option value={NEW_SEQUENCE_SELECT_VALUE}>Create new sequence...</option>
+          </select>
+        </label>
+        <button type="button" onClick={onCreateSequence}>
+          New
+        </button>
+        <p>
+          {activeSequence ? `${activeSequence.eventIds.length} events` : "No sequence loaded"}
+          {totalItems ? ` / ${totalItems} files` : ""}
+        </p>
+      </div>
       <div className="panel-scroll">
-        {Object.entries(groups).map(([group, items]) => (
-          <section className="panel-group" key={group}>
-            <h2>
-              {group}
-              <span>{items.length}</span>
-            </h2>
-            <div className="panel-list">
-              {items.map((item) => (
-                <button
-                  className={`list-item ${selectedId === item.id ? "active" : ""}`}
-                  type="button"
-                  key={item.id}
-                  onClick={() => onSelect(item.id)}
-                >
-                  <strong>{item.label}</strong>
-                  {item.detail ? <span>{item.detail}</span> : null}
-                </button>
-              ))}
-            </div>
+        {sections.map((section) => (
+          <section className="panel-group" key={section.id}>
+            <button
+              className="explorer-section-heading"
+              type="button"
+              onClick={() => setCollapsedGroups((current) => ({ ...current, [section.id]: !current[section.id] }))}
+            >
+              <span>{collapsedGroups[section.id] ? ">" : "v"} {section.label}</span>
+              <span>{section.items.length}</span>
+            </button>
+            {!collapsedGroups[section.id] ? (
+              <div className="panel-list">
+                {section.items.map((item) => (
+                  <button
+                    className={`list-item explorer-item ${selectedId === item.id ? "active" : ""}`}
+                    type="button"
+                    key={item.id}
+                    onClick={() => onSelect(item.id)}
+                  >
+                    <span className="explorer-item-title">
+                      <strong>{item.label}</strong>
+                    </span>
+                    {item.detail ? <span>{item.detail}</span> : null}
+                    {item.badges?.length ? (
+                      <span className="explorer-meta">
+                        {item.badges.map((badge) => (
+                          <small key={badge}>{badge}</small>
+                        ))}
+                      </span>
+                    ) : null}
+                  </button>
+                ))}
+              </div>
+            ) : null}
           </section>
         ))}
+        {totalItems === 0 ? <span className="empty-line">No story objects match this search.</span> : null}
       </div>
     </PanelShell>
   );
@@ -1789,6 +2463,108 @@ function MarkdownEditorDock({
   );
 }
 
+function EventAuthoringDock({
+  project,
+  nodes,
+  selection,
+  onSelect,
+  onUpdateEvent,
+  children,
+}: {
+  project: BranchingProject;
+  nodes: StoryCanvasNode[];
+  selection?: Selection;
+  onSelect: (selection?: Selection) => void;
+  onUpdateEvent: (id: string, updates: Partial<EventNode>) => void;
+  children: ReactNode;
+}) {
+  const [collapsed, setCollapsed] = useState(false);
+  const currentSequence = project.sequences.find((sequence) => sequence.id === activeSequenceId(project));
+  const eventIds = new Set(currentSequence?.eventIds ?? []);
+  const eventTabs = project.events.filter((event) => eventIds.has(event.id));
+  const selectedEventId = eventIdFromSelection(project, nodes, selection);
+  const activeEvent =
+    (selectedEventId ? project.events.find((event) => event.id === selectedEventId) : undefined) ??
+    (currentSequence?.entryEventId ? project.events.find((event) => event.id === currentSequence.entryEventId) : undefined) ??
+    eventTabs[0];
+
+  return (
+    <aside className={`event-authoring-dock ${collapsed ? "collapsed" : ""}`} aria-label="Event authoring dock">
+      <div className="event-dock-tabs" role="tablist" aria-label="Sequence events">
+        <button
+          type="button"
+          className="event-dock-toggle"
+          title={collapsed ? "Open event dock" : "Collapse event dock"}
+          onClick={() => setCollapsed((value) => !value)}
+        >
+          {collapsed ? "<" : ">"}
+        </button>
+        {eventTabs.map((event) => (
+          <button
+            type="button"
+            role="tab"
+            aria-selected={activeEvent?.id === event.id}
+            className={`event-tab-button ${activeEvent?.id === event.id ? "active" : ""}`}
+            key={event.id}
+            title={event.name}
+            onClick={() => {
+              setCollapsed(false);
+              onSelect({ type: "node", id: event.id });
+            }}
+          >
+            <span>{event.name}</span>
+            {event.type === "final" ? <i>final</i> : null}
+          </button>
+        ))}
+      </div>
+
+      {!collapsed ? (
+        <div className="event-dock-panels">
+          <div className="event-dock-inspector">{children}</div>
+          <section className="event-editor-panel" aria-label="Event text editor">
+            <div className="event-editor-header">
+              <div>
+                <strong>{activeEvent?.name ?? "No event selected"}</strong>
+                <span>{activeEvent ? `${activeEvent.type} event` : "Create or select an event to write."}</span>
+              </div>
+              {activeEvent ? (
+                <select
+                  value={activeEvent.text?.format ?? "plain"}
+                  title="Story text format"
+                  onChange={(event) =>
+                    onUpdateEvent(activeEvent.id, {
+                      text: { format: event.target.value, content: activeEvent.text?.content ?? "" },
+                    })
+                  }
+                >
+                  <option value="plain">plain</option>
+                  <option value="ink">ink</option>
+                  <option value="harlowe">harlowe</option>
+                  <option value="sugarcube">sugarcube</option>
+                </select>
+              ) : null}
+            </div>
+            {activeEvent ? (
+              <textarea
+                spellCheck
+                value={activeEvent.text?.content ?? ""}
+                placeholder="Write the playable event text here."
+                onChange={(event) =>
+                  onUpdateEvent(activeEvent.id, {
+                    text: { format: activeEvent.text?.format ?? "plain", content: event.target.value },
+                  })
+                }
+              />
+            ) : (
+              <div className="event-editor-empty">No event available in this sequence.</div>
+            )}
+          </section>
+        </div>
+      ) : null}
+    </aside>
+  );
+}
+
 function Inspector({
   project,
   nodes,
@@ -1798,6 +2574,7 @@ function Inspector({
   findings,
   exportOpen,
   exportPreviewMode,
+  embedded = false,
   onExportPreviewModeChange,
   onClose,
   onUpdateSequence,
@@ -1815,6 +2592,7 @@ function Inspector({
   onDeleteTransition,
   onUpdateDataObject,
   onDeleteDataObject,
+  onEditCanonRef,
   onUpdateEdgeLabel,
   onDeleteSelection,
 }: {
@@ -1826,6 +2604,7 @@ function Inspector({
   findings: ValidationFinding[];
   exportOpen: boolean;
   exportPreviewMode: ExportPreviewMode;
+  embedded?: boolean;
   onExportPreviewModeChange: (mode: ExportPreviewMode) => void;
   onClose: () => void;
   onUpdateSequence: (id: string, updates: Partial<Sequence>) => void;
@@ -1843,6 +2622,7 @@ function Inspector({
   onDeleteTransition: (transitionId: string) => void;
   onUpdateDataObject: (id: string, updates: Partial<ProjectDataObject>) => void;
   onDeleteDataObject: (id: string) => void;
+  onEditCanonRef: (ref: CanonRef) => void;
   onUpdateEdgeLabel: (edgeId: string, label: string) => void;
   onDeleteSelection: (selection: Selection) => void;
 }) {
@@ -1893,10 +2673,11 @@ function Inspector({
     ? project.dataClasses?.find((dataClass) => dataClass.id === selectedDataObject.classId)
     : undefined;
   const canonRefIds = project.canonRefs.map((canonRef) => canonRef.id);
+  const eventCategories = project.eventCategories ?? [];
   const dataObjects = project.projectDataObjects ?? [];
 
   return (
-    <aside className="canvas-inspector">
+    <aside className={`canvas-inspector ${embedded ? "embedded" : ""}`}>
       <div className="inspector-header">
         <div>
           <strong>Inspector</strong>
@@ -2042,11 +2823,13 @@ function Inspector({
                 <input value={event.name} onChange={(inputEvent) => onUpdateEvent(event.id, { name: inputEvent.target.value })} />
               </label>
               <label className="field-label">
-                Type
+                Category
                 <select value={event.type} onChange={(inputEvent) => onUpdateEvent(event.id, { type: inputEvent.target.value })}>
-                  <option value="normal">normal</option>
-                  <option value="exploration">exploration</option>
-                  <option value="final">final</option>
+                  {eventCategories.map((category) => (
+                    <option key={category.id} value={category.id}>
+                      {category.label}{category.terminal ? " (terminal)" : ""}
+                    </option>
+                  ))}
                 </select>
               </label>
               <dl>
@@ -2065,29 +2848,11 @@ function Inspector({
               </dl>
             </section>
 
-            <section className="inspector-section">
-              <h2>Canon Refs</h2>
-              <label className="field-label">
-                Refs
-                <textarea
-                  value={(event.canonRefs ?? []).join(", ")}
-                  rows={3}
-                  onChange={(inputEvent) =>
-                    onUpdateEvent(event.id, {
-                      canonRefs: inputEvent.target.value
-                        .split(",")
-                        .map((value) => value.trim())
-                        .filter(Boolean),
-                    })
-                  }
-                />
-              </label>
-              <div className="tag-list">
-                {(event.canonRefs ?? []).map((ref) => (
-                  <span key={ref}>{canonDisplay(project, ref)}</span>
-                ))}
-              </div>
-            </section>
+            <CanonRefsPicker
+              value={event.canonRefs}
+              canonRefs={project.canonRefs}
+              onChange={(canonRefs) => onUpdateEvent(event.id, { canonRefs })}
+            />
 
             <section className="inspector-section">
               <h2>Script</h2>
@@ -2329,21 +3094,16 @@ function Inspector({
                   }
                 />
               </label>
-              <label className="field-label">
-                Required Canon Refs
-                <textarea
-                  value={(selectedOutcomeContext.outcome!.requiredCanonRefs ?? []).join(", ")}
-                  rows={3}
-                  onChange={(inputEvent) =>
-                    onUpdateOutcome(selectedOutcomeContext.eventId, selectedOutcomeContext.decisionId, selectedOutcomeContext.outcome!.id, {
-                      requiredCanonRefs: inputEvent.target.value
-                        .split(",")
-                        .map((value) => value.trim())
-                        .filter(Boolean),
-                    })
-                  }
-                />
-              </label>
+              <CanonRefsPicker
+                title="Required Canon Refs"
+                value={selectedOutcomeContext.outcome!.requiredCanonRefs}
+                canonRefs={project.canonRefs}
+                onChange={(requiredCanonRefs) =>
+                  onUpdateOutcome(selectedOutcomeContext.eventId, selectedOutcomeContext.decisionId, selectedOutcomeContext.outcome!.id, {
+                    requiredCanonRefs,
+                  })
+                }
+              />
               <button
                 type="button"
                 className="danger"
@@ -2496,7 +3256,19 @@ function Inspector({
                 <dt>Working Copy</dt>
                 <dd>{selectedCanon.workingCopyPath ?? "not created"}</dd>
               </div>
+              {selectedCanon.missingIdentity ? (
+                <div>
+                  <dt>Identity</dt>
+                  <dd className="warning-text">{selectedCanon.identityWarning ?? "Missing WorldNotion id/frontmatter."}</dd>
+                </div>
+              ) : null}
             </dl>
+            <div className="inspector-actions">
+              <button type="button" onClick={() => onEditCanonRef(selectedCanon)}>
+                Edit in Branch
+              </button>
+            </div>
+            <div className="readonly-preview-label">Read-only canon preview</div>
             {selectedCanon.preview ? <pre>{selectedCanon.preview}</pre> : <span className="empty-line">No preview available.</span>}
           </section>
         ) : null}
@@ -2541,21 +3313,11 @@ function Inspector({
                   ))}
                 </select>
               </label>
-              <label className="field-label">
-                Canon Refs
-                <textarea
-                  value={(selectedDataObject.canonRefs ?? []).join(", ")}
-                  rows={3}
-                  onChange={(event) =>
-                    onUpdateDataObject(selectedDataObject.id, {
-                      canonRefs: event.target.value
-                        .split(",")
-                        .map((value) => value.trim())
-                        .filter(Boolean),
-                    })
-                  }
-                />
-              </label>
+              <CanonRefsPicker
+                value={selectedDataObject.canonRefs}
+                canonRefs={project.canonRefs}
+                onChange={(canonRefs) => onUpdateDataObject(selectedDataObject.id, { canonRefs })}
+              />
               <label className="field-label">
                 Tags
                 <input
@@ -2764,6 +3526,7 @@ function StoryCanvas({
   onDeleteTransition,
   onUpdateDataObject,
   onDeleteDataObject,
+  onEditCanonRef,
   onUpdateEdgeLabel,
   onDeleteSelection,
   onActivateMarkdownTab,
@@ -2812,6 +3575,7 @@ function StoryCanvas({
   onDeleteTransition: (transitionId: string) => void;
   onUpdateDataObject: (id: string, updates: Partial<ProjectDataObject>) => void;
   onDeleteDataObject: (id: string) => void;
+  onEditCanonRef: (ref: CanonRef) => void;
   onUpdateEdgeLabel: (edgeId: string, label: string) => void;
   onDeleteSelection: (selection: Selection) => void;
   onActivateMarkdownTab: (id: string) => void;
@@ -2824,7 +3588,8 @@ function StoryCanvas({
   const [reactFlowInstance, setReactFlowInstance] = useState<ReactFlowInstance<StoryCanvasNode, StoryCanvasEdge>>();
   const [contextMenu, setContextMenu] = useState<CanvasContextMenu>();
   const [draggingEvent, setDraggingEvent] = useState(false);
-  const graph = useMemo(() => focusedGraph(nodes, edges, canvasMode === "focus" ? focusNodeId : undefined), [canvasMode, edges, focusNodeId, nodes]);
+  const [paletteCategoryId, setPaletteCategoryId] = useState("normal");
+  const graph = useMemo(() => canvasGraph(nodes, edges, canvasMode, focusNodeId), [canvasMode, edges, focusNodeId, nodes]);
   const currentSequence = project.sequences.find((sequence) => sequence.id === activeSequenceId(project));
   const focusedNode = graph.nodes.find((node) => node.id === focusNodeId) ?? nodes.find((node) => node.id === focusNodeId);
   const sequenceEvents = currentSequence?.eventIds.length ?? 0;
@@ -2905,10 +3670,17 @@ function StoryCanvas({
 
       {canvasMode === "branching" ? (
         <div className="canvas-palette">
+          <select value={paletteCategoryId} onChange={(event) => setPaletteCategoryId(event.target.value)} aria-label="Event category">
+            {(project.eventCategories ?? []).map((category) => (
+              <option key={category.id} value={category.id}>
+                {category.label}
+              </option>
+            ))}
+          </select>
           <button type="button" onClick={() => onCreateBranch()}>
             Branch
           </button>
-          <button type="button" onClick={() => onCreateEvent()}>
+          <button type="button" onClick={() => onCreateEvent(paletteCategoryId)}>
             Event
           </button>
           <button type="button" onClick={() => onCreateEvent("final")}>
@@ -2931,7 +3703,12 @@ function StoryCanvas({
             setDraggingEvent(false);
             onNodeDragStop(event, node);
           }}
-          onNodeClick={(_, node) => onSelect({ type: "node", id: node.id })}
+          onNodeClick={(_, node) => {
+            onSelect({ type: "node", id: node.id });
+            if (canvasMode === "focus") {
+              onEnterFocus(node.id);
+            }
+          }}
           onNodeDoubleClick={(_, node) => onEnterFocus(node.id)}
           onEdgeClick={(_, edgeItem) => onSelect({ type: "edge", id: edgeItem.id })}
           onPaneClick={() => {
@@ -2964,7 +3741,7 @@ function StoryCanvas({
           <button
             type="button"
             onClick={() => {
-              onCreateEvent("normal", { x: contextMenu.flowX, y: contextMenu.flowY });
+              onCreateEvent(paletteCategoryId, { x: contextMenu.flowX, y: contextMenu.flowY });
               setContextMenu(undefined);
             }}
           >
@@ -2991,44 +3768,45 @@ function StoryCanvas({
         />
       ) : null}
 
-      <Inspector
+      <EventAuthoringDock
         project={project}
         nodes={nodes}
-        edges={edges}
-        files={files}
         selection={selection}
-        findings={findings}
-        exportOpen={exportOpen}
-        exportPreviewMode={exportPreviewMode}
-        onExportPreviewModeChange={onExportPreviewModeChange}
-        onClose={() => onSelect(undefined)}
-        onUpdateSequence={onUpdateSequence}
-        onSetEntrySequence={onSetEntrySequence}
-        onUpdateBranch={onUpdateBranch}
-        onCreateEventInBranch={onCreateEventInBranch}
+        onSelect={onSelect}
         onUpdateEvent={onUpdateEvent}
-        onCreateDecision={onCreateDecision}
-        onUpdateDecision={onUpdateDecision}
-        onDeleteDecision={onDeleteDecision}
-        onCreateOutcome={onCreateOutcome}
-        onUpdateOutcome={onUpdateOutcome}
-        onDeleteOutcome={onDeleteOutcome}
-        onUpdateTransition={onUpdateTransition}
-        onDeleteTransition={onDeleteTransition}
-        onUpdateDataObject={onUpdateDataObject}
-        onDeleteDataObject={onDeleteDataObject}
-        onUpdateEdgeLabel={onUpdateEdgeLabel}
-        onDeleteSelection={onDeleteSelection}
-      />
-      <MarkdownEditorDock
-        tabs={markdownTabs}
-        activeTabId={activeMarkdownTabId}
-        onActivate={onActivateMarkdownTab}
-        onClose={onCloseMarkdownTab}
-        onChangeContent={onChangeMarkdownContent}
-        onChangeFormat={onChangeMarkdownFormat}
-        onSave={onSaveMarkdownTab}
-      />
+      >
+        <Inspector
+          project={project}
+          nodes={nodes}
+          edges={edges}
+          files={files}
+          selection={selection}
+          findings={findings}
+          exportOpen={exportOpen}
+          exportPreviewMode={exportPreviewMode}
+          embedded
+          onExportPreviewModeChange={onExportPreviewModeChange}
+          onClose={() => onSelect(undefined)}
+          onUpdateSequence={onUpdateSequence}
+          onSetEntrySequence={onSetEntrySequence}
+          onUpdateBranch={onUpdateBranch}
+          onCreateEventInBranch={onCreateEventInBranch}
+          onUpdateEvent={onUpdateEvent}
+          onCreateDecision={onCreateDecision}
+          onUpdateDecision={onUpdateDecision}
+          onDeleteDecision={onDeleteDecision}
+          onCreateOutcome={onCreateOutcome}
+          onUpdateOutcome={onUpdateOutcome}
+          onDeleteOutcome={onDeleteOutcome}
+          onUpdateTransition={onUpdateTransition}
+          onDeleteTransition={onDeleteTransition}
+          onUpdateDataObject={onUpdateDataObject}
+          onDeleteDataObject={onDeleteDataObject}
+          onEditCanonRef={onEditCanonRef}
+          onUpdateEdgeLabel={onUpdateEdgeLabel}
+          onDeleteSelection={onDeleteSelection}
+        />
+      </EventAuthoringDock>
     </main>
   );
 }
@@ -3048,6 +3826,9 @@ export function App() {
   const [selection, setSelection] = useState<Selection>();
   const [canonOpen, setCanonOpen] = useState(true);
   const [filesOpen, setFilesOpen] = useState(true);
+  const [canonWidth, setCanonWidth] = useState(DEFAULT_PANEL_WIDTH);
+  const [storiesWidth, setStoriesWidth] = useState(DEFAULT_PANEL_WIDTH);
+  const [panelResizing, setPanelResizing] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
   const [exportPreviewMode, setExportPreviewMode] = useState<ExportPreviewMode>("runtime");
   const [dataOpen, setDataOpen] = useState(false);
@@ -3061,22 +3842,54 @@ export function App() {
   const [missingRecentProjects, setMissingRecentProjects] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string>();
   const [message, setMessage] = useState<string>();
+  const autoSaveTokenRef = useRef(0);
+  const projectRef = useRef<BranchingProject | undefined>(undefined);
+  const workspaceRef = useRef<PathBranchingWorkspace | undefined>(undefined);
+  const fileStateRef = useRef<ProjectFileState>({ dirty: false });
+  const saveQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const projectRevisionRef = useRef(0);
+  const savedRevisionRef = useRef(0);
 
   const applyProject = useCallback((nextProject: BranchingProject, options: { dirty?: boolean; path?: string; universePath?: string; storyPath?: string; modifiedMs?: number } = {}) => {
     const normalizedProject = normalizeProject(nextProject);
     const model = buildStoryCanvasModel(normalizedProject);
+    if (options.dirty) {
+      projectRevisionRef.current += 1;
+    }
+    projectRef.current = normalizedProject;
+    workspaceRef.current = workspaceRef.current
+      ? {
+          ...workspaceRef.current,
+          activeProject: normalizedProject,
+        }
+      : workspaceRef.current;
     setProject(normalizedProject);
     setNodes(model.nodes);
     setEdges(model.edges);
     setFiles(model.files);
-    setFileState((current) => ({
-      path: options.path ?? current.path,
-      universePath: options.universePath ?? current.universePath,
-      storyPath: options.storyPath ?? current.storyPath,
-      dirty: options.dirty ?? current.dirty,
-      lastSavedAt: options.dirty === false ? Date.now() : current.lastSavedAt,
-      modifiedMs: options.modifiedMs ?? current.modifiedMs,
-    }));
+    setFileState((current) => {
+      const nextState = {
+        path: options.path ?? current.path,
+        universePath: options.universePath ?? current.universePath,
+        storyPath: options.storyPath ?? current.storyPath,
+        dirty: options.dirty ?? current.dirty,
+        lastSavedAt: options.dirty === false ? Date.now() : current.lastSavedAt,
+        modifiedMs: options.modifiedMs ?? current.modifiedMs,
+        universeProfile: current.universeProfile,
+      };
+      fileStateRef.current = nextState;
+      return nextState;
+    });
+    if (options.dirty) {
+      setWorkspace((current) =>
+        current
+          ? {
+              ...current,
+              activeProject: normalizedProject,
+            }
+          : current,
+      );
+    }
   }, []);
 
   const applyWorkspace = useCallback(
@@ -3087,25 +3900,34 @@ export function App() {
         universeRootPath: universePath,
       });
       const model = buildStoryCanvasModel(activeProject);
+      workspaceRef.current = nextWorkspace;
+      projectRef.current = activeProject;
+      projectRevisionRef.current = 0;
+      savedRevisionRef.current = 0;
       setWorkspace(nextWorkspace);
       setProject(activeProject);
       setNodes(model.nodes);
       setEdges(model.edges);
       setFiles(model.files);
-      setFileState({
+      const nextFileState = {
         path: nextWorkspace.activeStory?.path,
         storyPath: nextWorkspace.activeStory?.path,
         universePath,
         dirty: false,
         lastSavedAt: nextWorkspace.createdDefaultStory ? undefined : Date.now(),
         modifiedMs: nextWorkspace.storyModifiedMs,
-      });
+        universeProfile: nextWorkspace.universeProfile,
+      };
+      fileStateRef.current = nextFileState;
+      setFileState(nextFileState);
       setUndoStack([]);
       setRedoStack([]);
       setMarkdownTabs(savedSession.markdownTabs ?? []);
       setActiveMarkdownTabId(savedSession.activeMarkdownTabId);
       setCanonOpen(savedSession.canonOpen ?? activeProject.panels?.canonOpen ?? true);
       setFilesOpen(savedSession.filesOpen ?? activeProject.panels?.filesOpen ?? true);
+      setCanonWidth(clampPanelWidth(savedSession.canonWidth));
+      setStoriesWidth(clampPanelWidth(savedSession.storiesWidth));
       setExportOpen(savedSession.exportOpen ?? false);
       setDataOpen(savedSession.dataOpen ?? false);
       const initialSelectionId = activeProject.canvas?.activeSequenceId ?? activeProject.entrySequenceId ?? activeProject.sequences[0]?.id ?? model.nodes[0]?.id;
@@ -3116,6 +3938,45 @@ export function App() {
     },
     [],
   );
+
+  const markProjectDirty = useCallback((nextProject: BranchingProject) => {
+    const normalizedProject = normalizeProject(nextProject);
+    projectRevisionRef.current += 1;
+    projectRef.current = normalizedProject;
+    workspaceRef.current = workspaceRef.current
+      ? {
+          ...workspaceRef.current,
+          activeProject: normalizedProject,
+        }
+      : workspaceRef.current;
+    setProject(normalizedProject);
+    setWorkspace((current) =>
+      current
+        ? {
+            ...current,
+            activeProject: normalizedProject,
+          }
+        : current,
+    );
+    setFileState((current) => {
+      const nextState = { ...current, dirty: true };
+      fileStateRef.current = nextState;
+      return nextState;
+    });
+    return normalizedProject;
+  }, []);
+
+  useEffect(() => {
+    projectRef.current = project;
+  }, [project]);
+
+  useEffect(() => {
+    workspaceRef.current = workspace;
+  }, [workspace]);
+
+  useEffect(() => {
+    fileStateRef.current = fileState;
+  }, [fileState]);
 
   const updateProject = useCallback(
     (nextProject: BranchingProject, nextSelection?: Selection) => {
@@ -3147,7 +4008,7 @@ export function App() {
     [applyProject, project],
   );
 
-  const openMarkdownTabForCanon = useCallback((ref: CanonRef) => {
+  const editCanonRefInBranch = useCallback((ref: CanonRef) => {
     const tabId = `canon:${ref.id}`;
     setMarkdownTabs((current) => {
       if (current.some((tab) => tab.id === tabId)) {
@@ -3169,12 +4030,6 @@ export function App() {
     });
     setActiveMarkdownTabId(tabId);
   }, []);
-
-  useEffect(() => {
-    if (!project || selection?.type !== "canon") return;
-    const ref = project.canonRefs.find((canonRef) => canonRef.id === selection.id);
-    if (ref) openMarkdownTabForCanon(ref);
-  }, [openMarkdownTabForCanon, project, selection]);
 
   const changeMarkdownContent = useCallback((id: string, content: string) => {
     setMarkdownTabs((current) => current.map((tab) => (tab.id === id ? { ...tab, content, dirty: true } : tab)));
@@ -3240,24 +4095,21 @@ export function App() {
               : item,
           ),
         );
-        setProject((currentProject) =>
-          currentProject
-            ? {
-                ...currentProject,
-                canonRefs: currentProject.canonRefs.map((ref) =>
-                  ref.id === tab.canonRefId ? { ...ref, workingCopyPath } : ref,
-                ),
-              }
-            : currentProject,
-        );
-        setFileState((current) => ({ ...current, dirty: true }));
+        if (projectRef.current) {
+          markProjectDirty({
+            ...projectRef.current,
+            canonRefs: projectRef.current.canonRefs.map((ref) =>
+              ref.id === tab.canonRefId ? { ...ref, workingCopyPath } : ref,
+            ),
+          });
+        }
         setMessage(`Saved working copy: ${workingCopyPath}.`);
       } catch (saveError) {
         setMarkdownTabs((current) => current.map((item) => (item.id === id ? { ...item, saving: false } : item)));
         setMessage(saveError instanceof Error ? saveError.message : String(saveError));
       }
     },
-    [fileState.universePath, markdownTabs],
+    [fileState.universePath, markProjectDirty, markdownTabs],
   );
 
   const confirmDiscardChanges = useCallback(async () => {
@@ -3347,6 +4199,8 @@ export function App() {
       selection,
       canonOpen,
       filesOpen,
+      canonWidth,
+      storiesWidth,
       exportOpen,
       dataOpen,
       canvasMode,
@@ -3370,6 +4224,7 @@ export function App() {
   }, [
     activeMarkdownTabId,
     canonOpen,
+    canonWidth,
     canvasMode,
     dataOpen,
     exportOpen,
@@ -3379,6 +4234,7 @@ export function App() {
     initialLoading,
     markdownTabs,
     selection,
+    storiesWidth,
     view,
   ]);
 
@@ -3413,29 +4269,128 @@ export function App() {
     }
   }, [applyWorkspace, confirmDiscardChanges]);
 
+  const persistProject = useCallback(
+    (options: { manual?: boolean } = {}) => {
+      const run = async () => {
+        const currentProject = projectRef.current;
+        const currentWorkspace = workspaceRef.current;
+        const currentFileState = fileStateRef.current;
+        const saveRevision = projectRevisionRef.current;
+
+        if (!currentProject) {
+          return;
+        }
+        if (!currentWorkspace || !currentFileState.universePath) {
+          throw new Error("Open a universe before saving a PathBranching story.");
+        }
+
+        const result = await saveUniverseStory(
+          currentFileState.universePath,
+          currentWorkspace,
+          currentProject,
+          currentFileState.modifiedMs,
+        );
+        if (!result.ok) {
+          throw new Error(result.message ?? "Could not save project.");
+        }
+
+        const savedProject = normalizeProject({
+          ...currentProject,
+          storyId: currentWorkspace.activeStory?.id ?? currentProject.storyId,
+          universeRootPath: currentFileState.universePath,
+        });
+        const isStillCurrentRevision = projectRevisionRef.current === saveRevision;
+        const nextFileState: ProjectFileState = {
+          ...fileStateRef.current,
+          path: result.storyPath ?? fileStateRef.current.storyPath,
+          storyPath: result.storyPath ?? fileStateRef.current.storyPath,
+          dirty: isStillCurrentRevision ? false : true,
+          lastSavedAt: Date.now(),
+          modifiedMs: result.storyModifiedMs ?? result.modifiedMs,
+        };
+        fileStateRef.current = nextFileState;
+        setFileState(nextFileState);
+        setSettings((current) => rememberRecentProject(current, currentFileState.universePath as string));
+        setWorkspace((current) => {
+          const nextWorkspace = current
+            ? {
+                ...current,
+                manifest: result.manifest ?? current.manifest,
+                activeProject: isStillCurrentRevision ? savedProject : projectRef.current ?? current.activeProject,
+                createdDefaultStory: false,
+                storyModifiedMs: result.storyModifiedMs ?? result.modifiedMs,
+              }
+            : current;
+          workspaceRef.current = nextWorkspace;
+          return nextWorkspace;
+        });
+        if (isStillCurrentRevision) {
+          savedRevisionRef.current = saveRevision;
+        }
+        setError(undefined);
+        if (options.manual) {
+          setMessage(
+            isStillCurrentRevision
+              ? `Saved branching story in ${projectFileName(currentFileState.universePath)}.`
+              : "Saved current snapshot. Newer changes are still pending.",
+          );
+        }
+        if (!isStillCurrentRevision && isTauriRuntime()) {
+          window.setTimeout(() => {
+            if (fileStateRef.current.dirty) {
+              void persistProject();
+            }
+          }, 180);
+        }
+      };
+
+      const queuedSave = saveQueueRef.current.catch(() => undefined).then(run);
+      saveQueueRef.current = queuedSave;
+      return queuedSave;
+    },
+    [],
+  );
+
   const saveProject = useCallback(async () => {
-    if (!project) {
-      return;
-    }
     try {
-      if (!workspace || !fileState.universePath) {
-        throw new Error("Open a universe before saving a PathBranching story.");
-      }
-      const result = await saveUniverseStory(fileState.universePath, workspace, project, fileState.modifiedMs);
-      if (!result) {
-        return;
-      }
-      if (!result.ok) {
-        throw new Error(result.message ?? "Could not save project.");
-      }
-      setFileState((current) => ({ ...current, path: current.storyPath, dirty: false, lastSavedAt: Date.now(), modifiedMs: result.modifiedMs }));
-      setSettings((current) => rememberRecentProject(current, fileState.universePath as string));
-      setWorkspace((current) => current ? { ...current, createdDefaultStory: false } : current);
-      setMessage(`Saved branching story in ${projectFileName(fileState.universePath)}.`);
+      await persistProject({ manual: true });
     } catch (saveError) {
       setError(saveError instanceof Error ? saveError.message : String(saveError));
     }
-  }, [fileState.modifiedMs, fileState.universePath, project, workspace]);
+  }, [persistProject]);
+
+  useEffect(() => {
+    if (
+      initialLoading ||
+      !isTauriRuntime() ||
+      !project ||
+      !workspace ||
+      !fileState.universePath ||
+      !fileState.dirty
+    ) {
+      return;
+    }
+
+    const token = autoSaveTokenRef.current + 1;
+    autoSaveTokenRef.current = token;
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        try {
+          await persistProject();
+          if (autoSaveTokenRef.current !== token) {
+            return;
+          }
+        } catch (autoSaveError) {
+          if (autoSaveTokenRef.current !== token) {
+            return;
+          }
+          setError(autoSaveError instanceof Error ? autoSaveError.message : String(autoSaveError));
+        }
+      })();
+    }, 180);
+
+    return () => window.clearTimeout(timer);
+  }, [fileState.dirty, fileState.modifiedMs, fileState.universePath, initialLoading, persistProject, project, workspace]);
 
   const saveProjectAs = useCallback(async () => {
     if (!project) {
@@ -3552,8 +4507,8 @@ export function App() {
         void openProject();
       }
     };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
+    window.addEventListener("keydown", handleKeyDown, true);
+    return () => window.removeEventListener("keydown", handleKeyDown, true);
   }, [openProject, redoProject, saveProject, undoProject]);
 
   const enterFocus = useCallback((nodeId: string) => {
@@ -3740,6 +4695,16 @@ export function App() {
     [project, runMutation],
   );
 
+  const updateEventCategories = useCallback(
+    (eventCategories: EventCategoryDefinition[]) => {
+      if (!project) {
+        return;
+      }
+      updateProject({ ...project, eventCategories });
+    },
+    [project, updateProject],
+  );
+
   const deleteDataObject = useCallback(
     (id: string) => {
       if (!project) {
@@ -3754,12 +4719,13 @@ export function App() {
     (changes: NodeChange<StoryCanvasNode>[]) => {
       setNodes((currentNodes) => {
         const nextNodes = applyNodeChanges(changes, currentNodes);
-        setProject((currentProject) => (currentProject ? updateProjectCanvas(currentProject, nextNodes) : currentProject));
-        setFileState((current) => ({ ...current, dirty: true }));
+        if (projectRef.current) {
+          markProjectDirty(updateProjectCanvas(projectRef.current, nextNodes));
+        }
         return nextNodes;
       });
     },
-    [setProject],
+    [markProjectDirty],
   );
 
   const handleEdgesChange = useCallback((changes: EdgeChange<StoryCanvasEdge>[]) => {
@@ -3840,8 +4806,8 @@ export function App() {
         return;
       }
 
-      if (sourceEvent.type === "final") {
-        setMessage("Final events are terminal and cannot create outgoing transitions.");
+      if (mutations.isTerminalEventType(project, sourceEvent.type)) {
+        setMessage("Terminal events cannot create outgoing transitions.");
         return;
       }
 
@@ -3964,12 +4930,11 @@ export function App() {
     }
     const resetProject = { ...project, canvas: { activeSequenceId: activeSequenceId(project) } };
     const model = buildStoryCanvasModel(resetProject);
-    setProject(resetProject);
+    markProjectDirty(resetProject);
     setNodes(model.nodes);
     setEdges(model.edges);
     setFiles(model.files);
-    setFileState((current) => ({ ...current, dirty: true }));
-  }, [project]);
+  }, [markProjectDirty, project]);
 
   const deleteSelection = useCallback(
     (targetSelection: Selection) => {
@@ -4061,24 +5026,22 @@ export function App() {
   const toggleCanon = useCallback(() => {
     setCanonOpen((open) => {
       const nextOpen = !open;
-      setProject((currentProject) =>
-        currentProject ? { ...currentProject, panels: { ...currentProject.panels, canonOpen: nextOpen } } : currentProject,
-      );
-      setFileState((current) => ({ ...current, dirty: true }));
+      if (projectRef.current) {
+        markProjectDirty({ ...projectRef.current, panels: { ...projectRef.current.panels, canonOpen: nextOpen } });
+      }
       return nextOpen;
     });
-  }, []);
+  }, [markProjectDirty]);
 
   const toggleFiles = useCallback(() => {
     setFilesOpen((open) => {
       const nextOpen = !open;
-      setProject((currentProject) =>
-        currentProject ? { ...currentProject, panels: { ...currentProject.panels, filesOpen: nextOpen } } : currentProject,
-      );
-      setFileState((current) => ({ ...current, dirty: true }));
+      if (projectRef.current) {
+        markProjectDirty({ ...projectRef.current, panels: { ...projectRef.current.panels, filesOpen: nextOpen } });
+      }
       return nextOpen;
     });
-  }, []);
+  }, [markProjectDirty]);
 
   useEffect(() => {
     if (!isTauriRuntime()) {
@@ -4203,6 +5166,12 @@ export function App() {
         return;
       }
 
+      const branchPrefix = "file:branch:";
+      if (id.startsWith(branchPrefix)) {
+        setSelection({ type: "node", id: id.slice(branchPrefix.length) });
+        return;
+      }
+
       const dataPrefix = "file:data-object:";
       if (id.startsWith(dataPrefix)) {
         setSelection({ type: "dataObject", id: id.slice(dataPrefix.length) });
@@ -4215,6 +5184,14 @@ export function App() {
     [setActiveSequence],
   );
 
+  const resizeCanon = useCallback((width: number) => {
+    setCanonWidth(clampPanelWidth(width));
+  }, []);
+
+  const resizeStories = useCallback((width: number) => {
+    setStoriesWidth(clampPanelWidth(width));
+  }, []);
+
   const settingsModal = showSettings ? (
     <PathBranchingSettingsModal
       project={project}
@@ -4222,6 +5199,7 @@ export function App() {
       settings={settings}
       findings={findings}
       theme={settings.theme}
+      onUpdateEventCategories={updateEventCategories}
       onThemeChange={changeTheme}
       onToggleTheme={toggleTheme}
       onOpenUniverse={openProject}
@@ -4361,9 +5339,9 @@ export function App() {
       />
 
         <div
-        className="workspace"
+        className={`workspace ${panelResizing ? "resizing" : ""}`}
         style={{
-          gridTemplateColumns: `${canonOpen ? "282px" : "36px"} ${filesOpen ? "282px" : "36px"} minmax(0, 1fr)`,
+          gridTemplateColumns: `${canonOpen ? canonWidth : COLLAPSED_RAIL_WIDTH}px ${filesOpen ? storiesWidth : COLLAPSED_RAIL_WIDTH}px minmax(0, 1fr)`,
         }}
       >
         <CanonPanel
@@ -4371,13 +5349,22 @@ export function App() {
           open={canonOpen}
           selectedId={selection?.type === "canon" ? selection.id : undefined}
           onToggle={toggleCanon}
+          onResize={resizeCanon}
+          onResetWidth={() => setCanonWidth(DEFAULT_PANEL_WIDTH)}
+          onResizeStateChange={setPanelResizing}
           onSelect={(id) => setSelection({ type: "canon", id })}
         />
         <FilesPanel
+          project={project}
           files={files}
           open={filesOpen}
-          selectedId={selection?.type === "file" ? selection.id : `file:sequence:${activeSequenceId(project) ?? ""}`}
+          selectedId={storyExplorerSelectionId(project, selection)}
           onToggle={toggleFiles}
+          onResize={resizeStories}
+          onResetWidth={() => setStoriesWidth(DEFAULT_PANEL_WIDTH)}
+          onResizeStateChange={setPanelResizing}
+          onSequenceChange={setActiveSequence}
+          onCreateSequence={createSequence}
           onSelect={handleFileSelect}
         />
         <StoryCanvas
@@ -4417,12 +5404,13 @@ export function App() {
           onCreateOutcome={createOutcome}
           onUpdateOutcome={updateOutcome}
           onDeleteOutcome={deleteOutcome}
-          onUpdateTransition={updateTransition}
-          onDeleteTransition={deleteTransition}
-          onUpdateDataObject={updateDataObject}
-          onDeleteDataObject={deleteDataObject}
-          onUpdateEdgeLabel={updateEdgeLabel}
-          onDeleteSelection={deleteSelection}
+        onUpdateTransition={updateTransition}
+        onDeleteTransition={deleteTransition}
+        onUpdateDataObject={updateDataObject}
+        onDeleteDataObject={deleteDataObject}
+        onEditCanonRef={editCanonRefInBranch}
+        onUpdateEdgeLabel={updateEdgeLabel}
+        onDeleteSelection={deleteSelection}
           onActivateMarkdownTab={setActiveMarkdownTabId}
           onCloseMarkdownTab={closeMarkdownTab}
           onChangeMarkdownContent={changeMarkdownContent}

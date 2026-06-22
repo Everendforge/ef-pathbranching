@@ -34,6 +34,7 @@ export type SinpoGameDataExport = {
     id: string;
     name: string;
     type: string;
+    text?: EventNode["text"];
     branchRef?: string | null;
     inkKnot: string;
     canonRefs: string[];
@@ -50,6 +51,7 @@ export type SinpoGameDataExport = {
     source: "PathBranching";
     exportTarget: "SINPO";
     entrySequenceId?: string;
+    eventCategories?: BranchingProject["eventCategories"];
   };
 };
 
@@ -89,6 +91,10 @@ function transitionLine(transition: Transition) {
   return `  -> ${inkSafeId(transition.to)}${transition.label ? ` // ${transition.label}` : ""}${conditionComment(transition.conditions)}${consequenceComment(transition.consequences)}`;
 }
 
+function isTerminalEvent(project: BranchingProject, event: EventNode) {
+  return event.type === "final" || Boolean(project.eventCategories?.some((category) => category.id === event.type && category.terminal));
+}
+
 function eventInk(project: BranchingProject, event: EventNode) {
   const directTransitions = (event.transitions ?? []).filter((transition) => transition.from === event.id);
   const lines = [
@@ -98,10 +104,10 @@ function eventInk(project: BranchingProject, event: EventNode) {
     event.canonRefs?.length ? `// canon refs: ${event.canonRefs.join(", ")}` : undefined,
     event.availability ? `// availability:${conditionComment(event.availability).replace(" // conditions:", "")}` : undefined,
     event.unlocks?.length ? `// on enter:${consequenceComment(event.unlocks).replace(" // consequences:", "")}` : undefined,
-    event.name,
+    event.text?.content || event.name,
     ...(event.decisions ?? []).flatMap((decision) => decisionLines(project, event, decision)),
     ...(directTransitions.length ? ["", ...directTransitions.map(transitionLine)] : []),
-    event.type === "final" ? "  -> END" : undefined,
+    isTerminalEvent(project, event) ? "  -> END" : undefined,
   ].filter((line): line is string => Boolean(line));
 
   return `${lines.join("\n")}\n`;
@@ -155,6 +161,7 @@ export function exportSinpoGameData(project: BranchingProject): SinpoGameDataExp
       id: event.id,
       name: event.name,
       type: event.type,
+      text: event.text,
       branchRef: event.branchRef,
       inkKnot: inkSafeId(event.id),
       canonRefs: event.canonRefs ?? [],
@@ -171,6 +178,7 @@ export function exportSinpoGameData(project: BranchingProject): SinpoGameDataExp
       source: "PathBranching",
       exportTarget: "SINPO",
       entrySequenceId: project.entrySequenceId,
+      eventCategories: project.eventCategories,
     },
   };
 }

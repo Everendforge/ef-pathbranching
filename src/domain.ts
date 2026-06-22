@@ -3,6 +3,12 @@ export type CanonRef = {
   kind?: string;
   label?: string;
   preview?: string;
+  tags?: string[];
+  status?: string;
+  favorite?: boolean;
+  folderDescription?: boolean;
+  missingIdentity?: boolean;
+  identityWarning?: string;
   source?: "worldnotion" | "engine-legacy" | "manual" | string;
   canonSourcePath?: string;
   workingCopyPath?: string;
@@ -14,6 +20,19 @@ export type ScriptRef = {
   sourcePath?: string;
   compiledPath?: string;
   entrySection?: string;
+};
+
+export type StoryTextBlock = {
+  format: "plain" | "ink" | "harlowe" | "sugarcube" | string;
+  content: string;
+};
+
+export type EventCategoryDefinition = {
+  id: string;
+  label: string;
+  description?: string;
+  color?: string;
+  terminal?: boolean;
 };
 
 export type FieldType =
@@ -135,6 +154,7 @@ export type EventNode = {
   legacyId?: string;
   name: string;
   type: EventType;
+  text?: StoryTextBlock;
   branchRef?: string | null;
   script?: ScriptRef;
   canonRefs?: string[];
@@ -361,6 +381,7 @@ export type BranchingProject = {
   canvas?: CanvasAuthoringState;
   panels?: PanelAuthoringState;
   entrySequenceId?: string;
+  eventCategories?: EventCategoryDefinition[];
   canonRefs: CanonRef[];
   sequences: Sequence[];
   branches: Branch[];
@@ -412,6 +433,7 @@ export type ValidationFinding = {
     | "missing_script"
     | "missing_branch"
     | "missing_canon_ref"
+    | "missing_canon_identity"
     | "duplicate_id"
     | "broken_transition"
     | "invalid_branch_membership"

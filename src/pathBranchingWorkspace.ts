@@ -18,6 +18,17 @@ export type UniverseFile = WorldNotionVaultFile & {
   modifiedMs?: number;
 };
 
+export type UniverseIcon = {
+  type: "preset" | "image";
+  value: string;
+};
+
+export type UniverseProfile = {
+  name?: string;
+  icon?: UniverseIcon;
+  taxonomyVersion?: string;
+};
+
 export type PathBranchingStoryManifestEntry = {
   id: string;
   name: string;
@@ -34,6 +45,7 @@ export type PathBranchingManifest = {
 
 export type PathBranchingWorkspace = {
   manifest: PathBranchingManifest;
+  universeProfile?: UniverseProfile;
   canonIndex: WorldNotionBridgeIndex;
   activeStory?: PathBranchingStoryManifestEntry;
   activeProject: BranchingProject;
@@ -101,6 +113,30 @@ function parseManifest(files: UniverseFile[]): PathBranchingManifest | undefined
   };
 }
 
+function parseUniverseProfile(files: UniverseFile[]): UniverseProfile | undefined {
+  const profileFile = files.find((file) => file.relativePath === ".everend/universe.json");
+  if (!profileFile) return undefined;
+
+  try {
+    const parsed = JSON.parse(profileFile.content) as UniverseProfile | null;
+    if (!parsed || typeof parsed !== "object") return undefined;
+    const icon: UniverseIcon | undefined =
+      parsed.icon?.type && parsed.icon.value
+        ? {
+            type: parsed.icon.type === "image" ? "image" : "preset",
+            value: String(parsed.icon.value),
+          }
+        : undefined;
+    return {
+      name: typeof parsed.name === "string" && parsed.name.trim() ? parsed.name.trim() : undefined,
+      icon,
+      taxonomyVersion: typeof parsed.taxonomyVersion === "string" ? parsed.taxonomyVersion : undefined,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
 function createDefaultProject(files: UniverseFile[], canonIndex: WorldNotionBridgeIndex, storyId: string): BranchingProject {
   return normalizeProject(
     createEmptyBranchingProjectFromWorldNotionIndex(canonIndex, {
@@ -124,6 +160,7 @@ function mergeCanonRefs(canonIndex: WorldNotionBridgeIndex, storyProject: Branch
 
 export function loadPathBranchingWorkspace(files: UniverseFile[]): PathBranchingWorkspace {
   const canonIndex = indexWorldNotionVaultFiles(files);
+  const universeProfile = parseUniverseProfile(files);
   const parsedManifest = parseManifest(files);
   const fallbackStoryId = defaultStoryId(files);
   const now = new Date().toISOString();
@@ -161,6 +198,7 @@ export function loadPathBranchingWorkspace(files: UniverseFile[]): PathBranching
       ...manifest,
       activeStoryId: activeStory?.id,
     },
+    universeProfile,
     canonIndex,
     activeStory,
     activeProject: normalizeProject({

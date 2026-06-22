@@ -198,9 +198,11 @@ function branchesForSequence(project: BranchingProject, sequenceId: string | und
 }
 
 function eventBadges(project: BranchingProject, eventNode: EventNode) {
+  const category = project.eventCategories?.find((item) => item.id === eventNode.type);
+  const terminal = eventNode.type === "final" || Boolean(category?.terminal);
   return [
-    eventNode.type,
-    ...(eventNode.type === "final" ? ["terminal"] : []),
+    category?.label ?? eventNode.type,
+    ...(terminal ? ["terminal"] : []),
     `${eventNode.canonRefs?.length ?? 0} refs`,
     eventNode.script ? "ink" : "no script",
     ...(eventNode.decisions?.length ? [`${eventNode.decisions.length} decisions`] : []),
@@ -483,7 +485,11 @@ export function buildStoryCanvasModel(project: BranchingProject): StoryCanvasMod
       eventX,
       eventY,
       eventBadges(project, eventNode),
-      { event: eventNode },
+      {
+        event: eventNode,
+        category: project.eventCategories?.find((category) => category.id === eventNode.type),
+        terminal: eventNode.type === "final" || Boolean(project.eventCategories?.some((category) => category.id === eventNode.type && category.terminal)),
+      },
       branch ? { parentId: branch.id } : undefined,
     );
 
