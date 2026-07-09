@@ -31,8 +31,22 @@ export function createLocalExplorerEntity(
   };
 }
 
-export function localEntityPath(entity: LocalExplorerEntity) {
-  return `Entities/${entity.type}/${slug(entity.name)}.md`;
+function safeFolder(folder: string | undefined) {
+  const normalized = folder
+    ?.trim()
+    .replace(/\\/g, "/")
+    .replace(/^\/+|\/+$/g, "")
+    .split("/")
+    .filter((part) => part && part !== "." && part !== "..")
+    .join("/");
+  return normalized || undefined;
+}
+
+export function localEntityPath(
+  entity: LocalExplorerEntity,
+  suggestedFolder?: string,
+) {
+  return `${safeFolder(suggestedFolder) ?? `Entities/${entity.type}`}/${slug(entity.name)}.md`;
 }
 
 export function serializeLocalExplorerEntity(entity: LocalExplorerEntity) {

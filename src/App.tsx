@@ -62,7 +62,9 @@ import {
   Link,
   List,
   ListOrdered,
+  Maximize2,
   MessageSquare,
+  Minimize2,
   Moon,
   OctagonAlert,
   Quote,
@@ -77,6 +79,8 @@ import {
 import pathbranchingIcon from "./assets/pathbranching-icon.png";
 import {
   useCallback,
+  cloneElement,
+  isValidElement,
   useEffect,
   useMemo,
   useRef,
@@ -86,6 +90,7 @@ import {
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
+  type ReactElement,
 } from "react";
 import type {
   Branch,
@@ -117,6 +122,7 @@ import type {
   CanvasMode,
   MarkdownDraftFormat,
   MarkdownEditorTab,
+  InspectorTab,
   Selection,
 } from "./appTypes.js";
 import {
@@ -3845,6 +3851,72 @@ function formatMarkdownText(
   };
 }
 
+function explorerInspectorTab(
+  selection: Selection,
+  project: BranchingProject,
+  nodes: StoryCanvasNode[],
+): InspectorTab | undefined {
+  if (selection.type === "node") {
+    if (project.events.some((event) => event.id === selection.id)) return undefined;
+    const node = nodes.find((candidate) => candidate.id === selection.id);
+    if (!node) return undefined;
+    const kind = node.data.kind;
+    const details = node.data.details as
+      | {
+          decision?: { name?: string };
+          dialogue?: { title?: string; text?: { content?: string } };
+          outcome?: { name?: string };
+        }
+      | undefined;
+    const title =
+      kind === "dialogue"
+        ? details?.dialogue?.title ||
+          details?.dialogue?.text?.content?.slice(0, 48) ||
+          "Dialogue"
+        : kind === "decision"
+          ? details?.decision?.name || "Decision"
+          : kind === "outcome"
+            ? details?.outcome?.name || "Outcome"
+            : kind === "branch"
+              ? "Branch"
+              : kind === "sequence"
+                ? "Sequence"
+                : "Inspector item";
+    return { id: `${kind}:${selection.id}`, selection, title };
+  }
+  if (selection.type === "edge") {
+    return { id: `edge:${selection.id}`, selection, title: "Transition" };
+  }
+  const title =
+    selection.type === "canon"
+      ? project.canonRefs.find((item) => item.id === selection.id)?.label ?? selection.id
+      : selection.type === "explorerEntity"
+        ? project.localExplorerEntities?.find((item) => item.id === selection.id)?.name ?? selection.id
+        : selection.type === "explorerType"
+          ? selection.id
+          : selection.type === "explorerProperty"
+            ? selection.id
+            : selection.type === "dataObject"
+              ? project.projectDataObjects?.find((item) => item.id === selection.id)?.name ?? selection.id
+              : selection.id;
+  const source = "source" in selection ? `:${selection.source}` : "";
+  return { id: `${selection.type}:${selection.id}${source}`, selection, title };
+}
+
+function inspectorTabIcon(tab: InspectorTab) {
+  if (tab.id.startsWith("dialogue:")) return MessageSquare;
+  if (tab.id.startsWith("decision:") || tab.id.startsWith("outcome:"))
+    return Split;
+  if (tab.id.startsWith("edge:")) return GitBranch;
+  if (tab.selection.type === "dataObject") return Database;
+  if (
+    tab.selection.type === "explorerType" ||
+    tab.selection.type === "explorerProperty"
+  )
+    return Boxes;
+  return FilePlus2;
+}
+
 function EventAuthoringDock({
   project,
   nodes,
@@ -3867,6 +3939,12 @@ function EventAuthoringDock({
   onEventDraftModeChange,
   onUpdateEventDraft,
   onSaveEventDraft,
+  inspectorTabs,
+  expandedInspectorTabId,
+  inspectorMaximized,
+  onOpenInspectorTab,
+  onCloseInspectorTab,
+  onToggleInspectorMaximized,
   children,
 }: {
   project: BranchingProject;
@@ -3890,6 +3968,12 @@ function EventAuthoringDock({
   onEventDraftModeChange: (mode: EventDraftMode) => void;
   onUpdateEventDraft: (updates: Partial<EventNode>) => void;
   onSaveEventDraft: () => void;
+  inspectorTabs: InspectorTab[];
+  expandedInspectorTabId?: string;
+  inspectorMaximized: boolean;
+  onOpenInspectorTab: (id: string) => void;
+  onCloseInspectorTab: (id: string) => void;
+  onToggleInspectorMaximized: () => void;
   children: ReactNode;
 }) {
   const markdownTextAreaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -3932,6 +4016,7 @@ function EventAuthoringDock({
   const selectedTabGroup = tabGroups.find(
     (group) => group.id === selectedTabGroupId,
   );
+  const hasInspectorTabs = openEvents.length + inspectorTabs.length > 0;
   const renderGroupMenu = useCallback(
     (variant: "stack" | "collapsed") => (
       <div
@@ -3954,7 +4039,7 @@ function EventAuthoringDock({
           {variant === "stack" ? (
             <button
               type="button"
-              disabled={openEvents.length === 0}
+              disabled={!hasInspectorTabs}
               onClick={onSaveGroup}
             >
               Save current group
@@ -4004,7 +4089,7 @@ function EventAuthoringDock({
       onDeleteGroup,
       onLoadGroup,
       onSaveGroup,
-      openEvents.length,
+      hasInspectorTabs,
       selectedTabGroup,
       selectedTabGroupId,
       tabGroups,
@@ -4142,13 +4227,54 @@ function EventAuthoringDock({
   );
 
   if (!eventInspector.open || openEvents.length === 0) {
-    if (selection && selection.type !== "node") {
+    if (inspectorTabs.length > 0) {
       return (
         <aside
-          className="event-authoring-dock explorer-inspector-dock"
-          aria-label="Explorer inspector"
+          className={`event-authoring-dock explorer-inspector-dock ${inspectorMaximized ? "maximized" : ""}`}
+          aria-label="Inspector dock"
         >
-          <div className="event-dock-panels">{children}</div>
+          <div className="event-inspector-tab-cluster">
+            <div className="inspector-stack-tools">
+              {renderGroupMenu("stack")}
+              <button
+                type="button"
+                className="inspector-maximize-button"
+                title={inspectorMaximized ? "Restore inspector" : "Expand inspector"}
+                onClick={onToggleInspectorMaximized}
+              >
+                {inspectorMaximized ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+              </button>
+            </div>
+            {inspectorTabs.map((tab, index) => {
+              const expanded = expandedInspectorTabId === tab.id;
+              const TabIcon = inspectorTabIcon(tab);
+              return (
+                <section
+                  className={`event-editor-panel event-inspector-card ${expanded ? "expanded" : "minimized"}`}
+                  key={tab.id}
+                  style={{ "--stack-index": index + 1 } as CSSProperties}
+                >
+                  <div className="event-editor-header">
+                    <button
+                      type="button"
+                      className="event-minimized-title"
+                      title={tab.title}
+                      onClick={() => onOpenInspectorTab(tab.id)}
+                    >
+                      <strong><TabIcon className="event-header-icon" size={14} />{tab.title}</strong>
+                    </button>
+                    <div className="event-editor-actions">
+                      <button type="button" title={expanded ? "Minimize inspector" : "Expand inspector"} onClick={() => onOpenInspectorTab(tab.id)}>
+                        {expanded ? <ChevronDown size={14} /> : <ChevronUp size={14} />}
+                      </button>
+                      <button type="button" title="Close inspector" onClick={() => onCloseInspectorTab(tab.id)}><X size={14} /></button>
+                    </div>
+                  </div>
+                  {expanded ? <div className="event-inspector-body"><div className="event-inspector-body-scroll">{isValidElement(children) ? cloneElement(children as ReactElement<{ selection?: Selection }>, { selection: tab.selection }) : children}</div></div> : null}
+                </section>
+              );
+            })}
+          </div>
         </aside>
       );
     }
@@ -4187,10 +4313,44 @@ function EventAuthoringDock({
   }
 
   return (
-    <aside className="event-authoring-dock" aria-label="Event inspector stack">
+    <aside className={`event-authoring-dock ${inspectorMaximized ? "maximized" : ""}`} aria-label="Event inspector stack">
       <div className="event-inspector-stack">
         <div className="event-inspector-tab-cluster">
-          {renderGroupMenu("stack")}
+          {hasInspectorTabs ? (
+            <div className="inspector-stack-tools">
+              {renderGroupMenu("stack")}
+              <button
+                type="button"
+                className="inspector-maximize-button"
+                title={inspectorMaximized ? "Restore inspector" : "Expand inspector"}
+                onClick={onToggleInspectorMaximized}
+              >
+                {inspectorMaximized ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+              </button>
+            </div>
+          ) : null}
+          {inspectorTabs.map((tab, index) => {
+            const expanded = expandedInspectorTabId === tab.id;
+            const TabIcon = inspectorTabIcon(tab);
+            return (
+              <section
+                className={`event-editor-panel event-inspector-card ${expanded ? "expanded" : "minimized"}`}
+                key={tab.id}
+                style={{ "--stack-index": index + openEvents.length + 1 } as CSSProperties}
+              >
+                <div className="event-editor-header">
+                  <button type="button" className="event-minimized-title" title={tab.title} onClick={() => onOpenInspectorTab(tab.id)}>
+                    <strong><TabIcon className="event-header-icon" size={14} />{tab.title}</strong>
+                  </button>
+                  <div className="event-editor-actions">
+                    <button type="button" title={expanded ? "Minimize inspector" : "Expand inspector"} onClick={() => onOpenInspectorTab(tab.id)}>{expanded ? <ChevronDown size={14} /> : <ChevronUp size={14} />}</button>
+                    <button type="button" title="Close inspector" onClick={() => onCloseInspectorTab(tab.id)}><X size={14} /></button>
+                  </div>
+                </div>
+                {expanded ? <div className="event-inspector-body"><div className="event-inspector-body-scroll">{isValidElement(children) ? cloneElement(children as ReactElement<{ selection?: Selection }>, { selection: tab.selection }) : children}</div></div> : null}
+              </section>
+            );
+          })}
           {openEvents.map((event, index) => {
             const isExpanded = eventInspector.expandedEventId === event.id;
             const isDraftEvent = eventDraft?.eventId === event.id;
@@ -6621,6 +6781,9 @@ function StoryCanvas({
   eventDraft,
   eventInspector,
   eventInspectorTabGroups,
+  inspectorTabs,
+  expandedInspectorTabId,
+  inspectorMaximized,
   canvasBackground,
   onNodesChange,
   onEdgesChange,
@@ -6689,6 +6852,9 @@ function StoryCanvas({
   onEventDraftModeChange,
   onUpdateEventDraft,
   onSaveEventDraft,
+  onOpenInspectorTab,
+  onCloseInspectorTab,
+  onToggleInspectorMaximized,
 }: {
   project: BranchingProject;
   propertiesConfig?: Record<string, unknown>;
@@ -6708,6 +6874,9 @@ function StoryCanvas({
   eventDraft?: EventDraft;
   eventInspector: EventInspectorState;
   eventInspectorTabGroups: EventInspectorTabGroup[];
+  inspectorTabs: InspectorTab[];
+  expandedInspectorTabId?: string;
+  inspectorMaximized: boolean;
   canvasBackground: CanvasBackgroundSettings;
   onNodesChange: (changes: NodeChange<StoryCanvasNode>[]) => void;
   onEdgesChange: (changes: EdgeChange<StoryCanvasEdge>[]) => void;
@@ -6829,6 +6998,9 @@ function StoryCanvas({
   onEventDraftModeChange: (mode: EventDraftMode) => void;
   onUpdateEventDraft: (updates: Partial<EventNode>) => void;
   onSaveEventDraft: () => void;
+  onOpenInspectorTab: (id: string) => void;
+  onCloseInspectorTab: (id: string) => void;
+  onToggleInspectorMaximized: () => void;
 }) {
   const shellRef = useRef<HTMLElement | null>(null);
   const [reactFlowInstance, setReactFlowInstance] =
@@ -7292,6 +7464,12 @@ function StoryCanvas({
         onEventDraftModeChange={onEventDraftModeChange}
         onUpdateEventDraft={onUpdateEventDraft}
         onSaveEventDraft={onSaveEventDraft}
+        inspectorTabs={inspectorTabs}
+        expandedInspectorTabId={expandedInspectorTabId}
+        inspectorMaximized={inspectorMaximized}
+        onOpenInspectorTab={onOpenInspectorTab}
+        onCloseInspectorTab={onCloseInspectorTab}
+        onToggleInspectorMaximized={onToggleInspectorMaximized}
       >
         <Inspector
           project={inspectorProject}
@@ -7377,6 +7555,9 @@ export function App() {
   const [eventInspectorTabGroups, setEventInspectorTabGroups] = useState<
     EventInspectorTabGroup[]
   >([]);
+  const [inspectorTabs, setInspectorTabs] = useState<InspectorTab[]>([]);
+  const [expandedInspectorTabId, setExpandedInspectorTabId] = useState<string>();
+  const [inspectorMaximized, setInspectorMaximized] = useState(false);
   const [markdownTabs, setMarkdownTabs] = useState<MarkdownEditorTab[]>([]);
   const [activeMarkdownTabId, setActiveMarkdownTabId] = useState<string>();
   const [eventDraft, setEventDraft] = useState<EventDraft>();
@@ -7575,6 +7756,9 @@ export function App() {
       setDataOpen(savedSession.dataOpen ?? false);
       setEventInspector(restoreEventInspectorState(savedSession));
       setEventInspectorTabGroups(savedSession.eventInspectorTabGroups ?? []);
+      setInspectorTabs(savedSession.inspectorTabs ?? []);
+      setExpandedInspectorTabId(savedSession.inspectorExpandedTabId);
+      setInspectorMaximized(savedSession.inspectorMaximized ?? false);
       setStoryOutlineTab(savedSession.storyOutlineTab ?? "sequence");
       const initialSelectionId =
         normalizedScope?.kind === "sequence"
@@ -8133,7 +8317,18 @@ export function App() {
       );
       if (!currentProject || !currentWorkspace || !universePath || !entity)
         return;
-      const path = entity.publishedPath ?? localEntityPath(entity);
+      const localType = currentProject.localExplorerTypes?.find(
+        (type) => type.id === entity.type,
+      );
+      const canonType = canonExplorerTypes(
+        currentWorkspace.canonIndex.propertiesConfig,
+      ).find((type) => type.id === entity.type);
+      const path =
+        entity.publishedPath ??
+        localEntityPath(
+          entity,
+          localType?.suggestedFolder ?? canonType?.suggestedFolder,
+        );
       if (
         currentWorkspace.files.some((file) => file.relativePath === path) ||
         currentWorkspace.canonIndex.entities.some(
@@ -8168,7 +8363,7 @@ export function App() {
           },
         });
         setMessage(
-          `Published ${entity.name}. Reload the universe to see it as Canon.`,
+          `Published ${entity.name} in ${path}. Reload the universe to see it as Canon.`,
         );
       } catch (publishError) {
         setError(
@@ -8483,6 +8678,9 @@ export function App() {
       eventInspectorOpenEventIds: eventInspector.openEventIds,
       eventInspectorExpandedEventId: eventInspector.expandedEventId,
       eventInspectorTabGroups,
+      inspectorTabs,
+      inspectorExpandedTabId: expandedInspectorTabId,
+      inspectorMaximized,
       activeScope,
       canvasMode,
       focusNodeId,
@@ -8969,6 +9167,8 @@ export function App() {
       }
       const nextInspector = loadEventInspectorTabGroup(group);
       setEventInspector(nextInspector);
+      setInspectorTabs(group.inspectorTabs ?? []);
+      setExpandedInspectorTabId(undefined);
       setSelection(
         nextInspector.expandedEventId
           ? { type: "node", id: nextInspector.expandedEventId }
@@ -8993,7 +9193,7 @@ export function App() {
   );
 
   const requestSaveInspectorTabGroup = useCallback(() => {
-    if (eventInspector.openEventIds.length === 0) {
+    if (eventInspector.openEventIds.length === 0 && inspectorTabs.length === 0) {
       setMessage("Open inspector tabs before saving a group.");
       return;
     }
@@ -9003,7 +9203,7 @@ export function App() {
       label: "Group name",
       initialValue: `Inspector group ${eventInspectorTabGroups.length + 1}`,
     });
-  }, [eventInspector.openEventIds.length, eventInspectorTabGroups.length]);
+  }, [eventInspector.openEventIds.length, eventInspectorTabGroups.length, inspectorTabs.length]);
 
   const deleteInspectorTabGroup = useCallback((groupId: string) => {
     setEventInspectorTabGroups((current) =>
@@ -9014,6 +9214,10 @@ export function App() {
   const selectWithEventDraftGuard = useCallback(
     (nextSelection?: Selection) => {
       const currentProject = projectRef.current;
+      const tab =
+        nextSelection && currentProject
+          ? explorerInspectorTab(nextSelection, currentProject, nodes)
+          : undefined;
       const nextEventId = currentProject
         ? eventIdFromSelection(currentProject, nodes, nextSelection)
         : undefined;
@@ -9026,12 +9230,33 @@ export function App() {
         return;
       }
       setSelection(nextSelection);
-      if (nextEventId) {
+      if (tab) {
+        setInspectorTabs((current) =>
+          current.some((candidate) => candidate.id === tab.id)
+            ? current
+            : [tab, ...current],
+        );
+        setExpandedInspectorTabId(tab.id);
+        setEventInspector((current) => ({
+          ...current,
+          expandedEventId: undefined,
+        }));
+      } else if (nextEventId) {
+        setExpandedInspectorTabId(undefined);
         openEventInspectorForEvent(nextEventId);
       }
     },
     [eventDraft, nodes, openEventInspectorForEvent],
   );
+
+  const openInspectorTab = useCallback((id: string) => {
+    setExpandedInspectorTabId((current) => (current === id ? undefined : id));
+  }, []);
+
+  const closeInspectorTab = useCallback((id: string) => {
+    setInspectorTabs((current) => current.filter((tab) => tab.id !== id));
+    setExpandedInspectorTabId((current) => (current === id ? undefined : current));
+  }, []);
 
   const resolveEventDraftDialog = useCallback(
     async (action: "save" | "discard" | "cancel") => {
@@ -9636,9 +9861,26 @@ export function App() {
           value,
           eventInspectorTabGroups,
         );
-        setEventInspectorTabGroups(result.groups);
+        const groups = result.groupId
+          ? result.groups.map((group) =>
+              group.id === result.groupId
+                ? { ...group, inspectorTabs: [...inspectorTabs] }
+                : group,
+            )
+          : [
+              ...result.groups,
+              {
+                id: `inspector-tabs-${Date.now().toString(36)}`,
+                name: value,
+                eventIds: [],
+                inspectorTabs: [...inspectorTabs],
+                createdAt: Date.now(),
+                updatedAt: Date.now(),
+              },
+            ];
+        setEventInspectorTabGroups(groups);
         setMessage(
-          result.groupId
+          result.groupId || inspectorTabs.length > 0
             ? `Saved inspector tab group "${value}".`
             : "Open inspector tabs before saving a group.",
         );
@@ -9650,6 +9892,7 @@ export function App() {
       createStory,
       eventInspector,
       eventInspectorTabGroups,
+      inspectorTabs,
       nameDialog,
       runMutation,
     ],
@@ -11433,6 +11676,9 @@ export function App() {
             eventDraft={eventDraft}
             eventInspector={eventInspector}
             eventInspectorTabGroups={eventInspectorTabGroups}
+            inspectorTabs={inspectorTabs}
+            expandedInspectorTabId={expandedInspectorTabId}
+            inspectorMaximized={inspectorMaximized}
             canvasBackground={settings.canvasBackground}
             onNodesChange={handleNodesChange}
             onEdgesChange={handleEdgesChange}
@@ -11507,6 +11753,9 @@ export function App() {
               setEventDraft((draft) => updateEventDraft(draft, updates))
             }
             onSaveEventDraft={() => void saveActiveEventDraft()}
+            onOpenInspectorTab={openInspectorTab}
+            onCloseInspectorTab={closeInspectorTab}
+            onToggleInspectorMaximized={() => setInspectorMaximized((current) => !current)}
           />
         </div>
       </div>

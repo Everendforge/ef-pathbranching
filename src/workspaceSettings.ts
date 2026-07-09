@@ -3,6 +3,7 @@ import type {
   AppView,
   CanvasMode,
   MarkdownEditorTab,
+  InspectorTab,
   Selection,
 } from "./appTypes.js";
 import type { CanvasScope } from "./domain.js";
@@ -17,6 +18,36 @@ export const MIN_EXPLORER_WIDTH = 300;
 export const MAX_EXPLORER_WIDTH = 640;
 export const COLLAPSED_RAIL_WIDTH = 36;
 export const NEW_SEQUENCE_SELECT_VALUE = "__new_sequence__";
+
+export const WORKSPACE_PANEL_IDS = [
+  "explorer",
+  "outline",
+  "assets",
+  "logic",
+  "export",
+  "connect",
+] as const;
+
+export type WorkspacePanelId = (typeof WORKSPACE_PANEL_IDS)[number];
+export type WorkspacePanelState = Record<WorkspacePanelId, boolean>;
+
+export const DEFAULT_WORKSPACE_PANEL_VISIBILITY: WorkspacePanelState = {
+  explorer: true,
+  outline: true,
+  assets: true,
+  logic: true,
+  export: true,
+  connect: true,
+};
+
+export const DEFAULT_WORKSPACE_PANEL_COLLAPSED: WorkspacePanelState = {
+  explorer: false,
+  outline: false,
+  assets: true,
+  logic: true,
+  export: true,
+  connect: true,
+};
 
 export type CanvasBackgroundSettings = {
   showDots: boolean;
@@ -56,6 +87,7 @@ export type EventInspectorTabGroup = {
   expandedEventId?: string;
   createdAt: number;
   updatedAt: number;
+  inspectorTabs?: InspectorTab[];
 };
 
 export const DEFAULT_CANVAS_BACKGROUND_SETTINGS: CanvasBackgroundSettings = {
@@ -93,12 +125,17 @@ export type PathBranchingWorkspaceSession = {
   eventInspectorOpenEventIds?: string[];
   eventInspectorExpandedEventId?: string;
   eventInspectorTabGroups?: EventInspectorTabGroup[];
+  inspectorTabs?: InspectorTab[];
+  inspectorExpandedTabId?: string;
+  inspectorMaximized?: boolean;
   activeScope?: CanvasScope;
   canvasMode?: CanvasMode;
   focusNodeId?: string;
   markdownTabs?: MarkdownEditorTab[];
   activeMarkdownTabId?: string;
   storyOutlineTab?: StoryOutlineTab;
+  panelVisibility?: Partial<WorkspacePanelState>;
+  panelCollapsed?: Partial<WorkspacePanelState>;
 };
 
 export type AppSettings = {
@@ -353,7 +390,10 @@ export function isSelection(value: unknown): value is Selection {
       selection.type === "canon" ||
       selection.type === "file" ||
       selection.type === "dataObject" ||
-      selection.type === "canonSuggestion")
+      selection.type === "canonSuggestion" ||
+      selection.type === "explorerEntity" ||
+      selection.type === "explorerType" ||
+      selection.type === "explorerProperty")
   );
 }
 
@@ -404,6 +444,25 @@ function uniqueSessionStringIds(value: unknown) {
   });
 }
 
+function sessionInspectorTabs(value: unknown): InspectorTab[] {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  return value.flatMap((candidate) => {
+    if (!candidate || typeof candidate !== "object") return [];
+    const tab = candidate as Partial<InspectorTab>;
+    if (
+      typeof tab.id !== "string" ||
+      typeof tab.title !== "string" ||
+      !isSelection(tab.selection) ||
+      seen.has(tab.id)
+    ) {
+      return [];
+    }
+    seen.add(tab.id);
+    return [{ id: tab.id, title: tab.title, selection: tab.selection }];
+  });
+}
+
 export function sessionEventInspectorTabGroups(
   value: unknown,
 ): EventInspectorTabGroup[] {
@@ -439,9 +498,13 @@ export function sessionEventInspectorTabGroups(
         expandedEventId,
         createdAt,
         updatedAt,
+        inspectorTabs: sessionInspectorTabs(group.inspectorTabs),
       };
     })
-    .filter((group) => group.eventIds.length > 0);
+    .filter(
+      (group) =>
+        group.eventIds.length > 0 || (group.inspectorTabs?.length ?? 0) > 0,
+    );
 }
 
 export function normalizeWorkspaceSession(
@@ -474,9 +537,8 @@ export function normalizeWorkspaceSession(
       typeof session.eventInspectorOpen === "boolean"
         ? session.eventInspectorOpen
         : undefined,
-    eventInspectorOpenEventIds: sessionStringIds(
+    eventInspectorOpenEventIds: uniqueSessionStringIds(
       session.eventInspectorOpenEventIds,
-      Number.POSITIVE_INFINITY,
     ),
     eventInspectorExpandedEventId:
       typeof session.eventInspectorExpandedEventId === "string"
@@ -485,6 +547,15 @@ export function normalizeWorkspaceSession(
     eventInspectorTabGroups: sessionEventInspectorTabGroups(
       session.eventInspectorTabGroups,
     ),
+    inspectorTabs: sessionInspectorTabs(session.inspectorTabs),
+    inspectorExpandedTabId:
+      typeof session.inspectorExpandedTabId === "string"
+        ? session.inspectorExpandedTabId
+        : undefined,
+    inspectorMaximized:
+      typeof session.inspectorMaximized === "boolean"
+        ? session.inspectorMaximized
+        : undefined,
     activeScope: isCanvasScope(session.activeScope)
       ? session.activeScope
       : undefined,
@@ -505,5 +576,16 @@ export function normalizeWorkspaceSession(
       session.storyOutlineTab === "paths"
         ? session.storyOutlineTab
         : undefined,
+    panelVisibility: normalizePanelState(session.panelVisibility),
+    panelCollapsed: normalizePanelState(session.panelCollapsed),
   };
+}
+
+function normalizePanelState(value: unknown): Partial<WorkspacePanelState> {
+  if (!value || typeof value !== "object") return {};
+  const candidate = value as Partial<Record<WorkspacePanelId, unknown>>;
+  return WORKSPACE_PANEL_IDS.reduce<Partial<WorkspacePanelState>>((state, id) => {
+    if (typeof candidate[id] === "boolean") state[id] = candidate[id] as boolean;
+    return state;
+  }, {});
 }

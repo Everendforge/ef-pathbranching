@@ -94,6 +94,30 @@ export type LocalExplorerProperty = {
   updatedAt: string;
 };
 
+export type AssetKind = "image" | "video" | "audio" | "document" | "other";
+export type ProjectAsset = {
+  id: string;
+  name: string;
+  path: string;
+  kind: AssetKind;
+  origin: "canon" | "uncanon";
+  extension?: string;
+  size?: number;
+  importedAt?: string;
+  tags?: string[];
+};
+
+export type LogicVariableType = "text" | "number" | "boolean" | "list" | "canonRef";
+export type LogicVariableGroup = { id: string; name: string; order: number };
+export type LogicVariable = {
+  id: string;
+  name: string;
+  type: LogicVariableType;
+  value: string | number | boolean | string[];
+  groupId: string;
+  description?: string;
+};
+
 export type CanonEditSuggestionStatus =
   | "draft"
   | "proposed"
@@ -529,6 +553,9 @@ export type BranchingProject = {
   localExplorerEntities?: LocalExplorerEntity[];
   localExplorerTypes?: LocalExplorerType[];
   localExplorerProperties?: LocalExplorerProperty[];
+  assets?: ProjectAsset[];
+  logicVariableGroups?: LogicVariableGroup[];
+  logicVariables?: LogicVariable[];
   projectionRules?: ProjectionRule[];
   graphModules?: GraphModuleDefinition[];
   canvas?: CanvasAuthoringState;

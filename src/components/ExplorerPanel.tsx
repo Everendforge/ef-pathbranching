@@ -179,6 +179,9 @@ export function ExplorerPanel({
     "all",
   );
   const [newType, setNewType] = useState("concept");
+  const [explorerView, setExplorerView] = useState<"items" | "schema">(
+    "items",
+  );
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(
     () => new Set(),
   );
@@ -295,7 +298,27 @@ export function ExplorerPanel({
           <Plus size={15} />
         </button>
       </div>
-      <div
+      <div className="explorer-view-tabs" role="tablist" aria-label="Explorer view">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={explorerView === "items"}
+          className={explorerView === "items" ? "active" : ""}
+          onClick={() => setExplorerView("items")}
+        >
+          Items
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={explorerView === "schema"}
+          className={explorerView === "schema" ? "active" : ""}
+          onClick={() => setExplorerView("schema")}
+        >
+          Properties
+        </button>
+      </div>
+      {explorerView === "items" ? <div
         className="explorer-filter-row"
         role="tablist"
         aria-label="Explorer origin filter"
@@ -316,8 +339,8 @@ export function ExplorerPanel({
                   : "Local"}
           </button>
         ))}
-      </div>
-      <div className="explorer-schema-actions">
+      </div> : null}
+      {explorerView === "schema" ? <div className="explorer-schema-actions">
         <strong>Schema</strong>
         <button type="button" onClick={onCreateType} title="New local type">
           <Plus size={13} /> Type
@@ -329,9 +352,9 @@ export function ExplorerPanel({
         >
           <Plus size={13} /> Property
         </button>
-      </div>
+      </div> : null}
       <div className="explorer-tree">
-        {groups.map(([group, groupRows]) => {
+        {explorerView === "items" ? groups.map(([group, groupRows]) => {
           const isExpanded = !collapsedGroups.has(group);
           const Icon = iconForType(group);
           return (
@@ -434,8 +457,8 @@ export function ExplorerPanel({
                 : null}
             </section>
           );
-        })}
-        <section className="explorer-schema-list">
+        }) : null}
+        {explorerView === "schema" ? <section className="explorer-schema-list">
           <strong>Types</strong>
           {[...canonTypes, ...(project.localExplorerTypes ?? [])].map((type) => {
             const source = "createdAt" in type ? "local" : "canon";
@@ -451,8 +474,8 @@ export function ExplorerPanel({
               </button>
             );
           })}
-        </section>
-        <section className="explorer-schema-list">
+        </section> : null}
+        {explorerView === "schema" ? <section className="explorer-schema-list">
           <strong>Properties</strong>
           {[...canonProperties, ...(project.localExplorerProperties ?? [])].map(
             (property) => {
@@ -476,8 +499,8 @@ export function ExplorerPanel({
               );
             },
           )}
-        </section>
-        {groups.length === 0 ? (
+        </section> : null}
+        {explorerView === "items" && groups.length === 0 ? (
           <span className="empty-line">
             No Explorer items match this search.
           </span>

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createCanonChangeSet, lineDiff } from "../lib/canonChanges.js";
 import {
   createLocalExplorerEntity,
+  localEntityPath,
   serializeLocalExplorerEntity,
 } from "../lib/explorerEntities.js";
 import {
@@ -43,6 +44,10 @@ const markdown = serializeLocalExplorerEntity({
 assert.match(markdown, /id: item:signal-token/);
 assert.match(markdown, /type: item/);
 assert.match(markdown, /A local Explorer item/);
+assert.equal(
+  localEntityPath(localEntity, "Inventory/Quest Items"),
+  "Inventory/Quest Items/signal-token.md",
+);
 
 const propertiesConfig = {
   entityTypes: {

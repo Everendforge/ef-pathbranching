@@ -198,6 +198,28 @@ export function normalizeProject(project: BranchingProject): BranchingProject {
     localExplorerEntities: project.localExplorerEntities ?? [],
     localExplorerTypes: project.localExplorerTypes ?? [],
     localExplorerProperties: project.localExplorerProperties ?? [],
+    assets: project.assets ?? [],
+    logicVariableGroups:
+      project.logicVariableGroups ?? [{ id: "ungrouped", name: "Unassigned", order: 0 }],
+    logicVariables:
+      project.logicVariables ??
+      Object.entries(project.variables ?? {}).map(([name, value]) => ({
+        id: `variable:${name}`,
+        name,
+        type: Array.isArray(value)
+          ? "list"
+          : typeof value === "number"
+            ? "number"
+            : typeof value === "boolean"
+              ? "boolean"
+              : "text",
+        value: Array.isArray(value)
+          ? value.filter((item): item is string => typeof item === "string")
+          : typeof value === "string" || typeof value === "number" || typeof value === "boolean"
+            ? value
+            : String(value),
+        groupId: "ungrouped",
+      })),
     projectionRules: project.projectionRules ?? [],
     graphModules: project.graphModules ?? [],
     panels: {

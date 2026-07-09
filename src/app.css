@@ -2579,6 +2579,15 @@ button:disabled {
     transform 180ms ease;
 }
 
+.event-authoring-dock.maximized {
+  width: min(62%, calc(100% - 36px));
+  height: calc(100% - 14px);
+}
+
+.event-authoring-dock.maximized .event-inspector-card.expanded {
+  height: 100%;
+}
+
 .event-authoring-dock.collapsed {
   width: auto;
   height: auto;
@@ -2688,7 +2697,7 @@ button:disabled {
 .event-inspector-group-menu.stack .event-inspector-group-popover {
   top: 0;
   right: 38px;
-  width: calc(100% - 44px);
+  width: min(440px, calc(100vw - 36px));
   min-height: 32px;
   grid-template-columns: auto auto minmax(96px, 1fr) auto;
   align-items: center;
@@ -2836,6 +2845,44 @@ button:disabled {
   flex-direction: column;
   justify-content: flex-end;
   gap: 4px;
+}
+
+.inspector-stack-tools {
+  display: flex;
+  justify-content: flex-end;
+  align-items: flex-start;
+  gap: 6px;
+  min-height: 30px;
+}
+
+.inspector-stack-tools .event-inspector-group-menu.stack {
+  position: relative;
+  top: auto;
+  right: auto;
+  width: auto;
+  height: 32px;
+}
+
+.inspector-maximize-button {
+  width: 32px;
+  height: 32px;
+  min-width: 32px;
+  min-height: 32px;
+  padding: 0;
+  border: 1px solid var(--wn-border);
+  border-radius: 6px;
+  background: var(--wn-panel);
+  color: var(--wn-muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 12px 28px color-mix(in srgb, var(--wn-shadow) 18%, transparent);
+}
+
+.inspector-maximize-button:hover {
+  border-color: var(--wn-accent);
+  background: var(--wn-accent-soft);
+  color: var(--wn-text);
 }
 
 .event-dock-panels {
@@ -3998,6 +4045,11 @@ button:disabled {
     height: min(58vh, 460px);
   }
 
+  .event-authoring-dock.maximized {
+    width: calc(100% - 16px);
+    height: calc(100% - 16px);
+  }
+
   .event-authoring-dock.collapsed {
     width: auto;
     height: auto;
@@ -4055,6 +4107,23 @@ button:disabled {
   gap: 6px;
   padding: 8px;
   border-bottom: 1px solid var(--wn-border);
+}
+.explorer-view-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--wn-border);
+}
+.explorer-view-tabs button {
+  flex: 1;
+  padding: 4px 6px;
+  color: var(--wn-muted);
+  font-size: 0.7rem;
+}
+.explorer-view-tabs button.active {
+  color: var(--wn-text);
+  border-color: var(--wn-accent);
+  background: color-mix(in srgb, var(--wn-accent) 12%, var(--wn-card));
 }
 .explorer-schema-actions {
   display: flex;

@@ -222,5 +222,8 @@ export function pruneEventInspectorTabGroups(
         expandedEventId,
       };
     })
-    .filter((group) => group.eventIds.length > 0);
+    .filter(
+      (group) =>
+        group.eventIds.length > 0 || (group.inspectorTabs?.length ?? 0) > 0,
+    );
 }

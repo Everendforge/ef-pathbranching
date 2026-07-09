@@ -9,6 +9,12 @@ export type Selection =
   | { type: "explorerType"; id: string; source: "canon" | "local" }
   | { type: "explorerProperty"; id: string; source: "canon" | "local" };
 
+export type InspectorTab = {
+  id: string;
+  selection: Selection;
+  title: string;
+};
+
 export type CanvasMode = "branching" | "focus";
 export type AppView = "home" | "workspace";
 export type MarkdownDraftFormat =
