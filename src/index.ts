@@ -17,4 +17,5 @@ export * from "./workspaceSettings.js";
 export * from "./validate.js";
 export * from "./worldnotionBridge.js";
 export * from "./utils/appEnvironment.js";
-export { App as PathBranchingApp } from "./App.js";
+// The React app entry (App.tsx and its asset imports) lives in ./react.js so
+// this barrel stays loadable under plain Node (verify scripts, build:core).
