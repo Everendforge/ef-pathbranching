@@ -19,12 +19,52 @@ export type CanvasBackgroundSettings = {
 
 export type CanvasLayoutMode = "branching" | "timeline" | "branches";
 
+export type NodeColorSettings = {
+  sequence: string;
+  start: string;
+  branch: string;
+  event: string;
+  decision: string;
+  outcome: string;
+  inkSection: string;
+  knowledge: string;
+  runtimeAction: string;
+};
+
+export type WorldNotionBridgeSettings = {
+  connected: boolean;
+  lastCheckedAt?: number;
+  lastStatus?: "ok" | "error" | "disconnected";
+  lastMessage?: string;
+};
+
+export type EventInspectorTabGroup = {
+  id: string;
+  name: string;
+  eventIds: string[];
+  expandedEventId?: string;
+  createdAt: number;
+  updatedAt: number;
+};
+
 export const DEFAULT_CANVAS_BACKGROUND_SETTINGS: CanvasBackgroundSettings = {
   showDots: true,
   showGrid: false,
   snapToGrid: false,
   gridSize: 24,
   opacity: 0.5,
+};
+
+export const DEFAULT_NODE_COLOR_SETTINGS: NodeColorSettings = {
+  sequence: "#7c8da5",
+  start: "#2da66f",
+  branch: "#b062d6",
+  event: "#4f8cff",
+  decision: "#c7832f",
+  outcome: "#19a7a1",
+  inkSection: "#8d93ff",
+  knowledge: "#7ca83a",
+  runtimeAction: "#d45d78",
 };
 
 export type PathBranchingWorkspaceSession = {
@@ -39,6 +79,7 @@ export type PathBranchingWorkspaceSession = {
   eventInspectorOpen?: boolean;
   eventInspectorOpenEventIds?: string[];
   eventInspectorExpandedEventId?: string;
+  eventInspectorTabGroups?: EventInspectorTabGroup[];
   canvasMode?: CanvasMode;
   focusNodeId?: string;
   markdownTabs?: MarkdownEditorTab[];
@@ -53,6 +94,8 @@ export type AppSettings = {
   lastView?: AppView;
   canvasBackground: CanvasBackgroundSettings;
   canvasLayout: CanvasLayoutMode;
+  nodeColors: NodeColorSettings;
+  worldnotionBridge: WorldNotionBridgeSettings;
   workspaceSessions?: Record<string, PathBranchingWorkspaceSession>;
 };
 
@@ -77,6 +120,38 @@ export function normalizeCanvasLayoutMode(value: unknown): CanvasLayoutMode {
   return value === "timeline" || value === "branches" || value === "branching" ? value : "branching";
 }
 
+function normalizeColor(value: unknown, fallback: string) {
+  return typeof value === "string" && /^#[0-9a-fA-F]{6}$/.test(value) ? value : fallback;
+}
+
+export function normalizeNodeColorSettings(value: unknown): NodeColorSettings {
+  const settings = value && typeof value === "object" ? (value as Partial<NodeColorSettings>) : {};
+  return {
+    sequence: normalizeColor(settings.sequence, DEFAULT_NODE_COLOR_SETTINGS.sequence),
+    start: normalizeColor(settings.start, DEFAULT_NODE_COLOR_SETTINGS.start),
+    branch: normalizeColor(settings.branch, DEFAULT_NODE_COLOR_SETTINGS.branch),
+    event: normalizeColor(settings.event, DEFAULT_NODE_COLOR_SETTINGS.event),
+    decision: normalizeColor(settings.decision, DEFAULT_NODE_COLOR_SETTINGS.decision),
+    outcome: normalizeColor(settings.outcome, DEFAULT_NODE_COLOR_SETTINGS.outcome),
+    inkSection: normalizeColor(settings.inkSection, DEFAULT_NODE_COLOR_SETTINGS.inkSection),
+    knowledge: normalizeColor(settings.knowledge, DEFAULT_NODE_COLOR_SETTINGS.knowledge),
+    runtimeAction: normalizeColor(settings.runtimeAction, DEFAULT_NODE_COLOR_SETTINGS.runtimeAction),
+  };
+}
+
+export function normalizeWorldNotionBridgeSettings(value: unknown): WorldNotionBridgeSettings {
+  const settings = value && typeof value === "object" ? (value as Partial<WorldNotionBridgeSettings>) : {};
+  return {
+    connected: typeof settings.connected === "boolean" ? settings.connected : false,
+    lastCheckedAt: typeof settings.lastCheckedAt === "number" && Number.isFinite(settings.lastCheckedAt) ? settings.lastCheckedAt : undefined,
+    lastStatus:
+      settings.lastStatus === "ok" || settings.lastStatus === "error" || settings.lastStatus === "disconnected"
+        ? settings.lastStatus
+        : undefined,
+    lastMessage: typeof settings.lastMessage === "string" ? settings.lastMessage : undefined,
+  };
+}
+
 export function loadSettings(): AppSettings {
   try {
     const parsed = JSON.parse(localStorage.getItem(SETTINGS_KEY) ?? "{}") as Partial<AppSettings>;
@@ -91,6 +166,8 @@ export function loadSettings(): AppSettings {
       lastView: parsed.lastView === "workspace" || parsed.lastView === "home" ? parsed.lastView : "home",
       canvasBackground: normalizeCanvasBackgroundSettings(parsed.canvasBackground),
       canvasLayout: normalizeCanvasLayoutMode(parsed.canvasLayout),
+      nodeColors: normalizeNodeColorSettings(parsed.nodeColors),
+      worldnotionBridge: normalizeWorldNotionBridgeSettings(parsed.worldnotionBridge),
       workspaceSessions,
     };
   } catch {
@@ -100,6 +177,8 @@ export function loadSettings(): AppSettings {
       lastView: "home",
       canvasBackground: DEFAULT_CANVAS_BACKGROUND_SETTINGS,
       canvasLayout: "branching",
+      nodeColors: normalizeNodeColorSettings(undefined),
+      worldnotionBridge: normalizeWorldNotionBridgeSettings(undefined),
       workspaceSessions: {},
     };
   }
@@ -161,7 +240,41 @@ export function sessionMarkdownTabs(value: unknown): MarkdownEditorTab[] {
 
 export function sessionStringIds(value: unknown, limit = 5): string[] {
   if (!Array.isArray(value)) return [];
-  return value.filter((item): item is string => typeof item === "string" && item.length > 0).slice(-limit);
+  const ids = value.filter((item): item is string => typeof item === "string" && item.length > 0);
+  return Number.isFinite(limit) ? ids.slice(-limit) : ids;
+}
+
+function uniqueSessionStringIds(value: unknown) {
+  const seen = new Set<string>();
+  return sessionStringIds(value, Number.POSITIVE_INFINITY).filter((item) => {
+    if (seen.has(item)) return false;
+    seen.add(item);
+    return true;
+  });
+}
+
+export function sessionEventInspectorTabGroups(value: unknown): EventInspectorTabGroup[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((group): group is Partial<EventInspectorTabGroup> => {
+      return Boolean(group && typeof group === "object" && typeof group.id === "string" && typeof group.name === "string");
+    })
+    .map((group) => {
+      const eventIds = uniqueSessionStringIds(group.eventIds);
+      const expandedEventId =
+        typeof group.expandedEventId === "string" && eventIds.includes(group.expandedEventId) ? group.expandedEventId : undefined;
+      const createdAt = typeof group.createdAt === "number" && Number.isFinite(group.createdAt) ? group.createdAt : Date.now();
+      const updatedAt = typeof group.updatedAt === "number" && Number.isFinite(group.updatedAt) ? group.updatedAt : createdAt;
+      return {
+        id: group.id as string,
+        name: group.name as string,
+        eventIds,
+        expandedEventId,
+        createdAt,
+        updatedAt,
+      };
+    })
+    .filter((group) => group.eventIds.length > 0);
 }
 
 export function normalizeWorkspaceSession(session: PathBranchingWorkspaceSession | undefined): PathBranchingWorkspaceSession {
@@ -176,9 +289,10 @@ export function normalizeWorkspaceSession(session: PathBranchingWorkspaceSession
     exportOpen: typeof session.exportOpen === "boolean" ? session.exportOpen : undefined,
     dataOpen: typeof session.dataOpen === "boolean" ? session.dataOpen : undefined,
     eventInspectorOpen: typeof session.eventInspectorOpen === "boolean" ? session.eventInspectorOpen : undefined,
-    eventInspectorOpenEventIds: sessionStringIds(session.eventInspectorOpenEventIds),
+    eventInspectorOpenEventIds: sessionStringIds(session.eventInspectorOpenEventIds, Number.POSITIVE_INFINITY),
     eventInspectorExpandedEventId:
       typeof session.eventInspectorExpandedEventId === "string" ? session.eventInspectorExpandedEventId : undefined,
+    eventInspectorTabGroups: sessionEventInspectorTabGroups(session.eventInspectorTabGroups),
     canvasMode: session.canvasMode === "branching" || session.canvasMode === "focus" ? session.canvasMode : undefined,
     focusNodeId: typeof session.focusNodeId === "string" ? session.focusNodeId : undefined,
     markdownTabs: sessionMarkdownTabs(session.markdownTabs),

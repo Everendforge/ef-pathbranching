@@ -169,6 +169,7 @@ export type Branch = {
   id: string;
   title: string;
   description?: string;
+  color?: string;
   eventIds: string[];
   availability?: ConditionInput;
   ruleSets?: RuleSet[];

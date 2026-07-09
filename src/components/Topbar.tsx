@@ -1,6 +1,5 @@
 import {
   ArrowLeft,
-  Crown,
   Download,
   FolderOpen,
   Home,
@@ -8,10 +7,25 @@ import {
   Settings,
   Sun,
 } from "lucide-react";
+import { useState } from "react";
+import forgeLogoOnDark from "../assets/everend-forge-logo-on-dark.png";
+import forgeLogoOnLight from "../assets/everend-forge-logo-on-light.png";
 import type { BranchingProject, ValidationFinding } from "../domain.js";
 import { projectFileName, type ProjectFileState } from "../projectPersistence.js";
 import { isDarkTheme, themeById, type ThemeId } from "../themes.js";
 import { UniverseIconFrame } from "./UniverseIconFrame.js";
+
+const EVEREND_FORGE_GITHUB_URL = "https://github.com/Everendforge/everend-forge";
+const BUY_SUITE_URL = "https://everendforge.com/buy-suite";
+
+function ForgeLogoMark() {
+  return (
+    <>
+      <img className="forge-logo forge-logo-on-light" src={forgeLogoOnLight} alt="" aria-hidden="true" />
+      <img className="forge-logo forge-logo-on-dark" src={forgeLogoOnDark} alt="" aria-hidden="true" />
+    </>
+  );
+}
 
 function universeDisplayName(project?: BranchingProject, fileState?: ProjectFileState) {
   return fileState?.universeProfile?.name ?? project?.name ?? project?.projectId ?? "No universe";
@@ -58,13 +72,34 @@ export function Topbar({
   const status = findings.length === 0 ? "Clean" : `${findings.length} findings`;
   const universeName = universeDisplayName(project, fileState);
   const universePath = universeDisplayPath(fileState);
+  const [forgeMenuOpen, setForgeMenuOpen] = useState(false);
+
+  const openExternalUrl = (url: string) => {
+    window.open(url, "_blank", "noopener,noreferrer");
+    setForgeMenuOpen(false);
+  };
 
   return (
     <header className="topbar dock-top-bar pathbranching-topbar" aria-label="Workspace controls">
       <div className="dock-top-left">
-        <div className="forge-corner-menu">
-          <button type="button" className="forge-corner-button" title="Everend Forge">
-            <Crown size={16} />
+        <div className={`forge-corner-menu ${forgeMenuOpen ? "open" : ""}`}>
+          <div className="forge-orbit-panel" aria-label="Everend menu">
+            <button type="button" onClick={() => openExternalUrl(EVEREND_FORGE_GITHUB_URL)}>
+              Github
+            </button>
+            <button type="button" onClick={() => openExternalUrl(BUY_SUITE_URL)}>
+              Buy Suite
+            </button>
+          </div>
+          <button
+            type="button"
+            className="forge-corner-button"
+            onClick={() => setForgeMenuOpen((open) => !open)}
+            aria-expanded={forgeMenuOpen}
+            aria-label="Open Everend menu"
+            title="Everend menu"
+          >
+            <ForgeLogoMark />
           </button>
         </div>
 

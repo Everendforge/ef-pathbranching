@@ -53,6 +53,12 @@ export type UniverseReadResult = {
   errors: Array<{ relativePath: string; message: string }>;
 };
 
+export type BridgeStatus = {
+  ok: boolean;
+  runtime: string;
+  message: string;
+};
+
 function assertDesktopRuntime(action: string) {
   if (!isTauriRuntime()) {
     throw new Error(`${action} requires the Everend PathBranching desktop app.`);
@@ -83,6 +89,11 @@ export async function openUniverseDialog(): Promise<
     path: payload.rootPath,
     files: payload.files,
   };
+}
+
+export async function verifyDesktopBridge(): Promise<BridgeStatus> {
+  assertDesktopRuntime("Checking the WorldNotion bridge");
+  return invoke<BridgeStatus>("bridge_status");
 }
 
 export async function openUniversePath(path: string): Promise<{
@@ -169,7 +180,7 @@ export async function saveUniverseStory(
 ): Promise<SaveUniverseStoryResult> {
   const story = workspace.activeStory;
   if (!story) {
-    throw new Error("No active PathBranching story is available for this universe.");
+    throw new Error("No active Everend PathBranching story is available for this universe.");
   }
   const normalizedStory = {
     ...story,
@@ -198,7 +209,7 @@ export async function saveUniverseStory(
     }
   }
   if (!storyResult) {
-    throw new Error("No PathBranching story metadata file was produced for saving.");
+    throw new Error("No Everend PathBranching story metadata file was produced for saving.");
   }
   if (!storyResult.ok) return storyResult;
 

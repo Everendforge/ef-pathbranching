@@ -52,6 +52,14 @@ struct WriteResult {
     message: Option<String>,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BridgeStatus {
+    ok: bool,
+    runtime: String,
+    message: String,
+}
+
 fn menu_item(
     app: &tauri::AppHandle,
     id: &str,
@@ -182,7 +190,7 @@ fn build_app_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         "Help",
         true,
         &[
-            &menu_item(app, "pb:help:about", "About PathBranching", None)?,
+            &menu_item(app, "pb:help:about", "About Everend PathBranching", None)?,
             &menu_item(app, "pb:help:docs", "Everend Docs", None)?,
         ],
     )?;
@@ -394,6 +402,15 @@ fn read_universe(root: PathBuf) -> Result<UniverseReadResult, String> {
 }
 
 #[tauri::command]
+fn bridge_status() -> BridgeStatus {
+    BridgeStatus {
+        ok: true,
+        runtime: "tauri".to_string(),
+        message: "Everend PathBranching desktop bridge is available.".to_string(),
+    }
+}
+
+#[tauri::command]
 async fn open_universe_dialog(app: tauri::AppHandle) -> Result<Option<UniverseReadResult>, String> {
     let Some(folder_path) = app.dialog().file().blocking_pick_folder() else {
         return Ok(None);
@@ -560,6 +577,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .invoke_handler(tauri::generate_handler![
+            bridge_status,
             open_universe_dialog,
             read_universe_folder,
             save_universe_text_file,

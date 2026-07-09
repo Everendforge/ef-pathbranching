@@ -21,6 +21,10 @@ function StoryNode({ data, selected }: NodeProps<StoryCanvasNode>) {
   const canSource = nodeData.kind === "start" || (nodeData.kind !== "sequence" && !isFinalEvent);
   const eventTypeLabel = objectString(nodeData.details?.category, "label") ?? nodeData.subtitle ?? "Event";
   const branchLabel = objectString(nodeData.details?.branch, "title");
+  const summaryBadges = Array.isArray(nodeData.summaryBadges)
+    ? nodeData.summaryBadges.filter((badge): badge is string => typeof badge === "string" && badge.length > 0)
+    : [];
+  const detailBadges = nodeData.badges.filter((badge) => !/^\d+ decisions?$/.test(badge));
   const colorStyle = {
     "--node-accent": typeof nodeData.accentColor === "string" ? nodeData.accentColor : undefined,
     "--node-branch": typeof nodeData.branchColor === "string" ? nodeData.branchColor : undefined,
@@ -70,10 +74,17 @@ function StoryNode({ data, selected }: NodeProps<StoryCanvasNode>) {
         <div className="node-kind">{nodeData.kind}</div>
       )}
       <div className="node-title">{nodeData.title}</div>
+      {summaryBadges.length > 0 ? (
+        <div className="node-summary-badges">
+          {summaryBadges.slice(0, 3).map((badge) => (
+            <span key={badge}>{badgeText(badge)}</span>
+          ))}
+        </div>
+      ) : null}
       {!isEvent && nodeData.subtitle ? <div className="node-subtitle">{nodeData.subtitle}</div> : null}
-      {nodeData.badges.length > 0 ? (
+      {detailBadges.length > 0 ? (
         <div className="node-badges">
-          {nodeData.badges.slice(0, 4).map((badge) => (
+          {detailBadges.slice(0, 4).map((badge) => (
             <span key={badge}>{badgeText(badge)}</span>
           ))}
         </div>

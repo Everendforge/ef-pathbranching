@@ -36,6 +36,7 @@ export type StoryCanvasNodeData = {
   subtitle?: string;
   storyObjectId: string;
   badges: string[];
+  summaryBadges?: string[];
   details?: Record<string, unknown>;
   collapsed?: boolean;
   isContainer?: boolean;
@@ -87,6 +88,12 @@ const EVENT_TYPE_COLORS: Record<string, string> = {
   final: "#d45d78",
 };
 
+export type StoryCanvasNodeColors = Partial<Record<StoryCanvasNodeKind, string>>;
+
+export type StoryCanvasModelOptions = {
+  nodeColors?: StoryCanvasNodeColors;
+};
+
 function hashString(value: string) {
   let hash = 0;
   for (let index = 0; index < value.length; index += 1) {
@@ -100,13 +107,17 @@ function paletteColor(id: string, palette: string[]) {
   return palette[hashString(id) % palette.length] ?? palette[0];
 }
 
-function eventTypeColor(project: BranchingProject, eventNode: EventNode) {
-  const category = project.eventCategories?.find((item) => item.id === eventNode.type);
-  return category?.color ?? EVENT_TYPE_COLORS[eventNode.type] ?? paletteColor(eventNode.type, BRANCH_COLORS);
+function nodeColor(kind: StoryCanvasNodeKind, options: StoryCanvasModelOptions | undefined) {
+  return options?.nodeColors?.[kind];
 }
 
-function branchColor(branchId: string | undefined | null) {
-  return branchId ? paletteColor(branchId, BRANCH_COLORS) : undefined;
+function eventTypeColor(project: BranchingProject, eventNode: EventNode, options?: StoryCanvasModelOptions) {
+  const category = project.eventCategories?.find((item) => item.id === eventNode.type);
+  return category?.color ?? nodeColor("event", options) ?? EVENT_TYPE_COLORS[eventNode.type] ?? paletteColor(eventNode.type, BRANCH_COLORS);
+}
+
+function branchColor(branch: Branch | undefined, branchId: string | undefined | null, options?: StoryCanvasModelOptions) {
+  return branch?.color ?? (branchId ? paletteColor(branchId, BRANCH_COLORS) : undefined) ?? nodeColor("branch", options);
 }
 
 function positionFor(project: BranchingProject, id: string, x: number, y: number) {
@@ -129,6 +140,8 @@ function pushNode(
     width?: number;
     height?: number;
     isContainer?: boolean;
+    nodeColors?: StoryCanvasNodeColors;
+    summaryBadges?: string[];
   } = {},
 ) {
   const persisted = project.canvas?.nodes?.[id];
@@ -143,8 +156,9 @@ function pushNode(
       subtitle,
       storyObjectId: id,
       badges,
+      summaryBadges: options.summaryBadges,
       details,
-      accentColor: typeof details.accentColor === "string" ? details.accentColor : undefined,
+      accentColor: typeof details.accentColor === "string" ? details.accentColor : nodeColor(kind, { nodeColors: options.nodeColors }),
       branchColor: typeof details.branchColor === "string" ? details.branchColor : undefined,
       minimapColor: typeof details.minimapColor === "string" ? details.minimapColor : undefined,
       collapsed: persisted?.collapsed,
@@ -243,6 +257,15 @@ function eventBadges(project: BranchingProject, eventNode: EventNode) {
   ];
 }
 
+function eventSummaryBadges(eventNode: EventNode) {
+  const decisionCount = eventNode.decisions?.length ?? 0;
+  const outcomeCount = eventNode.decisions?.reduce((count, decision) => count + decision.outcomes.length, 0) ?? 0;
+  return [
+    `${decisionCount} decision${decisionCount === 1 ? "" : "s"}`,
+    ...(outcomeCount > 0 ? [`${outcomeCount} outcome${outcomeCount === 1 ? "" : "s"}`] : []),
+  ];
+}
+
 function branchHeight(branch: Branch) {
   return Math.max(230, BRANCH_PADDING_TOP + Math.max(1, branch.eventIds.length) * BRANCH_EVENT_GAP + 24);
 }
@@ -254,6 +277,7 @@ function ensureKnowledgeNode(
   ref: string,
   x: number,
   y: number,
+  options: StoryCanvasModelOptions,
 ) {
   const id = `knowledge:${ref}`;
   if (created.has(id)) {
@@ -261,7 +285,7 @@ function ensureKnowledgeNode(
   }
 
   created.add(id);
-  pushNode(project, nodes, id, "knowledge", ref, canonLabel(project, ref), x, y, ["canon"], { canonRef: ref });
+  pushNode(project, nodes, id, "knowledge", ref, canonLabel(project, ref), x, y, ["canon"], { canonRef: ref }, { nodeColors: options.nodeColors });
   return id;
 }
 
@@ -274,6 +298,7 @@ function addConsequenceNodes(
   ownerLabel: string,
   consequences: Consequence[] | undefined,
   cursor: LayoutCursor,
+  options: StoryCanvasModelOptions,
 ) {
   consequences?.forEach((consequence, index) => {
     const id = `runtime-action:${ownerId}:${index}`;
@@ -284,17 +309,17 @@ function addConsequenceNodes(
     const dataObjectId =
       consequence.type === "unlockDataObject" && typeof consequence.objectId === "string" ? consequence.objectId : undefined;
 
-    pushNode(project, nodes, id, "runtimeAction", title, ownerLabel, 1160, cursor.supportY, badges, { consequence });
+    pushNode(project, nodes, id, "runtimeAction", title, ownerLabel, 1160, cursor.supportY, badges, { consequence }, { nodeColors: options.nodeColors });
     edges.push(edge(`edge:consequence:${ownerId}:${id}`, ownerId, id, "consequence", title, { consequences: [consequence] }));
 
     if (ref) {
-      const knowledgeId = ensureKnowledgeNode(project, nodes, createdKnowledge, ref, 1440, cursor.supportY);
+      const knowledgeId = ensureKnowledgeNode(project, nodes, createdKnowledge, ref, 1440, cursor.supportY, options);
       edges.push(edge(`edge:consequence:${id}:${knowledgeId}`, id, knowledgeId, "consequence", "unlocks", { consequences: [consequence] }));
     }
 
     if (dataObjectId) {
       const dataObject = project.projectDataObjects?.find((object) => object.id === dataObjectId);
-      const knowledgeId = ensureKnowledgeNode(project, nodes, createdKnowledge, dataObjectId, 1440, cursor.supportY);
+      const knowledgeId = ensureKnowledgeNode(project, nodes, createdKnowledge, dataObjectId, 1440, cursor.supportY, options);
       const targetNode = nodes.find((node) => node.id === knowledgeId);
       if (targetNode) {
         targetNode.data.title = dataObject?.name ?? dataObjectId;
@@ -318,6 +343,7 @@ function addOutcomeNodes(
   edges: StoryCanvasEdge[],
   createdKnowledge: Set<string>,
   cursor: LayoutCursor,
+  options: StoryCanvasModelOptions,
 ) {
   const outcomeId = `outcome:${event.id}:${decisionId}:${outcome.id}`;
   const badges = [
@@ -338,6 +364,7 @@ function addOutcomeNodes(
     cursor.outcomeY + outcomeIndex * 150,
     badges,
     { eventId: event.id, decisionId, outcome },
+    { nodeColors: options.nodeColors },
   );
 
   edges.push(
@@ -348,11 +375,11 @@ function addOutcomeNodes(
   );
 
   outcome.requiredCanonRefs?.forEach((ref, refIndex) => {
-    const knowledgeId = ensureKnowledgeNode(project, nodes, createdKnowledge, ref, 1440, cursor.supportY + refIndex * 150);
+    const knowledgeId = ensureKnowledgeNode(project, nodes, createdKnowledge, ref, 1440, cursor.supportY + refIndex * 150, options);
     edges.push(edge(`edge:condition:${knowledgeId}:${outcomeId}`, knowledgeId, outcomeId, "condition", "requires"));
   });
 
-  addConsequenceNodes(project, nodes, edges, createdKnowledge, outcomeId, outcome.name, outcome.consequences, cursor);
+  addConsequenceNodes(project, nodes, edges, createdKnowledge, outcomeId, outcome.name, outcome.consequences, cursor, options);
 }
 
 function addEventSupportNodes(
@@ -362,6 +389,7 @@ function addEventSupportNodes(
   edges: StoryCanvasEdge[],
   createdKnowledge: Set<string>,
   cursor: LayoutCursor,
+  options: StoryCanvasModelOptions,
 ) {
   if (eventNode.script) {
     const scriptNodeId = `ink:${eventNode.script.id}`;
@@ -376,6 +404,7 @@ function addEventSupportNodes(
       cursor.supportY,
       ["ink", eventNode.script.entrySection ?? "section"],
       { script: eventNode.script, eventId: eventNode.id },
+      { nodeColors: options.nodeColors },
     );
     edges.push(edge(`edge:contains:${eventNode.id}:${scriptNodeId}`, eventNode.id, scriptNodeId, "contains", "script"));
     cursor.supportY += 150;
@@ -399,21 +428,22 @@ function addEventSupportNodes(
         ...dataUseBadges(project, decision.availability),
       ],
       { eventId: eventNode.id, decision },
+      { nodeColors: options.nodeColors, summaryBadges: [`${decision.outcomes.length} outcome${decision.outcomes.length === 1 ? "" : "s"}`] },
     );
     edges.push(edge(`edge:contains:${eventNode.id}:${decisionId}`, eventNode.id, decisionId, "contains", "decision"));
 
     decision.outcomes.forEach((outcome, outcomeIndex) => {
-      addOutcomeNodes(project, eventNode, outcome, decisionId, outcomeIndex, nodes, edges, createdKnowledge, cursor);
+      addOutcomeNodes(project, eventNode, outcome, decisionId, outcomeIndex, nodes, edges, createdKnowledge, cursor, options);
     });
 
     cursor.decisionY += Math.max(190, decision.outcomes.length * 160);
     cursor.outcomeY += Math.max(190, decision.outcomes.length * 160);
   });
 
-  addConsequenceNodes(project, nodes, edges, createdKnowledge, eventNode.id, eventNode.name, eventNode.unlocks, cursor);
+  addConsequenceNodes(project, nodes, edges, createdKnowledge, eventNode.id, eventNode.name, eventNode.unlocks, cursor, options);
 }
 
-export function buildStoryCanvasModel(project: BranchingProject): StoryCanvasModel {
+export function buildStoryCanvasModel(project: BranchingProject, options: StoryCanvasModelOptions = {}): StoryCanvasModel {
   const nodes: StoryCanvasNode[] = [];
   const edges: StoryCanvasEdge[] = [];
   const createdKnowledge = new Set<string>();
@@ -445,6 +475,7 @@ export function buildStoryCanvasModel(project: BranchingProject): StoryCanvasMod
       cursor.sequenceY,
       [],
       { sequenceId: sequence.id },
+      { nodeColors: options.nodeColors },
     );
 
     if (sequence.entryEventId && activeEventIds.has(sequence.entryEventId)) {
@@ -473,9 +504,13 @@ export function buildStoryCanvasModel(project: BranchingProject): StoryCanvasMod
         branch,
         category: project.eventCategories?.find((category) => category.id === eventNode.type),
         terminal: eventNode.type === "final" || Boolean(project.eventCategories?.some((category) => category.id === eventNode.type && category.terminal)),
-        accentColor: eventTypeColor(project, eventNode),
-        branchColor: branchColor(eventNode.branchRef),
-        minimapColor: branchColor(eventNode.branchRef) ?? eventTypeColor(project, eventNode),
+        accentColor: eventTypeColor(project, eventNode, options),
+        branchColor: branchColor(branch, eventNode.branchRef, options),
+        minimapColor: branchColor(branch, eventNode.branchRef, options) ?? eventTypeColor(project, eventNode, options),
+      },
+      {
+        nodeColors: options.nodeColors,
+        summaryBadges: eventSummaryBadges(eventNode),
       },
     );
 
@@ -496,7 +531,7 @@ export function buildStoryCanvasModel(project: BranchingProject): StoryCanvasMod
     cursor.decisionY = supportBaseY;
     cursor.outcomeY = supportBaseY;
     cursor.supportY = supportBaseY + 160;
-    addEventSupportNodes(project, eventNode, nodes, edges, createdKnowledge, cursor);
+    addEventSupportNodes(project, eventNode, nodes, edges, createdKnowledge, cursor, options);
   });
 
   return {

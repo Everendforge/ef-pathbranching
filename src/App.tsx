@@ -26,7 +26,6 @@ import {
   ChevronDown,
   ChevronUp,
   Code,
-  Crown,
   Database,
   Download,
   Eye,
@@ -50,6 +49,7 @@ import {
   Trash2,
   X,
 } from "lucide-react";
+import pathbranchingIcon from "./assets/pathbranching-icon.png";
 import {
   useCallback,
   useEffect,
@@ -96,6 +96,19 @@ import {
   type EventDraft,
   type EventDraftMode,
 } from "./eventDraft.js";
+import {
+  DEFAULT_EVENT_INSPECTOR_STATE,
+  closeEventInspectorTab,
+  collapseEventInspectorTab,
+  deleteEventInspectorTabGroup,
+  loadEventInspectorTabGroup,
+  openEventInspectorTab,
+  pruneEventInspectorTabGroups,
+  pruneEventInspectorState,
+  restoreEventInspectorState,
+  saveEventInspectorTabGroup,
+  type EventInspectorState,
+} from "./eventInspectorState.js";
 import { buildExportPreview, type ExportPreviewMode } from "./exportPreview.js";
 import { conditionCount, conditionLabels, consequenceLabel, isConditionSet } from "./logic.js";
 import * as mutations from "./projectMutations.js";
@@ -109,6 +122,7 @@ import {
   revealUniverseFolder,
   exportTextDialog,
   saveWorkingCopy,
+  verifyDesktopBridge,
   type ProjectFileState,
 } from "./projectPersistence.js";
 import { workingCopyPathForCanonRef, type PathBranchingWorkspace, type UniverseProfile } from "./pathBranchingWorkspace.js";
@@ -139,6 +153,7 @@ import {
   loadSettings,
   normalizeCanvasBackgroundSettings,
   normalizeCanvasLayoutMode,
+  normalizeNodeColorSettings,
   normalizeWorkspaceSession,
   rememberRecentProject,
   saveSettings,
@@ -146,7 +161,10 @@ import {
   type AppSettings,
   type CanvasBackgroundSettings,
   type CanvasLayoutMode,
+  type EventInspectorTabGroup,
+  type NodeColorSettings,
   type PathBranchingWorkspaceSession,
+  type WorldNotionBridgeSettings,
 } from "./workspaceSettings.js";
 import { validateProject } from "./validate.js";
 import {
@@ -1278,14 +1296,14 @@ function HomeDashboard({
     <main className="home-shell">
       <header className="home-topbar">
         <div className="brand">
-          <GitBranch size={22} />
+          <img className="app-brand-icon" src={pathbranchingIcon} alt="" aria-hidden="true" />
           <div>
-            <h1>PathBranching</h1>
+            <h1>Pathbranching</h1>
             <p>Story-flow authoring workspace</p>
           </div>
         </div>
         <div className="home-topbar-actions">
-          <button type="button" className="dock-icon-button" onClick={onOpenSettings} title="PathBranching settings">
+          <button type="button" className="dock-icon-button" onClick={onOpenSettings} title="Pathbranching settings">
             <Settings size={15} />
           </button>
           <button type="button" className="dock-icon-button" onClick={onToggleTheme} title={`Toggle theme (${themeById(theme).label})`}>
@@ -1300,7 +1318,7 @@ function HomeDashboard({
             <p className="eyebrow">Dashboard</p>
             <h2>Open a universe</h2>
             <p>
-              PathBranching reads the same universe folder as WorldNotion, previews its Markdown canon, and stores branching
+              Pathbranching reads the same universe folder as Worldnotion, previews its Markdown canon, and stores branching
               stories in `.everend/.pathbranching`.
             </p>
           </div>
@@ -1445,11 +1463,13 @@ function DiscardChangesDialog({
 
 function EventDraftChangesDialog({
   open,
+  description = "This event has unsaved text or component edits. Save them before changing selection?",
   onSave,
   onDiscard,
   onCancel,
 }: {
   open: boolean;
+  description?: string;
   onSave: () => void;
   onDiscard: () => void;
   onCancel: () => void;
@@ -1462,7 +1482,7 @@ function EventDraftChangesDialog({
     <div className="modal-backdrop">
       <section className="modal-dialog">
         <h2>Unsaved event edits</h2>
-        <p>This event has unsaved text or component edits. Save them before changing selection?</p>
+        <p>{description}</p>
         <div className="inspector-actions">
           <button type="button" onClick={onSave}>
             Save
@@ -1575,7 +1595,19 @@ function ConfirmActionDialog({
   );
 }
 
-type PathBranchingSettingsSection = "overview" | "authoring" | "markdown" | "workspace" | "recents";
+type PathBranchingSettingsSection = "overview" | "authoring" | "markdown" | "bridge" | "workspace" | "recents";
+
+const NODE_COLOR_FIELDS: Array<{ key: keyof NodeColorSettings; label: string }> = [
+  { key: "sequence", label: "Sequence" },
+  { key: "start", label: "Start" },
+  { key: "branch", label: "Branch" },
+  { key: "event", label: "Event" },
+  { key: "decision", label: "Decision" },
+  { key: "outcome", label: "Outcome" },
+  { key: "inkSection", label: "Ink" },
+  { key: "knowledge", label: "Knowledge" },
+  { key: "runtimeAction", label: "Runtime action" },
+];
 
 function EventCategoriesSettings({
   categories,
@@ -1625,6 +1657,14 @@ function EventCategoriesSettings({
                 Label
                 <input value={category.label} onChange={(event) => updateCategory(category.id, { label: event.target.value })} />
               </label>
+              <label className="field-label color-field">
+                Color
+                <input
+                  type="color"
+                  value={category.color ?? "#4f8cff"}
+                  onChange={(event) => updateCategory(category.id, { color: event.target.value })}
+                />
+              </label>
               <label className="checkbox-label">
                 <input
                   type="checkbox"
@@ -1657,6 +1697,18 @@ function EventCategoriesSettings({
   );
 }
 
+function bridgeLastCheckedLabel(value?: number) {
+  if (!value) return "Never";
+  return new Date(value).toLocaleString();
+}
+
+function bridgeStatusLabel(settings: WorldNotionBridgeSettings) {
+  if (!settings.connected) return "Disconnected";
+  if (settings.lastStatus === "ok") return "Connected";
+  if (settings.lastStatus === "error") return "Connection issue";
+  return "Connected, not verified";
+}
+
 function PathBranchingSettingsModal({
   project,
   fileState,
@@ -1665,8 +1717,12 @@ function PathBranchingSettingsModal({
   theme,
   onUpdateEventCategories,
   onCanvasBackgroundChange,
+  onNodeColorChange,
   onThemeChange,
   onToggleTheme,
+  onConnectBridge,
+  onVerifyBridge,
+  onDisconnectBridge,
   onOpenUniverse,
   onOpenRecentUniverse,
   onRemoveRecentUniverse,
@@ -1679,8 +1735,12 @@ function PathBranchingSettingsModal({
   theme: ThemeId;
   onUpdateEventCategories: (categories: EventCategoryDefinition[]) => void;
   onCanvasBackgroundChange: (updates: Partial<CanvasBackgroundSettings>) => void;
+  onNodeColorChange: (updates: Partial<NodeColorSettings>) => void;
   onThemeChange: (theme: ThemeId) => void;
   onToggleTheme: () => void;
+  onConnectBridge: () => void;
+  onVerifyBridge: () => void;
+  onDisconnectBridge: () => void;
   onOpenUniverse: () => void;
   onOpenRecentUniverse: (path: string) => void;
   onRemoveRecentUniverse: (path: string) => void;
@@ -1693,12 +1753,12 @@ function PathBranchingSettingsModal({
   const universePath = universeDisplayPath(fileState);
 
   return (
-    <div className="settings-backdrop" role="dialog" aria-modal="true" aria-label="PathBranching settings">
+    <div className="settings-backdrop" role="dialog" aria-modal="true" aria-label="Everend PathBranching settings">
       <div className="settings-modal pathbranching-settings-modal">
         <header className="settings-header">
           <div>
             <p className="eyebrow">{project ? "Universe settings" : "Application settings"}</p>
-            <h2>{project ? universeName : "PathBranching"}</h2>
+            <h2>{project ? universeName : "Everend PathBranching"}</h2>
           </div>
           <button type="button" onClick={onClose} title="Close settings">
             <X size={16} />
@@ -1720,6 +1780,10 @@ function PathBranchingSettingsModal({
               <button className={activeSection === "markdown" ? "active" : ""} onClick={() => setActiveSection("markdown")} type="button">
                 <FilePlus2 size={14} />
                 Markdown
+              </button>
+              <button className={activeSection === "bridge" ? "active" : ""} onClick={() => setActiveSection("bridge")} type="button">
+                <Link size={14} />
+                Bridge
               </button>
             </div>
 
@@ -1795,7 +1859,7 @@ function PathBranchingSettingsModal({
               <div className="settings-panel">
                 <div className="settings-page-title">
                   <h3>Branching authoring</h3>
-                  <p>{universePath || "PathBranching stores story graph data inside `.everend/.pathbranching`."}</p>
+                  <p>{universePath || "Everend PathBranching stores story graph data inside `.everend/.pathbranching`."}</p>
                 </div>
                 <div className="settings-grid">
                   <label>
@@ -1838,9 +1902,55 @@ function PathBranchingSettingsModal({
                   </label>
                   <label>
                     <span>Canon editing</span>
-                    <input value="Read-only from PathBranching" readOnly />
+                    <input value="Read-only from Everend PathBranching" readOnly />
                   </label>
                 </div>
+              </div>
+            ) : null}
+
+            {activeSection === "bridge" ? (
+              <div className="settings-panel">
+                <div className="settings-page-title">
+                  <h3>WorldNotion bridge</h3>
+                  <p>Use the bridge only when Everend PathBranching should read a local WorldNotion universe folder.</p>
+                </div>
+                <div className="settings-grid">
+                  <label>
+                    <span>Status</span>
+                    <input value={bridgeStatusLabel(settings.worldnotionBridge)} readOnly />
+                  </label>
+                  <label>
+                    <span>Runtime</span>
+                    <input value={isTauriRuntime() ? "Tauri desktop IPC" : "Web preview"} readOnly />
+                  </label>
+                  <label>
+                    <span>Last check</span>
+                    <input value={bridgeLastCheckedLabel(settings.worldnotionBridge.lastCheckedAt)} readOnly />
+                  </label>
+                  <label>
+                    <span>Last universe</span>
+                    <input value={settings.lastOpenedProject ?? "None"} readOnly />
+                  </label>
+                </div>
+                <div className="settings-action-list">
+                  <button type="button" onClick={onConnectBridge}>
+                    <Link size={15} />
+                    Connect bridge
+                  </button>
+                  <button type="button" onClick={onVerifyBridge}>
+                    <SearchCheck size={15} />
+                    Verify connection
+                  </button>
+                  <button type="button" onClick={onDisconnectBridge}>
+                    <X size={15} />
+                    Disconnect bridge
+                  </button>
+                </div>
+                {settings.worldnotionBridge.lastMessage ? (
+                  <p className={`bridge-status-note ${settings.worldnotionBridge.lastStatus ?? "disconnected"}`}>
+                    {settings.worldnotionBridge.lastMessage}
+                  </p>
+                ) : null}
               </div>
             ) : null}
 
@@ -1918,6 +2028,24 @@ function PathBranchingSettingsModal({
                     />
                   </label>
                 </div>
+                <div className="settings-subsection">
+                  <div className="settings-page-title compact">
+                    <h3>Node colors</h3>
+                    <p>Canvas node types use these colors as their left outline.</p>
+                  </div>
+                  <div className="settings-grid node-color-grid">
+                    {NODE_COLOR_FIELDS.map((field) => (
+                      <label key={field.key}>
+                        <span>{field.label}</span>
+                        <input
+                          type="color"
+                          value={settings.nodeColors[field.key]}
+                          onChange={(event) => onNodeColorChange({ [field.key]: event.target.value })}
+                        />
+                      </label>
+                    ))}
+                  </div>
+                </div>
               </div>
             ) : null}
 
@@ -1925,7 +2053,7 @@ function PathBranchingSettingsModal({
               <div className="settings-panel">
                 <div className="settings-page-title">
                   <h3>Recent universes</h3>
-                  <p>PathBranching opens the latest valid universe automatically on startup.</p>
+                  <p>Everend PathBranching opens the latest valid universe automatically on startup.</p>
                 </div>
                 <div className="space-list">
                   {settings.recentProjects.map((path) => (
@@ -2339,6 +2467,15 @@ function BranchTagPanel({
                 </span>
                 <div className="outline-editor compact">
                   <input value={branch.title} aria-label="Branch title" onChange={(event) => onUpdateBranch(branch.id, { title: event.target.value })} />
+                  <label className="color-field branch-color-field">
+                    <span>Branch color</span>
+                    <input
+                      type="color"
+                      value={branch.color ?? "#b062d6"}
+                      aria-label={`Color for ${branch.title}`}
+                      onChange={(event) => onUpdateBranch(branch.id, { color: event.target.value })}
+                    />
+                  </label>
                   <textarea
                     value={branch.description ?? ""}
                     rows={2}
@@ -2724,12 +2861,15 @@ function EventAuthoringDock({
   nodes,
   selection,
   eventDraft,
-  open,
-  openEventIds,
-  expandedEventId,
-  onOpenChange,
-  onOpenEventIdsChange,
-  onExpandedEventIdChange,
+  eventInspector,
+  tabGroups,
+  onOpenEvent,
+  onCollapseEvent,
+  onCloseEvent,
+  onPruneEvents,
+  onSaveGroup,
+  onLoadGroup,
+  onDeleteGroup,
   onSelect,
   onEventDraftModeChange,
   onUpdateEventDraft,
@@ -2740,12 +2880,15 @@ function EventAuthoringDock({
   nodes: StoryCanvasNode[];
   selection?: Selection;
   eventDraft?: EventDraft;
-  open: boolean;
-  openEventIds: string[];
-  expandedEventId?: string;
-  onOpenChange: (open: boolean) => void;
-  onOpenEventIdsChange: (eventIds: string[]) => void;
-  onExpandedEventIdChange: (eventId?: string) => void;
+  eventInspector: EventInspectorState;
+  tabGroups: EventInspectorTabGroup[];
+  onOpenEvent: (eventId: string) => void;
+  onCollapseEvent: (eventId: string) => void;
+  onCloseEvent: (eventId: string) => void;
+  onPruneEvents: (eventIds: readonly string[]) => void;
+  onSaveGroup: () => void;
+  onLoadGroup: (groupId: string) => void;
+  onDeleteGroup: (groupId: string) => void;
   onSelect: (selection?: Selection) => void;
   onEventDraftModeChange: (mode: EventDraftMode) => void;
   onUpdateEventDraft: (updates: Partial<EventNode>) => void;
@@ -2753,85 +2896,135 @@ function EventAuthoringDock({
   children: ReactNode;
 }) {
   const markdownTextAreaRef = useRef<HTMLTextAreaElement | null>(null);
+  const manuallyCollapsedEventIdRef = useRef<string | undefined>(undefined);
+  const manuallyClosedEventIdRef = useRef<string | undefined>(undefined);
+  const [selectedTabGroupId, setSelectedTabGroupId] = useState("");
   const currentSequence = project.sequences.find((sequence) => sequence.id === activeSequenceId(project));
-  const eventIds = new Set(currentSequence?.eventIds ?? []);
+  const validEventIds = useMemo(() => currentSequence?.eventIds ?? [], [currentSequence?.eventIds]);
+  const eventIds = useMemo(() => new Set(validEventIds), [validEventIds]);
   const selectedEventId = eventIdFromSelection(project, nodes, selection);
   const selectedEvent = selectedEventId ? project.events.find((event) => event.id === selectedEventId) : undefined;
-  const openEvents = openEventIds
+  const openEvents = eventInspector.openEventIds
     .map((eventId) => project.events.find((event) => event.id === eventId))
     .filter((event): event is EventNode => Boolean(event));
   const activeEvent =
-    (expandedEventId ? project.events.find((event) => event.id === expandedEventId) : undefined) ??
+    (eventInspector.expandedEventId ? project.events.find((event) => event.id === eventInspector.expandedEventId) : undefined) ??
     openEvents[openEvents.length - 1];
   const draftMatchesActiveEvent = Boolean(eventDraft && activeEvent?.id === eventDraft.eventId);
   const editableEvent = draftMatchesActiveEvent ? eventDraft?.draftEvent : activeEvent;
   const mode = eventDraft?.mode ?? "components";
+  const selectedTabGroup = tabGroups.find((group) => group.id === selectedTabGroupId);
+  const renderGroupMenu = useCallback(
+    (variant: "stack" | "collapsed") => (
+      <div className={`event-inspector-group-menu ${variant}`} aria-label="Inspector tab groups">
+        <button type="button" className="event-inspector-group-trigger" title="Inspector tab groups" aria-label="Inspector tab groups">
+          <FolderOpen size={15} />
+        </button>
+        <div className="event-inspector-group-popover">
+          <div className="event-inspector-group-popover-header">
+            <strong>Tab groups</strong>
+            <span>{tabGroups.length}</span>
+          </div>
+          {variant === "stack" ? (
+            <button type="button" disabled={openEvents.length === 0} onClick={onSaveGroup}>
+              Save current group
+            </button>
+          ) : null}
+          <select
+            aria-label="Saved inspector tab groups"
+            disabled={tabGroups.length === 0}
+            value={selectedTabGroupId}
+            onChange={(event) => setSelectedTabGroupId(event.target.value)}
+          >
+            {tabGroups.length === 0 ? <option value="">No saved groups</option> : null}
+            {tabGroups.map((group) => (
+              <option key={group.id} value={group.id}>
+                {group.name}
+              </option>
+            ))}
+          </select>
+          <div className="event-inspector-group-actions">
+            <button type="button" disabled={!selectedTabGroup} onClick={() => selectedTabGroup && onLoadGroup(selectedTabGroup.id)}>
+              Load
+            </button>
+            {variant === "stack" ? (
+              <button type="button" disabled={!selectedTabGroup} onClick={() => selectedTabGroup && onDeleteGroup(selectedTabGroup.id)}>
+                Delete
+              </button>
+            ) : null}
+          </div>
+        </div>
+      </div>
+    ),
+    [onDeleteGroup, onLoadGroup, onSaveGroup, openEvents.length, selectedTabGroup, selectedTabGroupId, tabGroups],
+  );
 
   useEffect(() => {
-    const nextOpenEventIds = openEventIds.filter((eventId) => eventIds.has(eventId));
-    if (nextOpenEventIds.length !== openEventIds.length || nextOpenEventIds.some((eventId, index) => eventId !== openEventIds[index])) {
-      onOpenEventIdsChange(nextOpenEventIds);
-    }
-    if (expandedEventId && !eventIds.has(expandedEventId)) {
-      onExpandedEventIdChange(undefined);
-    }
-  }, [currentSequence?.id, eventIds, expandedEventId, onExpandedEventIdChange, onOpenEventIdsChange, openEventIds]);
+    onPruneEvents(validEventIds);
+  }, [currentSequence?.id, onPruneEvents, validEventIds]);
 
   useEffect(() => {
-    if (!open) {
+    if (selectedTabGroupId && tabGroups.some((group) => group.id === selectedTabGroupId)) {
+      return;
+    }
+    setSelectedTabGroupId(tabGroups[0]?.id ?? "");
+  }, [selectedTabGroupId, tabGroups]);
+
+  useEffect(() => {
+    if (!eventInspector.open) {
       return;
     }
     if (selectedEventId && eventIds.has(selectedEventId)) {
-      if (!openEventIds.includes(selectedEventId)) {
-        onOpenEventIdsChange([...openEventIds, selectedEventId].slice(-5));
+      if (manuallyClosedEventIdRef.current && manuallyClosedEventIdRef.current !== selectedEventId) {
+        manuallyClosedEventIdRef.current = undefined;
       }
-      if (expandedEventId !== selectedEventId) {
-        onExpandedEventIdChange(selectedEventId);
+      if (manuallyClosedEventIdRef.current === selectedEventId) {
+        return;
+      }
+      if (manuallyCollapsedEventIdRef.current && manuallyCollapsedEventIdRef.current !== selectedEventId) {
+        manuallyCollapsedEventIdRef.current = undefined;
+      }
+      if (!eventInspector.openEventIds.includes(selectedEventId)) {
+        onOpenEvent(selectedEventId);
+        manuallyCollapsedEventIdRef.current = undefined;
+      }
+      if (manuallyCollapsedEventIdRef.current === selectedEventId) {
+        return;
+      }
+      if (eventInspector.expandedEventId !== selectedEventId) {
+        onOpenEvent(selectedEventId);
       }
       return;
     }
   }, [
-    onExpandedEventIdChange,
-    onOpenEventIdsChange,
-    open,
-    openEventIds,
-    expandedEventId,
+    eventInspector.expandedEventId,
+    eventInspector.open,
+    eventInspector.openEventIds,
+    onOpenEvent,
     selectedEventId,
     eventIds,
   ]);
 
-  const closeInspector = useCallback(
-    (eventId: string) => {
-      if (eventDraft?.dirty && eventDraft.eventId === eventId) {
-        onSelect({ type: "node", id: eventId });
-        return;
-      }
-      const nextOpenEventIds = openEventIds.filter((candidate) => candidate !== eventId);
-      onOpenEventIdsChange(nextOpenEventIds);
-      if (nextOpenEventIds.length === 0) {
-        onOpenChange(false);
-      }
-      if (expandedEventId === eventId) {
-        onExpandedEventIdChange(nextOpenEventIds[nextOpenEventIds.length - 1]);
-      }
-    },
-    [eventDraft, expandedEventId, onExpandedEventIdChange, onOpenChange, onOpenEventIdsChange, onSelect, openEventIds],
-  );
-
   const toggleInspector = useCallback((eventId: string) => {
-    onOpenChange(true);
-    onExpandedEventIdChange(eventId);
-    if (!openEventIds.includes(eventId)) {
-      onOpenEventIdsChange([...openEventIds, eventId].slice(-5));
-    }
+    manuallyCollapsedEventIdRef.current = undefined;
+    manuallyClosedEventIdRef.current = undefined;
+    onOpenEvent(eventId);
     onSelect({ type: "node", id: eventId });
-  }, [onExpandedEventIdChange, onOpenChange, onOpenEventIdsChange, onSelect, openEventIds]);
+  }, [onOpenEvent, onSelect]);
+
+  const closeInspector = useCallback((eventId: string) => {
+    manuallyClosedEventIdRef.current = eventId;
+    onCloseEvent(eventId);
+  }, [onCloseEvent]);
 
   const minimizeInspector = useCallback(
     (eventId: string) => {
-      onExpandedEventIdChange(expandedEventId === eventId ? undefined : expandedEventId);
+      if (eventInspector.expandedEventId === eventId) {
+        manuallyCollapsedEventIdRef.current = eventId;
+      }
+      onCollapseEvent(eventId);
     },
-    [expandedEventId, onExpandedEventIdChange],
+    [eventInspector.expandedEventId, onCollapseEvent],
   );
 
   const applyMarkdownAction = useCallback(
@@ -2857,23 +3050,30 @@ function EventAuthoringDock({
     [draftMatchesActiveEvent, editableEvent, onUpdateEventDraft],
   );
 
-  if (!open || openEvents.length === 0) {
-    return selectedEvent ? (
+  if (!eventInspector.open || openEvents.length === 0) {
+    return selectedEvent || eventInspector.openEventIds.length > 0 || tabGroups.length > 0 ? (
       <aside className="event-authoring-dock collapsed" aria-label="Event authoring dock">
-        <button
-          type="button"
-          className="event-stack-launcher"
-          onClick={() => {
-            if (openEventIds.length > 0) {
-              onOpenChange(true);
-              return;
-            }
-            toggleInspector(selectedEvent.id);
-          }}
-        >
-          <ChevronUp size={14} />
-          <span>Inspector</span>
-        </button>
+        <div className="event-inspector-collapsed-controls">
+          <button
+            type="button"
+            className="event-stack-launcher icon-only"
+            disabled={!selectedEvent && eventInspector.openEventIds.length === 0}
+            title="Open inspector"
+            aria-label="Open inspector"
+            onClick={() => {
+              if (eventInspector.openEventIds.length > 0) {
+                onOpenEvent(eventInspector.openEventIds[0]);
+                return;
+              }
+              if (selectedEvent) {
+                toggleInspector(selectedEvent.id);
+              }
+            }}
+          >
+            <ChevronUp size={14} />
+          </button>
+          {renderGroupMenu("collapsed")}
+        </div>
       </aside>
     ) : null;
   }
@@ -2881,17 +3081,19 @@ function EventAuthoringDock({
   return (
     <aside className="event-authoring-dock" aria-label="Event inspector stack">
       <div className="event-inspector-stack">
-        {openEvents.map((event, index) => {
-          const isExpanded = expandedEventId === event.id;
-          const isDraftEvent = eventDraft?.eventId === event.id;
-          const cardEvent = isExpanded && isDraftEvent ? eventDraft?.draftEvent ?? event : event;
-          return (
-            <section
-              className={`event-editor-panel event-inspector-card ${isExpanded ? "expanded" : "minimized"}`}
-              aria-label={`${event.name} inspector`}
-              key={event.id}
-              style={{ "--stack-index": index + 1 } as CSSProperties}
-            >
+        <div className="event-inspector-tab-cluster">
+          {renderGroupMenu("stack")}
+          {openEvents.map((event, index) => {
+            const isExpanded = eventInspector.expandedEventId === event.id;
+            const isDraftEvent = eventDraft?.eventId === event.id;
+            const cardEvent = isExpanded && isDraftEvent ? eventDraft?.draftEvent ?? event : event;
+            return (
+              <section
+                className={`event-editor-panel event-inspector-card ${isExpanded ? "expanded" : "minimized"}`}
+                aria-label={`${event.name} inspector`}
+                key={event.id}
+                style={{ "--stack-index": index + 1 } as CSSProperties}
+              >
             <div className="event-editor-header">
               {isExpanded ? (
                 <div className="event-header-title">
@@ -2948,7 +3150,6 @@ function EventAuthoringDock({
                   <button
                     type="button"
                     title={isDraftEvent && eventDraft?.dirty ? "Save or discard edits before closing" : "Close inspector"}
-                    disabled={isDraftEvent && eventDraft?.dirty}
                     onClick={() => closeInspector(event.id)}
                   >
                     <X size={14} />
@@ -2957,55 +3158,58 @@ function EventAuthoringDock({
             </div>
               <div className="event-inspector-body" aria-hidden={!isExpanded}>
                 {isExpanded ? (
-                  mode === "text" ? (
-                    <>
-                      <div className="event-markdown-toolbar" aria-label="Markdown editing tools">
-                        <button type="button" title="Bold" disabled={!draftMatchesActiveEvent} onClick={() => applyMarkdownAction("bold")}>
-                          <Bold size={13} />
-                        </button>
-                        <button type="button" title="Italic" disabled={!draftMatchesActiveEvent} onClick={() => applyMarkdownAction("italic")}>
-                          <Italic size={13} />
-                        </button>
-                        <button type="button" title="Heading" disabled={!draftMatchesActiveEvent} onClick={() => applyMarkdownAction("heading")}>
-                          <Heading1 size={13} />
-                        </button>
-                        <button type="button" title="Quote" disabled={!draftMatchesActiveEvent} onClick={() => applyMarkdownAction("quote")}>
-                          <Quote size={13} />
-                        </button>
-                        <button type="button" title="Bulleted list" disabled={!draftMatchesActiveEvent} onClick={() => applyMarkdownAction("unorderedList")}>
-                          <List size={13} />
-                        </button>
-                        <button type="button" title="Numbered list" disabled={!draftMatchesActiveEvent} onClick={() => applyMarkdownAction("orderedList")}>
-                          <ListOrdered size={13} />
-                        </button>
-                        <button type="button" title="Inline code" disabled={!draftMatchesActiveEvent} onClick={() => applyMarkdownAction("code")}>
-                          <Code size={13} />
-                        </button>
-                        <button type="button" title="Link" disabled={!draftMatchesActiveEvent} onClick={() => applyMarkdownAction("link")}>
-                          <Link size={13} />
-                        </button>
-                      </div>
-                      <textarea
-                        ref={markdownTextAreaRef}
-                        spellCheck
-                        disabled={!draftMatchesActiveEvent}
-                        value={editableEvent?.text?.content ?? ""}
-                        placeholder="Write the playable event text here."
-                        onChange={(event) =>
-                          onUpdateEventDraft({
-                            text: { format: editableEvent?.text?.format ?? "plain", content: event.target.value },
-                          })
-                        }
-                      />
-                    </>
-                  ) : (
-                    <div className="event-dock-inspector">{children}</div>
-                  )
+                  <div className="event-inspector-body-scroll">
+                    {mode === "text" ? (
+                      <>
+                        <div className="event-markdown-toolbar" aria-label="Markdown editing tools">
+                          <button type="button" title="Bold" disabled={!draftMatchesActiveEvent} onClick={() => applyMarkdownAction("bold")}>
+                            <Bold size={13} />
+                          </button>
+                          <button type="button" title="Italic" disabled={!draftMatchesActiveEvent} onClick={() => applyMarkdownAction("italic")}>
+                            <Italic size={13} />
+                          </button>
+                          <button type="button" title="Heading" disabled={!draftMatchesActiveEvent} onClick={() => applyMarkdownAction("heading")}>
+                            <Heading1 size={13} />
+                          </button>
+                          <button type="button" title="Quote" disabled={!draftMatchesActiveEvent} onClick={() => applyMarkdownAction("quote")}>
+                            <Quote size={13} />
+                          </button>
+                          <button type="button" title="Bulleted list" disabled={!draftMatchesActiveEvent} onClick={() => applyMarkdownAction("unorderedList")}>
+                            <List size={13} />
+                          </button>
+                          <button type="button" title="Numbered list" disabled={!draftMatchesActiveEvent} onClick={() => applyMarkdownAction("orderedList")}>
+                            <ListOrdered size={13} />
+                          </button>
+                          <button type="button" title="Inline code" disabled={!draftMatchesActiveEvent} onClick={() => applyMarkdownAction("code")}>
+                            <Code size={13} />
+                          </button>
+                          <button type="button" title="Link" disabled={!draftMatchesActiveEvent} onClick={() => applyMarkdownAction("link")}>
+                            <Link size={13} />
+                          </button>
+                        </div>
+                        <textarea
+                          ref={markdownTextAreaRef}
+                          spellCheck
+                          disabled={!draftMatchesActiveEvent}
+                          value={editableEvent?.text?.content ?? ""}
+                          placeholder="Write the playable event text here."
+                          onChange={(event) =>
+                            onUpdateEventDraft({
+                              text: { format: editableEvent?.text?.format ?? "plain", content: event.target.value },
+                            })
+                          }
+                        />
+                      </>
+                    ) : (
+                      <div className="event-dock-inspector">{children}</div>
+                    )}
+                  </div>
                 ) : null}
               </div>
           </section>
-          );
-        })}
+            );
+          })}
+        </div>
       </div>
     </aside>
   );
@@ -3721,7 +3925,7 @@ function Inspector({
             {selectedCanon.frontmatter && Object.keys(selectedCanon.frontmatter).length ? (
               <section className="inspector-section">
                 <h2>WorldNotion Frontmatter</h2>
-                <div className="readonly-preview-label">Full YAML frontmatter snapshot. PathBranching does not write it back.</div>
+                <div className="readonly-preview-label">Full YAML frontmatter snapshot. Everend PathBranching does not write it back.</div>
                 <pre>{JSON.stringify(selectedCanon.frontmatter, null, 2)}</pre>
               </section>
             ) : null}
@@ -3759,7 +3963,7 @@ function Inspector({
           <section className="inspector-section">
             <h2>WorldNotion Edit Suggestion</h2>
             <div className="readonly-preview-label">
-              Safe suggestion only. PathBranching stores this proposal; WorldNotion remains the source of truth and must apply final edits.
+              Safe suggestion only. Everend PathBranching stores this proposal; WorldNotion remains the source of truth and must apply final edits.
             </div>
             <label className="field-label">
               Title
@@ -4007,9 +4211,8 @@ function StoryCanvas({
   markdownTabs,
   activeMarkdownTabId,
   eventDraft,
-  eventInspectorOpen,
-  eventInspectorOpenEventIds,
-  eventInspectorExpandedEventId,
+  eventInspector,
+  eventInspectorTabGroups,
   canvasBackground,
   onNodesChange,
   onEdgesChange,
@@ -4050,9 +4253,13 @@ function StoryCanvas({
   onChangeMarkdownContent,
   onChangeMarkdownFormat,
   onSaveMarkdownTab,
-  onEventInspectorOpenChange,
-  onEventInspectorOpenEventIdsChange,
-  onEventInspectorExpandedEventIdChange,
+  onOpenEventInspectorEvent,
+  onCollapseEventInspectorEvent,
+  onCloseEventInspectorEvent,
+  onPruneEventInspectorEvents,
+  onSaveEventInspectorTabGroup,
+  onLoadEventInspectorTabGroup,
+  onDeleteEventInspectorTabGroup,
   onEventDraftModeChange,
   onUpdateEventDraft,
   onSaveEventDraft,
@@ -4073,9 +4280,8 @@ function StoryCanvas({
   markdownTabs: MarkdownEditorTab[];
   activeMarkdownTabId?: string;
   eventDraft?: EventDraft;
-  eventInspectorOpen: boolean;
-  eventInspectorOpenEventIds: string[];
-  eventInspectorExpandedEventId?: string;
+  eventInspector: EventInspectorState;
+  eventInspectorTabGroups: EventInspectorTabGroup[];
   canvasBackground: CanvasBackgroundSettings;
   onNodesChange: (changes: NodeChange<StoryCanvasNode>[]) => void;
   onEdgesChange: (changes: EdgeChange<StoryCanvasEdge>[]) => void;
@@ -4116,9 +4322,13 @@ function StoryCanvas({
   onChangeMarkdownContent: (id: string, content: string) => void;
   onChangeMarkdownFormat: (id: string, format: MarkdownDraftFormat) => void;
   onSaveMarkdownTab: (id: string) => void;
-  onEventInspectorOpenChange: (open: boolean) => void;
-  onEventInspectorOpenEventIdsChange: (eventIds: string[]) => void;
-  onEventInspectorExpandedEventIdChange: (eventId?: string) => void;
+  onOpenEventInspectorEvent: (eventId: string) => void;
+  onCollapseEventInspectorEvent: (eventId: string) => void;
+  onCloseEventInspectorEvent: (eventId: string) => void;
+  onPruneEventInspectorEvents: (eventIds: readonly string[]) => void;
+  onSaveEventInspectorTabGroup: () => void;
+  onLoadEventInspectorTabGroup: (groupId: string) => void;
+  onDeleteEventInspectorTabGroup: (groupId: string) => void;
   onEventDraftModeChange: (mode: EventDraftMode) => void;
   onUpdateEventDraft: (updates: Partial<EventNode>) => void;
   onSaveEventDraft: () => void;
@@ -4140,8 +4350,8 @@ function StoryCanvas({
     [eventDraft, project],
   );
   const inspectorEventId =
-    eventInspectorExpandedEventId ??
-    eventInspectorOpenEventIds[eventInspectorOpenEventIds.length - 1] ??
+    eventInspector.expandedEventId ??
+    eventInspector.openEventIds[0] ??
     eventIdFromSelection(inspectorProject, nodes, selection);
   const inspectorSelection = inspectorEventId ? { type: "node" as const, id: inspectorEventId } : undefined;
 
@@ -4397,12 +4607,15 @@ function StoryCanvas({
         nodes={nodes}
         selection={selection}
         eventDraft={eventDraft}
-        open={eventInspectorOpen}
-        openEventIds={eventInspectorOpenEventIds}
-        expandedEventId={eventInspectorExpandedEventId}
-        onOpenChange={onEventInspectorOpenChange}
-        onOpenEventIdsChange={onEventInspectorOpenEventIdsChange}
-        onExpandedEventIdChange={onEventInspectorExpandedEventIdChange}
+        eventInspector={eventInspector}
+        tabGroups={eventInspectorTabGroups}
+        onOpenEvent={onOpenEventInspectorEvent}
+        onCollapseEvent={onCollapseEventInspectorEvent}
+        onCloseEvent={onCloseEventInspectorEvent}
+        onPruneEvents={onPruneEventInspectorEvents}
+        onSaveGroup={onSaveEventInspectorTabGroup}
+        onLoadGroup={onLoadEventInspectorTabGroup}
+        onDeleteGroup={onDeleteEventInspectorTabGroup}
         onSelect={onSelect}
         onEventDraftModeChange={onEventDraftModeChange}
         onUpdateEventDraft={onUpdateEventDraft}
@@ -4470,9 +4683,8 @@ export function App() {
   const [exportOpen, setExportOpen] = useState(false);
   const [exportPreviewMode, setExportPreviewMode] = useState<ExportPreviewMode>("runtime");
   const [dataOpen, setDataOpen] = useState(false);
-  const [eventInspectorOpen, setEventInspectorOpen] = useState(true);
-  const [eventInspectorOpenEventIds, setEventInspectorOpenEventIds] = useState<string[]>([]);
-  const [eventInspectorExpandedEventId, setEventInspectorExpandedEventId] = useState<string>();
+  const [eventInspector, setEventInspector] = useState<EventInspectorState>(DEFAULT_EVENT_INSPECTOR_STATE);
+  const [eventInspectorTabGroups, setEventInspectorTabGroups] = useState<EventInspectorTabGroup[]>([]);
   const [markdownTabs, setMarkdownTabs] = useState<MarkdownEditorTab[]>([]);
   const [activeMarkdownTabId, setActiveMarkdownTabId] = useState<string>();
   const [eventDraft, setEventDraft] = useState<EventDraft>();
@@ -4482,12 +4694,17 @@ export function App() {
   const [undoStack, setUndoStack] = useState<BranchingProject[]>([]);
   const [redoStack, setRedoStack] = useState<BranchingProject[]>([]);
   const [discardDialog, setDiscardDialog] = useState<{ resolve: (discard: boolean) => void }>();
-  const [eventDraftDialog, setEventDraftDialog] = useState<{ nextSelection?: Selection }>();
+  const [eventDraftDialog, setEventDraftDialog] = useState<
+    | { kind: "select"; nextSelection?: Selection }
+    | { kind: "closeInspectorTab"; eventId: string }
+    | { kind: "loadInspectorGroup"; groupId: string }
+  >();
   const [nameDialog, setNameDialog] = useState<
     | { kind: "createStory"; title: string; label: string; initialValue?: string }
     | { kind: "renameStory"; title: string; label: string; initialValue?: string }
     | { kind: "createSequence"; title: string; label: string; initialValue?: string }
     | { kind: "renameSequence"; title: string; label: string; initialValue?: string }
+    | { kind: "saveInspectorTabGroup"; title: string; label: string; initialValue?: string }
   >();
   const [confirmDialog, setConfirmDialog] = useState<
     | { kind: "deleteStory"; title: string; message: string }
@@ -4507,7 +4724,7 @@ export function App() {
 
   const applyProject = useCallback((nextProject: BranchingProject, options: { dirty?: boolean; revision?: boolean; path?: string; universePath?: string; storyPath?: string; modifiedMs?: number } = {}) => {
     const normalizedProject = normalizeProject(nextProject);
-    const model = buildStoryCanvasModel(normalizedProject);
+    const model = buildStoryCanvasModel(normalizedProject, { nodeColors: settingsRef.current.nodeColors });
     if (options.dirty || options.revision) {
       projectRevisionRef.current += 1;
     }
@@ -4554,7 +4771,7 @@ export function App() {
         ...nextWorkspace.activeProject,
         universeRootPath: universePath,
       });
-      const model = buildStoryCanvasModel(activeProject);
+      const model = buildStoryCanvasModel(activeProject, { nodeColors: settingsRef.current.nodeColors });
       workspaceRef.current = nextWorkspace;
       projectRef.current = activeProject;
       projectRevisionRef.current = 0;
@@ -4586,9 +4803,8 @@ export function App() {
       setStoriesWidth(clampPanelWidth(savedSession.storiesWidth));
       setExportOpen(savedSession.exportOpen ?? false);
       setDataOpen(savedSession.dataOpen ?? false);
-      setEventInspectorOpen(savedSession.eventInspectorOpen ?? true);
-      setEventInspectorOpenEventIds(savedSession.eventInspectorOpenEventIds ?? []);
-      setEventInspectorExpandedEventId(savedSession.eventInspectorExpandedEventId);
+      setEventInspector(restoreEventInspectorState(savedSession));
+      setEventInspectorTabGroups(savedSession.eventInspectorTabGroups ?? []);
       setStoryOutlineTab(savedSession.storyOutlineTab ?? "sequence");
       const initialSelectionId = activeProject.canvas?.activeSequenceId ?? activeProject.entrySequenceId ?? activeProject.sequences[0]?.id ?? model.nodes[0]?.id;
       setSelection(savedSession.selection ?? (initialSelectionId ? { type: "node", id: initialSelectionId } : undefined));
@@ -4638,7 +4854,7 @@ export function App() {
       setRedoStack(snapshot.redoStack);
       setSelection(snapshot.selection);
       if (snapshot.project) {
-        const model = buildStoryCanvasModel(snapshot.project);
+        const model = buildStoryCanvasModel(snapshot.project, { nodeColors: settingsRef.current.nodeColors });
         setProject(snapshot.project);
         setNodes(model.nodes);
         setEdges(model.edges);
@@ -4883,7 +5099,16 @@ export function App() {
       try {
         const opened = await openUniverseStory(fileStateRef.current.universePath, storyId);
         applyWorkspace(opened.workspace, opened.path);
-        setSettings((current) => rememberRecentProject(current, opened.path));
+        setSettings((current) => ({
+          ...rememberRecentProject(current, opened.path),
+          worldnotionBridge: {
+            ...current.worldnotionBridge,
+            connected: true,
+            lastCheckedAt: Date.now(),
+            lastStatus: "ok",
+            lastMessage: "WorldNotion bridge connected through the active story.",
+          },
+        }));
         setView("workspace");
         setError(undefined);
         setMessage(workspaceLoadWarningMessage(opened.workspace) ?? `Opened story ${opened.workspace.activeStory?.name ?? storyId}.`);
@@ -4897,14 +5122,23 @@ export function App() {
   useEffect(() => {
     let disposed = false;
     async function loadInitialProject() {
-      if (settings.lastOpenedProject) {
+      if (settings.worldnotionBridge.connected && settings.lastOpenedProject) {
         try {
           const opened = await openUniversePath(settings.lastOpenedProject);
           if (disposed) {
             return;
           }
           applyWorkspace(opened.workspace, opened.path);
-          setSettings((current) => rememberRecentProject(current, opened.path));
+          setSettings((current) => ({
+            ...rememberRecentProject(current, opened.path),
+            worldnotionBridge: {
+              ...current.worldnotionBridge,
+              connected: true,
+              lastCheckedAt: Date.now(),
+              lastStatus: "ok",
+              lastMessage: "WorldNotion bridge connected through the last universe.",
+            },
+          }));
           setView("workspace");
           setInitialLoading(false);
           return;
@@ -4932,6 +5166,15 @@ export function App() {
     saveSettings({ ...settings, lastView: view });
   }, [settings, view]);
 
+  useEffect(() => {
+    const currentProject = projectRef.current;
+    if (!currentProject) return;
+    const model = buildStoryCanvasModel(currentProject, { nodeColors: settings.nodeColors });
+    setNodes(model.nodes);
+    setEdges(model.edges);
+    setFiles(model.files);
+  }, [settings.nodeColors]);
+
   const changeTheme = useCallback((theme: ThemeId) => {
     setSettings((current) => ({ ...current, theme }));
   }, []);
@@ -4947,9 +5190,10 @@ export function App() {
       storiesWidth,
       exportOpen,
       dataOpen,
-      eventInspectorOpen,
-      eventInspectorOpenEventIds,
-      eventInspectorExpandedEventId,
+      eventInspectorOpen: eventInspector.open,
+      eventInspectorOpenEventIds: eventInspector.openEventIds,
+      eventInspectorExpandedEventId: eventInspector.expandedEventId,
+      eventInspectorTabGroups,
       canvasMode,
       focusNodeId,
       markdownTabs: storableMarkdownTabs(markdownTabs),
@@ -4975,9 +5219,8 @@ export function App() {
     canonWidth,
     canvasMode,
     dataOpen,
-    eventInspectorExpandedEventId,
-    eventInspectorOpenEventIds,
-    eventInspectorOpen,
+    eventInspector,
+    eventInspectorTabGroups,
     exportOpen,
     fileState.universePath,
     filesOpen,
@@ -5008,6 +5251,89 @@ export function App() {
     }));
   }, []);
 
+  const changeNodeColors = useCallback((updates: Partial<NodeColorSettings>) => {
+    setSettings((current) => ({
+      ...current,
+      nodeColors: normalizeNodeColorSettings({
+        ...current.nodeColors,
+        ...updates,
+      }),
+    }));
+  }, []);
+
+  const checkBridgeConnection = useCallback(async (connect: boolean) => {
+    if (!isTauriRuntime()) {
+      const lastMessage = "Bridge unavailable in web preview. Open Everend PathBranching desktop to connect a local universe folder.";
+      setSettings((current) => ({
+        ...current,
+        worldnotionBridge: {
+          ...current.worldnotionBridge,
+          connected: false,
+          lastCheckedAt: Date.now(),
+          lastStatus: "error",
+          lastMessage,
+        },
+      }));
+      setMessage(lastMessage);
+      return false;
+    }
+
+    try {
+      const status = await verifyDesktopBridge();
+      const lastMessage = status.message || "Everend PathBranching desktop bridge is available.";
+      setSettings((current) => ({
+        ...current,
+        worldnotionBridge: {
+          ...current.worldnotionBridge,
+          connected: connect ? true : current.worldnotionBridge.connected,
+          lastCheckedAt: Date.now(),
+          lastStatus: status.ok ? "ok" : "error",
+          lastMessage,
+        },
+      }));
+      setError(undefined);
+      setMessage(connect ? "WorldNotion bridge connected." : lastMessage);
+      return status.ok;
+    } catch (bridgeError) {
+      const lastMessage = bridgeError instanceof Error ? bridgeError.message : String(bridgeError);
+      setSettings((current) => ({
+        ...current,
+        worldnotionBridge: {
+          ...current.worldnotionBridge,
+          connected: false,
+          lastCheckedAt: Date.now(),
+          lastStatus: "error",
+          lastMessage,
+        },
+      }));
+      setError(lastMessage);
+      return false;
+    }
+  }, []);
+
+  const connectBridge = useCallback(() => {
+    void checkBridgeConnection(true);
+  }, [checkBridgeConnection]);
+
+  const verifyBridge = useCallback(() => {
+    void checkBridgeConnection(false);
+  }, [checkBridgeConnection]);
+
+  const disconnectBridge = useCallback(() => {
+    const lastMessage = "WorldNotion bridge disconnected. Everend PathBranching will not auto-open or listen through the bridge.";
+    setSettings((current) => ({
+      ...current,
+      worldnotionBridge: {
+        ...current.worldnotionBridge,
+        connected: false,
+        lastCheckedAt: Date.now(),
+        lastStatus: "disconnected",
+        lastMessage,
+      },
+    }));
+    setMessage(lastMessage);
+  }, []);
+
   const openProject = useCallback(async () => {
     if (!(await confirmDiscardChanges())) {
       return;
@@ -5018,14 +5344,23 @@ export function App() {
         return;
       }
       applyWorkspace(opened.workspace, opened.path);
-      setSettings((current) => rememberRecentProject(current, opened.path));
+      setSettings((current) => ({
+        ...rememberRecentProject(current, opened.path),
+        worldnotionBridge: {
+          ...current.worldnotionBridge,
+          connected: true,
+          lastCheckedAt: Date.now(),
+          lastStatus: "ok",
+          lastMessage: "WorldNotion bridge connected through the selected universe folder.",
+        },
+      }));
       setView("workspace");
       setError(undefined);
       const loadWarning = workspaceLoadWarningMessage(opened.workspace);
       setMessage(
         loadWarning ??
           (opened.workspace.createdDefaultStory
-          ? `Opened ${projectFileName(opened.path)}. Create a story to write PathBranching metadata.`
+          ? `Opened ${projectFileName(opened.path)}. Create a story to write Everend PathBranching metadata.`
           : `Opened ${projectFileName(opened.path)}.`),
       );
     } catch (openError) {
@@ -5062,7 +5397,7 @@ export function App() {
           return;
         }
         if (!currentWorkspace || !currentFileState.universePath) {
-          throw new Error("Open a universe before saving a PathBranching story.");
+          throw new Error("Open a universe before saving an Everend PathBranching story.");
         }
 
         const snapshot = await saveBranchingDocument({
@@ -5170,9 +5505,69 @@ export function App() {
   }, [applyProject, eventDraft, persistProject, redoStack, restoreStructuralSnapshot, undoStack]);
 
   const openEventInspectorForEvent = useCallback((eventId: string) => {
-    setEventInspectorOpen(true);
-    setEventInspectorOpenEventIds((current) => (current.includes(eventId) ? current : [...current, eventId].slice(-5)));
-    setEventInspectorExpandedEventId(eventId);
+    setEventInspector((current) => openEventInspectorTab(current, eventId));
+  }, []);
+
+  const collapseEventInspectorForEvent = useCallback((eventId: string) => {
+    setEventInspector((current) => collapseEventInspectorTab(current, eventId));
+  }, []);
+
+  const pruneEventInspectorEvents = useCallback((eventIds: readonly string[]) => {
+    setEventInspector((current) => pruneEventInspectorState(current, eventIds));
+    setEventInspectorTabGroups((current) => pruneEventInspectorTabGroups(current, eventIds));
+  }, []);
+
+  const requestCloseEventInspectorForEvent = useCallback((eventId: string) => {
+    if (eventDraft?.dirty && eventDraft.eventId === eventId) {
+      setSelection({ type: "node", id: eventId });
+      setEventDraftDialog({ kind: "closeInspectorTab", eventId });
+      return;
+    }
+    setEventInspector((current) => closeEventInspectorTab(current, eventId));
+  }, [eventDraft]);
+
+  const loadInspectorTabGroup = useCallback(
+    (groupId: string) => {
+      const group = eventInspectorTabGroups.find((candidate) => candidate.id === groupId);
+      if (!group) {
+        return;
+      }
+      const nextInspector = loadEventInspectorTabGroup(group);
+      setEventInspector(nextInspector);
+      setSelection(nextInspector.expandedEventId ? { type: "node", id: nextInspector.expandedEventId } : undefined);
+    },
+    [eventInspectorTabGroups],
+  );
+
+  const requestLoadInspectorTabGroup = useCallback(
+    (groupId: string) => {
+      if (!eventInspectorTabGroups.some((group) => group.id === groupId)) {
+        return;
+      }
+      if (eventDraft?.dirty) {
+        setEventDraftDialog({ kind: "loadInspectorGroup", groupId });
+        return;
+      }
+      loadInspectorTabGroup(groupId);
+    },
+    [eventDraft?.dirty, eventInspectorTabGroups, loadInspectorTabGroup],
+  );
+
+  const requestSaveInspectorTabGroup = useCallback(() => {
+    if (eventInspector.openEventIds.length === 0) {
+      setMessage("Open inspector tabs before saving a group.");
+      return;
+    }
+    setNameDialog({
+      kind: "saveInspectorTabGroup",
+      title: "Save Inspector Tab Group",
+      label: "Group name",
+      initialValue: `Inspector group ${eventInspectorTabGroups.length + 1}`,
+    });
+  }, [eventInspector.openEventIds.length, eventInspectorTabGroups.length]);
+
+  const deleteInspectorTabGroup = useCallback((groupId: string) => {
+    setEventInspectorTabGroups((current) => deleteEventInspectorTabGroup(groupId, current));
   }, []);
 
   const selectWithEventDraftGuard = useCallback(
@@ -5180,7 +5575,7 @@ export function App() {
       const currentProject = projectRef.current;
       const nextEventId = currentProject ? eventIdFromSelection(currentProject, nodes, nextSelection) : undefined;
       if (eventDraft?.dirty && nextEventId && nextEventId !== eventDraft.eventId) {
-        setEventDraftDialog({ nextSelection });
+        setEventDraftDialog({ kind: "select", nextSelection });
         return;
       }
       setSelection(nextSelection);
@@ -5193,7 +5588,7 @@ export function App() {
 
   const resolveEventDraftDialog = useCallback(
     async (action: "save" | "discard" | "cancel") => {
-      const nextSelection = eventDraftDialog?.nextSelection;
+      const pendingAction = eventDraftDialog;
       if (action === "cancel") {
         setEventDraftDialog(undefined);
         return;
@@ -5206,6 +5601,15 @@ export function App() {
       }
       setEventDraftDialog(undefined);
       setEventDraft(undefined);
+      if (pendingAction?.kind === "closeInspectorTab") {
+        setEventInspector((current) => closeEventInspectorTab(current, pendingAction.eventId));
+        return;
+      }
+      if (pendingAction?.kind === "loadInspectorGroup") {
+        loadInspectorTabGroup(pendingAction.groupId);
+        return;
+      }
+      const nextSelection = pendingAction?.nextSelection;
       setSelection(nextSelection);
       const currentProject = projectRef.current;
       const nextEventId = currentProject ? eventIdFromSelection(currentProject, nodes, nextSelection) : undefined;
@@ -5213,7 +5617,7 @@ export function App() {
         openEventInspectorForEvent(nextEventId);
       }
     },
-    [eventDraftDialog?.nextSelection, nodes, openEventInspectorForEvent, saveActiveEventDraft],
+    [eventDraftDialog, loadInspectorTabGroup, nodes, openEventInspectorForEvent, saveActiveEventDraft],
   );
 
   useEffect(() => {
@@ -5295,7 +5699,16 @@ export function App() {
       try {
         const opened = await openUniversePath(path);
         applyWorkspace(opened.workspace, opened.path);
-        setSettings((current) => rememberRecentProject(current, opened.path));
+        setSettings((current) => ({
+          ...rememberRecentProject(current, opened.path),
+          worldnotionBridge: {
+            ...current.worldnotionBridge,
+            connected: true,
+            lastCheckedAt: Date.now(),
+            lastStatus: "ok",
+            lastMessage: "WorldNotion bridge connected through the selected recent universe.",
+          },
+        }));
         setView("workspace");
         setError(undefined);
         setMessage(workspaceLoadWarningMessage(opened.workspace) ?? `Opened ${projectFileName(opened.path)}.`);
@@ -5416,13 +5829,13 @@ export function App() {
   }, [project, nodes, edges]);
   const webPreviewBanner = desktopRuntime ? null : (
     <div className="persistence-warning" role="status">
-      Preview web: no guarda en universo. Abre PathBranching con Tauri para crear stories, secuencias y eventos persistentes.
+      Preview web: no guarda en universo. Abre Everend PathBranching con Tauri para crear stories, secuencias y eventos persistentes.
     </div>
   );
 
   const createStory = useCallback(async (name?: string) => {
     if (!isTauriRuntime()) {
-      setMessage("Preview web: no guarda en universo. Abre PathBranching con Tauri para crear stories persistentes.");
+      setMessage("Preview web: no guarda en universo. Abre Everend PathBranching con Tauri para crear stories persistentes.");
       return;
     }
     const currentWorkspace = workspaceRef.current;
@@ -5433,7 +5846,7 @@ export function App() {
     }
 
     try {
-      setMessage("Creating PathBranching story...");
+      setMessage("Creating Everend PathBranching story...");
       const revision = projectRevisionRef.current + 1;
       const snapshot = await createBranchingStory({
         workspace: workspaceRef.current ?? currentWorkspace,
@@ -5456,13 +5869,13 @@ export function App() {
 
   const createSequence = useCallback((name?: string) => {
     if (!isTauriRuntime()) {
-      setMessage("Preview web: no guarda en universo. Abre PathBranching con Tauri para crear secuencias persistentes.");
+      setMessage("Preview web: no guarda en universo. Abre Everend PathBranching con Tauri para crear secuencias persistentes.");
       return;
     }
     const currentProject = projectRef.current;
     if (!currentProject || workspaceRef.current?.createdDefaultStory) {
       setNameDialog({ kind: "createStory", title: "Create Story", label: "Story name", initialValue: "Branching Story" });
-      setMessage("Create a PathBranching story before adding sequences.");
+      setMessage("Create an Everend PathBranching story before adding sequences.");
       return;
     }
     runMutation(mutations.createSequence(currentProject, name));
@@ -5575,9 +5988,15 @@ export function App() {
         if (currentProject && sequenceId) {
           runMutation(mutations.updateSequence(currentProject, sequenceId, { name: value }));
         }
+        return;
+      }
+      if (dialog.kind === "saveInspectorTabGroup") {
+        const result = saveEventInspectorTabGroup(eventInspector, value, eventInspectorTabGroups);
+        setEventInspectorTabGroups(result.groups);
+        setMessage(result.groupId ? `Saved inspector tab group "${value}".` : "Open inspector tabs before saving a group.");
       }
     },
-    [applyWorkspace, createSequence, createStory, nameDialog, runMutation],
+    [applyWorkspace, createSequence, createStory, eventInspector, eventInspectorTabGroups, nameDialog, runMutation],
   );
 
   const confirmActionDialog = useCallback(async () => {
@@ -5638,12 +6057,12 @@ export function App() {
   const createBranch = useCallback(
     (position?: { x: number; y: number }) => {
       if (!isTauriRuntime()) {
-        setMessage("Preview web: no guarda en universo. Abre PathBranching con Tauri para crear branches persistentes.");
+        setMessage("Preview web: no guarda en universo. Abre Everend PathBranching con Tauri para crear branches persistentes.");
         return;
       }
       const currentProject = projectRef.current;
       if (!currentProject || workspaceRef.current?.createdDefaultStory) {
-        setMessage("Create a PathBranching story before adding branches.");
+        setMessage("Create an Everend PathBranching story before adding branches.");
         return;
       }
 
@@ -5657,12 +6076,12 @@ export function App() {
   const createEvent = useCallback(
     (type: EventType = "normal", position?: { x: number; y: number }, branchId?: string) => {
       if (!isTauriRuntime()) {
-        setMessage("Preview web: no guarda en universo. Abre PathBranching con Tauri para crear eventos persistentes.");
+        setMessage("Preview web: no guarda en universo. Abre Everend PathBranching con Tauri para crear eventos persistentes.");
         return;
       }
       const currentProject = projectRef.current;
       if (!currentProject || workspaceRef.current?.createdDefaultStory) {
-        setMessage("Create a PathBranching story before adding events.");
+        setMessage("Create an Everend PathBranching story before adding events.");
         return;
       }
 
@@ -5683,13 +6102,13 @@ export function App() {
   const createConnectedEvent = useCallback(
     (sourceNodeId: string, type: EventType, position: { x: number; y: number }) => {
       if (!isTauriRuntime()) {
-        setMessage("Preview web: no guarda en universo. Abre PathBranching con Tauri para crear eventos persistentes.");
+        setMessage("Preview web: no guarda en universo. Abre Everend PathBranching con Tauri para crear eventos persistentes.");
         return;
       }
 
       const currentProject = projectRef.current;
       if (!currentProject || workspaceRef.current?.createdDefaultStory) {
-        setMessage("Create a PathBranching story before adding events.");
+        setMessage("Create an Everend PathBranching story before adding events.");
         return;
       }
 
@@ -6368,7 +6787,7 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    if (!isTauriRuntime()) {
+    if (!settings.worldnotionBridge.connected || !isTauriRuntime()) {
       return;
     }
 
@@ -6444,10 +6863,10 @@ export function App() {
           toggleTheme();
           break;
         case "pb:help:about":
-          setMessage("Everend PathBranching 0.1.0 - branching narrative editor for the Everend Forge suite.");
+          setMessage("Everend PathBranching 0.1.0 - branching narrative editor.");
           break;
         case "pb:help:docs":
-          setMessage("Docs live in the PathBranching README and docs folder for now.");
+          setMessage("Docs live in the Everend PathBranching README and docs folder for now.");
           break;
       }
     }).then((nextUnlisten) => {
@@ -6456,6 +6875,19 @@ export function App() {
         return;
       }
       unlisten = nextUnlisten;
+    }).catch((listenError) => {
+      if (!disposed) {
+        setSettings((current) => ({
+          ...current,
+          worldnotionBridge: {
+            ...current.worldnotionBridge,
+            connected: false,
+            lastCheckedAt: Date.now(),
+            lastStatus: "error",
+            lastMessage: listenError instanceof Error ? listenError.message : String(listenError),
+          },
+        }));
+      }
     });
 
     return () => {
@@ -6469,6 +6901,7 @@ export function App() {
     redoProject,
     resetLayout,
     saveActiveEventDraft,
+    settings.worldnotionBridge.connected,
     toggleCanon,
     toggleFiles,
     toggleTheme,
@@ -6530,8 +6963,12 @@ export function App() {
       theme={settings.theme}
       onUpdateEventCategories={updateEventCategories}
       onCanvasBackgroundChange={changeCanvasBackground}
+      onNodeColorChange={changeNodeColors}
       onThemeChange={changeTheme}
       onToggleTheme={toggleTheme}
+      onConnectBridge={connectBridge}
+      onVerifyBridge={verifyBridge}
+      onDisconnectBridge={disconnectBridge}
       onOpenUniverse={openProject}
       onOpenRecentUniverse={openRecentProject}
       onRemoveRecentUniverse={removeRecentProject}
@@ -6544,6 +6981,13 @@ export function App() {
       <DiscardChangesDialog open={Boolean(discardDialog)} onDiscard={() => resolveDiscardDialog(true)} onCancel={() => resolveDiscardDialog(false)} />
       <EventDraftChangesDialog
         open={Boolean(eventDraftDialog)}
+        description={
+          eventDraftDialog?.kind === "closeInspectorTab"
+            ? "This event has unsaved text or component edits. Save them before closing this inspector?"
+            : eventDraftDialog?.kind === "loadInspectorGroup"
+              ? "This event has unsaved text or component edits. Save them before loading this tab group?"
+            : "This event has unsaved text or component edits. Save them before changing selection?"
+        }
         onSave={() => void resolveEventDraftDialog("save")}
         onDiscard={() => void resolveEventDraftDialog("discard")}
         onCancel={() => void resolveEventDraftDialog("cancel")}
@@ -6553,7 +6997,7 @@ export function App() {
         title={nameDialog?.title ?? ""}
         label={nameDialog?.label ?? "Name"}
         initialValue={nameDialog?.initialValue}
-        confirmLabel={nameDialog?.kind?.startsWith("rename") ? "Rename" : "Create"}
+        confirmLabel={nameDialog?.kind === "saveInspectorTabGroup" ? "Save" : nameDialog?.kind?.startsWith("rename") ? "Rename" : "Create"}
         onConfirm={confirmNameDialog}
         onCancel={() => setNameDialog(undefined)}
       />
@@ -6735,9 +7179,8 @@ export function App() {
           markdownTabs={markdownTabs}
           activeMarkdownTabId={activeMarkdownTabId}
           eventDraft={eventDraft}
-          eventInspectorOpen={eventInspectorOpen}
-          eventInspectorOpenEventIds={eventInspectorOpenEventIds}
-          eventInspectorExpandedEventId={eventInspectorExpandedEventId}
+          eventInspector={eventInspector}
+          eventInspectorTabGroups={eventInspectorTabGroups}
           canvasBackground={settings.canvasBackground}
           onNodesChange={handleNodesChange}
           onEdgesChange={handleEdgesChange}
@@ -6778,9 +7221,13 @@ export function App() {
           onChangeMarkdownContent={changeMarkdownContent}
           onChangeMarkdownFormat={changeMarkdownFormat}
           onSaveMarkdownTab={saveMarkdownTab}
-          onEventInspectorOpenChange={setEventInspectorOpen}
-          onEventInspectorOpenEventIdsChange={setEventInspectorOpenEventIds}
-          onEventInspectorExpandedEventIdChange={setEventInspectorExpandedEventId}
+          onOpenEventInspectorEvent={openEventInspectorForEvent}
+          onCollapseEventInspectorEvent={collapseEventInspectorForEvent}
+          onCloseEventInspectorEvent={requestCloseEventInspectorForEvent}
+          onPruneEventInspectorEvents={pruneEventInspectorEvents}
+          onSaveEventInspectorTabGroup={requestSaveInspectorTabGroup}
+          onLoadEventInspectorTabGroup={requestLoadInspectorTabGroup}
+          onDeleteEventInspectorTabGroup={deleteInspectorTabGroup}
           onEventDraftModeChange={(mode) => setEventDraft((draft) => setEventDraftMode(draft, mode))}
           onUpdateEventDraft={(updates) => setEventDraft((draft) => updateEventDraft(draft, updates))}
           onSaveEventDraft={() => void saveActiveEventDraft()}
