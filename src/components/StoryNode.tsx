@@ -16,9 +16,15 @@ function StoryNode({ data, selected }: NodeProps<StoryCanvasNode>) {
   const nodeData = data as StoryCanvasNodeData;
   const isEvent = nodeData.kind === "event";
   const isFinalEvent = nodeData.kind === "event" && nodeData.badges.includes("terminal");
+  const boundaryDirection =
+    nodeData.kind === "boundary" && nodeData.details?.direction === "input"
+      ? "input"
+      : nodeData.kind === "boundary" && nodeData.details?.direction === "output"
+        ? "output"
+        : undefined;
   const focusClass = typeof nodeData.focusState === "string" ? ` focus-${nodeData.focusState}` : "";
-  const canReceive = nodeData.kind !== "start" && nodeData.kind !== "sequence";
-  const canSource = nodeData.kind === "start" || (nodeData.kind !== "sequence" && !isFinalEvent);
+  const canReceive = boundaryDirection ? boundaryDirection === "output" : nodeData.kind !== "start" && nodeData.kind !== "sequence";
+  const canSource = boundaryDirection ? boundaryDirection === "input" : nodeData.kind === "start" || (nodeData.kind !== "sequence" && !isFinalEvent);
   const eventTypeLabel = objectString(nodeData.details?.category, "label") ?? nodeData.subtitle ?? "Event";
   const branchLabel = objectString(nodeData.details?.branch, "title");
   const summaryBadges = Array.isArray(nodeData.summaryBadges)
@@ -64,7 +70,7 @@ function StoryNode({ data, selected }: NodeProps<StoryCanvasNode>) {
       className={`story-node ${nodeData.kind}${focusClass}${isFinalEvent ? " terminal" : ""}${selected ? " selected" : ""}`}
       style={colorStyle}
     >
-      {canReceive ? <Handle type="target" position={Position.Left} /> : null}
+      {canReceive ? <Handle type="target" position={boundaryDirection === "output" ? Position.Left : Position.Left} /> : null}
       {isEvent ? (
         <div className="node-color-tags" aria-label="Event tags">
           <span className="node-color-tag type">{badgeText(eventTypeLabel)}</span>
@@ -89,7 +95,7 @@ function StoryNode({ data, selected }: NodeProps<StoryCanvasNode>) {
           ))}
         </div>
       ) : null}
-      {canSource ? <Handle type="source" position={Position.Right} /> : null}
+      {canSource ? <Handle type="source" position={boundaryDirection === "input" ? Position.Right : Position.Right} /> : null}
     </div>
   );
 }

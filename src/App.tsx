@@ -65,12 +65,14 @@ import {
 import type {
   Branch,
   BranchingProject,
+  CanvasScope,
   CanonEditSuggestion,
   CanonRef,
   ConditionInput,
   Consequence,
   DataFieldDefinition,
   Decision,
+  DialogueNode,
   EventCategoryDefinition,
   EventNode,
   EventType,
@@ -136,7 +138,7 @@ import {
   type ThemeFamily,
   type ThemeId,
 } from "./themes.js";
-import { activeSequenceId, findBranch, findEvent, findSequence } from "./storySelection.js";
+import { activeCanvasScope, activeSequenceId, canvasScopeKey, findBranch, findEvent, findSequence, rootSequenceScope } from "./storySelection.js";
 import {
   buildEventDependencyOutline,
   buildSequenceConnectionPreview,
@@ -339,20 +341,40 @@ function workspaceLoadWarningMessage(workspace: PathBranchingWorkspace) {
   return workspace.loadWarnings?.length ? workspace.loadWarnings.join(" ") : undefined;
 }
 
-function updateProjectCanvas(project: BranchingProject, nodes: StoryCanvasNode[]): BranchingProject {
+function updateProjectCanvas(project: BranchingProject, nodes: StoryCanvasNode[], scope = activeCanvasScope(project)): BranchingProject {
+  const scopeKey = scope ? canvasScopeKey(scope) : undefined;
+  const nextNodes = Object.fromEntries(
+    nodes.map((node) => [
+      node.id,
+      {
+        ...(scopeKey ? project.canvas?.scopes?.[scopeKey]?.nodes?.[node.id] : project.canvas?.nodes?.[node.id]),
+        position: node.position,
+      },
+    ]),
+  );
   return {
     ...project,
     canvas: {
       ...project.canvas,
-      nodes: Object.fromEntries(
-        nodes.map((node) => [
-          node.id,
-          {
-            ...project.canvas?.nodes?.[node.id],
-            position: node.position,
-          },
-        ]),
-      ),
+      nodes:
+        scope?.kind === "sequence" || !scope
+          ? {
+              ...(project.canvas?.nodes ?? {}),
+              ...nextNodes,
+            }
+          : project.canvas?.nodes,
+      scopes: scopeKey
+        ? {
+            ...(project.canvas?.scopes ?? {}),
+            [scopeKey]: {
+              ...(project.canvas?.scopes?.[scopeKey] ?? {}),
+              nodes: {
+                ...(project.canvas?.scopes?.[scopeKey]?.nodes ?? {}),
+                ...nextNodes,
+              },
+            },
+          }
+        : project.canvas?.scopes,
     },
   };
 }
@@ -495,6 +517,9 @@ function eventIdFromSelection(project: BranchingProject, nodes: StoryCanvasNode[
   if (!selection) return undefined;
   if (selection.type === "node") {
     if (findEvent(project, selection.id)) return selection.id;
+    const node = nodes.find((candidate) => candidate.id === selection.id);
+    const ownerEventId = typeof node?.data.details?.eventId === "string" ? node.data.details.eventId : undefined;
+    if (ownerEventId && findEvent(project, ownerEventId)) return ownerEventId;
   }
   if (selection.type === "file" && selection.id.startsWith("file:event:")) {
     const eventId = selection.id.slice("file:event:".length);
@@ -619,6 +644,31 @@ function canvasGraph(
       };
     }),
   };
+}
+
+function canvasBreadcrumb(project: BranchingProject, scope: CanvasScope | undefined): Array<{ scope: CanvasScope; label: string }> {
+  const sequenceScope = rootSequenceScope(project);
+  const sequence = sequenceScope ? findSequence(project, sequenceScope.id) : undefined;
+  const crumbs: Array<{ scope: CanvasScope; label: string }> = sequenceScope
+    ? [{ scope: sequenceScope, label: sequence?.name ?? "Sequence" }]
+    : [];
+  if (scope?.kind !== "event") {
+    return crumbs;
+  }
+
+  const eventChain: EventNode[] = [];
+  let cursor = findEvent(project, scope.id);
+  const seen = new Set<string>();
+  while (cursor && !seen.has(cursor.id)) {
+    seen.add(cursor.id);
+    eventChain.unshift(cursor);
+    cursor = cursor.parentEventId ? findEvent(project, cursor.parentEventId) : undefined;
+  }
+
+  eventChain.forEach((eventNode) => {
+    crumbs.push({ scope: { kind: "event", id: eventNode.id }, label: eventNode.name });
+  });
+  return crumbs;
 }
 
 function fieldSummary(value: unknown) {
@@ -3233,7 +3283,9 @@ function Inspector({
   onUpdateEvent,
   onCreateDecision,
   onUpdateDecision,
+  onUpdateDialogue,
   onDeleteDecision,
+  onDeleteDialogue,
   onCreateOutcome,
   onUpdateOutcome,
   onDeleteOutcome,
@@ -3267,7 +3319,9 @@ function Inspector({
   onUpdateEvent: (id: string, updates: Partial<EventNode>) => void;
   onCreateDecision: (eventId: string) => void;
   onUpdateDecision: (eventId: string, decisionId: string, updates: Partial<Decision>) => void;
+  onUpdateDialogue: (eventId: string, dialogueId: string, updates: Partial<DialogueNode>) => void;
   onDeleteDecision: (eventId: string, decisionId: string) => void;
+  onDeleteDialogue: (eventId: string, dialogueId: string) => void;
   onCreateOutcome: (eventId: string, decisionId: string) => void;
   onUpdateOutcome: (eventId: string, decisionId: string, outcomeId: string, updates: Partial<Outcome>) => void;
   onDeleteOutcome: (eventId: string, decisionId: string, outcomeId: string) => void;
@@ -3307,6 +3361,15 @@ function Inspector({
           eventId: selectedNode.data.details.eventId,
           decision: findEvent(project, selectedNode.data.details.eventId)?.decisions?.find(
             (decision) => decision.id === (selectedNode.data.details?.decision as { id?: string } | undefined)?.id,
+          ),
+        }
+      : undefined;
+  const selectedDialogueContext =
+    selectedNode?.data.kind === "dialogue" && typeof selectedNode.data.details?.eventId === "string"
+      ? {
+          eventId: selectedNode.data.details.eventId,
+          dialogue: findEvent(project, selectedNode.data.details.eventId)?.dialogues?.find(
+            (dialogue) => dialogue.id === (selectedNode.data.details?.dialogue as { id?: string } | undefined)?.id,
           ),
         }
       : undefined;
@@ -3719,6 +3782,83 @@ function Inspector({
           </>
         ) : null}
 
+        {selectedDialogueContext?.dialogue ? (
+          <>
+            <section className="inspector-section">
+              <h2>Dialogue</h2>
+              <label className="field-label">
+                Title
+                <input
+                  value={selectedDialogueContext.dialogue.title}
+                  onChange={(inputEvent) =>
+                    onUpdateDialogue(selectedDialogueContext.eventId, selectedDialogueContext.dialogue!.id, {
+                      title: inputEvent.target.value,
+                    })
+                  }
+                />
+              </label>
+              <label className="field-label">
+                Speaker Ref
+                <input
+                  value={selectedDialogueContext.dialogue.speakerRef ?? ""}
+                  onChange={(inputEvent) =>
+                    onUpdateDialogue(selectedDialogueContext.eventId, selectedDialogueContext.dialogue!.id, {
+                      speakerRef: inputEvent.target.value || undefined,
+                    })
+                  }
+                />
+              </label>
+              <label className="field-label">
+                Text
+                <textarea
+                  value={selectedDialogueContext.dialogue.text.content}
+                  rows={5}
+                  onChange={(inputEvent) =>
+                    onUpdateDialogue(selectedDialogueContext.eventId, selectedDialogueContext.dialogue!.id, {
+                      text: {
+                        format: selectedDialogueContext.dialogue!.text.format,
+                        content: inputEvent.target.value,
+                      },
+                    })
+                  }
+                />
+              </label>
+              <CanonRefsPicker
+                value={selectedDialogueContext.dialogue.canonRefs}
+                canonRefs={project.canonRefs}
+                onChange={(canonRefs) =>
+                  onUpdateDialogue(selectedDialogueContext.eventId, selectedDialogueContext.dialogue!.id, {
+                    canonRefs,
+                  })
+                }
+              />
+              <button
+                type="button"
+                className="danger"
+                onClick={() => onDeleteDialogue(selectedDialogueContext.eventId, selectedDialogueContext.dialogue!.id)}
+              >
+                Delete
+              </button>
+            </section>
+            <BasicConditionEditor
+              value={selectedDialogueContext.dialogue.availability}
+              canonRefs={canonRefIds}
+              dataObjects={dataObjects}
+              onChange={(availability) =>
+                onUpdateDialogue(selectedDialogueContext.eventId, selectedDialogueContext.dialogue!.id, { availability })
+              }
+            />
+            <RuleSetEditor
+              value={selectedDialogueContext.dialogue.ruleSets}
+              canonRefs={canonRefIds}
+              dataObjects={dataObjects}
+              onChange={(ruleSets) =>
+                onUpdateDialogue(selectedDialogueContext.eventId, selectedDialogueContext.dialogue!.id, { ruleSets })
+              }
+            />
+          </>
+        ) : null}
+
         {selectedOutcomeContext?.outcome ? (
           <>
             <section className="inspector-section">
@@ -3799,7 +3939,13 @@ function Inspector({
           </>
         ) : null}
 
-        {selectedNode && !sequence && !branch && !event && !selectedDecisionContext?.decision && !selectedOutcomeContext?.outcome ? (
+        {selectedNode &&
+        !sequence &&
+        !branch &&
+        !event &&
+        !selectedDecisionContext?.decision &&
+        !selectedDialogueContext?.dialogue &&
+        !selectedOutcomeContext?.outcome ? (
           <section className="inspector-section">
             <h2>{selectedNode.data.title}</h2>
             <dl>
@@ -4202,8 +4348,7 @@ function StoryCanvas({
   selection,
   findings,
   message,
-  canvasMode,
-  focusNodeId,
+  activeScope,
   exportOpen,
   exportPreviewMode,
   dataOpen,
@@ -4219,20 +4364,23 @@ function StoryCanvas({
   onConnect,
   onNodeDragStop,
   onSelect,
-  onEnterFocus,
-  onExitFocus,
+  onNavigateScope,
   onExportPreviewModeChange,
   onToggleData,
   onApplyCanvasLayout,
   onCreateEvent,
+  onCreateNestedEvent,
   onCreateConnectedEvent,
   onUpdateSequence,
   onUpdateBranch,
   onCreateEventInBranch,
   onUpdateEvent,
   onCreateDecision,
+  onCreateDialogue,
   onUpdateDecision,
+  onUpdateDialogue,
   onDeleteDecision,
+  onDeleteDialogue,
   onCreateOutcome,
   onUpdateOutcome,
   onDeleteOutcome,
@@ -4271,8 +4419,7 @@ function StoryCanvas({
   selection?: Selection;
   findings: ValidationFinding[];
   message?: string;
-  canvasMode: CanvasMode;
-  focusNodeId?: string;
+  activeScope?: CanvasScope;
   exportOpen: boolean;
   exportPreviewMode: ExportPreviewMode;
   dataOpen: boolean;
@@ -4288,20 +4435,23 @@ function StoryCanvas({
   onConnect: OnConnect;
   onNodeDragStop: (event: MouseEvent | TouchEvent | ReactMouseEvent, node: StoryCanvasNode) => void;
   onSelect: (selection?: Selection) => void;
-  onEnterFocus: (nodeId: string) => void;
-  onExitFocus: () => void;
+  onNavigateScope: (scope: CanvasScope, selection?: Selection) => void;
   onExportPreviewModeChange: (mode: ExportPreviewMode) => void;
   onToggleData: () => void;
   onApplyCanvasLayout: (mode: CanvasLayoutMode) => void;
   onCreateEvent: (type?: EventType, position?: { x: number; y: number }, branchId?: string) => void;
+  onCreateNestedEvent: (parentEventId: string, type?: EventType, position?: { x: number; y: number }) => void;
   onCreateConnectedEvent: (sourceNodeId: string, type: EventType, position: { x: number; y: number }) => void;
   onUpdateSequence: (id: string, updates: Partial<Sequence>) => void;
   onUpdateBranch: (id: string, updates: Partial<Branch>) => void;
   onCreateEventInBranch: (branchId: string, type?: EventType) => void;
   onUpdateEvent: (id: string, updates: Partial<EventNode>) => void;
   onCreateDecision: (eventId: string) => void;
+  onCreateDialogue: (eventId: string) => void;
   onUpdateDecision: (eventId: string, decisionId: string, updates: Partial<Decision>) => void;
+  onUpdateDialogue: (eventId: string, dialogueId: string, updates: Partial<DialogueNode>) => void;
   onDeleteDecision: (eventId: string, decisionId: string) => void;
+  onDeleteDialogue: (eventId: string, dialogueId: string) => void;
   onCreateOutcome: (eventId: string, decisionId: string) => void;
   onUpdateOutcome: (eventId: string, decisionId: string, outcomeId: string, updates: Partial<Outcome>) => void;
   onDeleteOutcome: (eventId: string, decisionId: string, outcomeId: string) => void;
@@ -4338,11 +4488,12 @@ function StoryCanvas({
   const [contextMenu, setContextMenu] = useState<CanvasContextMenu>();
   const [draggingEvent, setDraggingEvent] = useState(false);
   const [minimapOpen, setMinimapOpen] = useState(true);
-  const graph = useMemo(() => canvasGraph(nodes, edges, canvasMode, focusNodeId), [canvasMode, edges, focusNodeId, nodes]);
+  const graph = useMemo(() => ({ nodes, edges }), [edges, nodes]);
   const currentSequence = project.sequences.find((sequence) => sequence.id === activeSequenceId(project));
+  const activeEventScope = activeScope?.kind === "event" ? project.events.find((event) => event.id === activeScope.id) : undefined;
+  const breadcrumbs = useMemo(() => canvasBreadcrumb(project, activeScope), [activeScope, project]);
   const sequenceEvents = currentSequence?.eventIds.length ?? 0;
   const sequenceBranches = currentSequence?.branchIds?.length ?? nodes.filter((node) => node.data.kind === "branch").length;
-  const selectedNodeId = selection?.type === "node" ? selection.id : undefined;
   const snapGrid: [number, number] = [canvasBackground.gridSize, canvasBackground.gridSize];
   const backgroundColor = `color-mix(in srgb, var(--wn-border) ${Math.round(canvasBackground.opacity * 100)}%, transparent)`;
   const inspectorProject = useMemo(
@@ -4360,9 +4511,9 @@ function StoryCanvas({
       return;
     }
     window.requestAnimationFrame(() => {
-      reactFlowInstance.fitView({ padding: canvasMode === "focus" ? 0.32 : 0.24, duration: 180 });
+      reactFlowInstance.fitView({ padding: activeScope?.kind === "event" ? 0.3 : 0.24, duration: 180 });
     });
-  }, [canvasMode, focusNodeId, graph.nodes.length, reactFlowInstance]);
+  }, [activeScope, graph.nodes.length, reactFlowInstance]);
 
   const openContextMenu = useCallback(
     (event: MouseEvent | ReactMouseEvent) => {
@@ -4385,7 +4536,7 @@ function StoryCanvas({
 
   const openConnectionCreateMenu = useCallback<OnConnectEnd>(
     (event, connectionState) => {
-      if (canvasMode !== "branching" || connectionState.toNode || !connectionState.fromNode || !reactFlowInstance) {
+      if (connectionState.toNode || !connectionState.fromNode || !reactFlowInstance) {
         return;
       }
 
@@ -4405,7 +4556,7 @@ function StoryCanvas({
         flowY: flowPosition.y,
       });
     },
-    [canvasMode, reactFlowInstance],
+    [reactFlowInstance],
   );
 
   const eventTypeOptions: EventCategoryDefinition[] =
@@ -4419,7 +4570,9 @@ function StoryCanvas({
     if (typeof node.data.minimapColor === "string") return node.data.minimapColor;
     if (typeof node.data.accentColor === "string") return node.data.accentColor;
     if (node.data.kind === "start") return "var(--pb-start)";
+    if (node.data.kind === "boundary") return "var(--pb-sequence)";
     if (node.data.kind === "decision") return "var(--pb-decision)";
+    if (node.data.kind === "dialogue") return "var(--pb-ink)";
     if (node.data.kind === "outcome") return "var(--pb-outcome)";
     return "var(--wn-muted)";
   }, []);
@@ -4430,33 +4583,31 @@ function StoryCanvas({
   }, []);
 
   return (
-    <main className={`canvas-shell ${canvasMode === "focus" ? "focus-mode" : ""} ${draggingEvent ? "dragging-event" : ""}`} ref={shellRef}>
+    <main className={`canvas-shell ${activeScope?.kind === "event" ? "nested-scope" : ""} ${draggingEvent ? "dragging-event" : ""}`} ref={shellRef}>
       {message ? <div className="canvas-message">{message}</div> : null}
 
       <div className="canvas-modebar">
-        <strong>{currentSequence?.name ?? project.name ?? project.projectId}</strong>
-        <span>{sequenceBranches} branches - {sequenceEvents} events</span>
-        <button type="button" className={canvasMode === "branching" ? "active" : ""} onClick={onExitFocus}>
-          <GitBranch size={14} />
-          <span>Branching</span>
-        </button>
-        <button
-          type="button"
-          className={canvasMode === "focus" ? "active" : ""}
-          disabled={!focusNodeId && !selectedNodeId}
-          onClick={() => {
-            if (focusNodeId) {
-              onEnterFocus(focusNodeId);
-              return;
-            }
-            if (selectedNodeId) {
-              onEnterFocus(selectedNodeId);
-            }
-          }}
-        >
-          <Focus size={14} />
-          <span>Focus</span>
-        </button>
+        <div className="canvas-breadcrumb" aria-label="Canvas path">
+          {breadcrumbs.map((crumb, index) => {
+            const last = index === breadcrumbs.length - 1;
+            return (
+              <button
+                type="button"
+                key={`${crumb.scope.kind}:${crumb.scope.id}`}
+                className={last ? "active" : ""}
+                onClick={() => onNavigateScope(crumb.scope, { type: "node", id: crumb.scope.id })}
+              >
+                {index === 0 ? <Home size={14} /> : <GitBranch size={14} />}
+                <span>{crumb.label}</span>
+              </button>
+            );
+          })}
+        </div>
+        <span>
+          {activeEventScope
+            ? `${activeEventScope.childEventIds?.length ?? 0} nested events - ${activeEventScope.decisions?.length ?? 0} decisions`
+            : `${sequenceBranches} branches - ${sequenceEvents} events`}
+        </span>
       </div>
 
       <ReactFlowProvider>
@@ -4475,25 +4626,19 @@ function StoryCanvas({
             onNodeDragStop(event, node);
           }}
           onNodeClick={(_, node) => {
-            if (node.data.kind !== "event") {
-              setContextMenu(undefined);
-              return;
-            }
+            setContextMenu(undefined);
             onSelect({ type: "node", id: node.id });
-            if (canvasMode === "focus" && node.data.kind === "event") {
-              onEnterFocus(node.id);
-            }
           }}
           onNodeDoubleClick={(_, node) => {
             if (node.data.kind === "event") {
-              onEnterFocus(node.id);
+              onNavigateScope({ kind: "event", id: node.id }, { type: "node", id: node.id });
             }
           }}
           onEdgeClick={() => setContextMenu(undefined)}
           onPaneClick={() => {
             setContextMenu(undefined);
           }}
-          onPaneContextMenu={canvasMode === "branching" ? openContextMenu : undefined}
+          onPaneContextMenu={openContextMenu}
           fitView
           fitViewOptions={{ padding: 0.24 }}
           defaultViewport={project.canvas?.viewport}
@@ -4542,7 +4687,11 @@ function StoryCanvas({
                   type="button"
                   onClick={() => {
                     if (contextMenu.sourceNodeId) {
-                      onCreateConnectedEvent(contextMenu.sourceNodeId, category.id, { x: contextMenu.flowX, y: contextMenu.flowY });
+                      if (activeEventScope) {
+                        onCreateNestedEvent(activeEventScope.id, category.id, { x: contextMenu.flowX, y: contextMenu.flowY });
+                      } else {
+                        onCreateConnectedEvent(contextMenu.sourceNodeId, category.id, { x: contextMenu.flowX, y: contextMenu.flowY });
+                      }
                     }
                     setContextMenu(undefined);
                   }}
@@ -4554,13 +4703,17 @@ function StoryCanvas({
             </>
           ) : (
             <>
-              <span className="canvas-menu-label">Create event</span>
+              <span className="canvas-menu-label">{activeEventScope ? "Create inside event" : "Create event"}</span>
               {eventTypeOptions.map((category) => (
                 <button
                   key={category.id}
                   type="button"
                   onClick={() => {
-                    onCreateEvent(category.id, { x: contextMenu.flowX, y: contextMenu.flowY });
+                    if (activeEventScope) {
+                      onCreateNestedEvent(activeEventScope.id, category.id, { x: contextMenu.flowX, y: contextMenu.flowY });
+                    } else {
+                      onCreateEvent(category.id, { x: contextMenu.flowX, y: contextMenu.flowY });
+                    }
                     setContextMenu(undefined);
                   }}
                 >
@@ -4568,24 +4721,49 @@ function StoryCanvas({
                   {category.terminal ? " (final)" : ""}
                 </button>
               ))}
-              <span className="canvas-menu-label">Layout</span>
-              {([
-                ["branching", "Branching depth"],
-                ["timeline", "Timeline"],
-                ["branches", "Branches"],
-              ] as const).map(([mode, label]) => (
-                <button
-                  key={mode}
-                  type="button"
-                  className={canvasLayout === mode ? "active" : ""}
-                  onClick={() => {
-                    onApplyCanvasLayout(mode);
-                    setContextMenu(undefined);
-                  }}
-                >
-                  {label}
-                </button>
-              ))}
+              {activeEventScope ? (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onCreateDecision(activeEventScope.id);
+                      setContextMenu(undefined);
+                    }}
+                  >
+                    Decision
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onCreateDialogue(activeEventScope.id);
+                      setContextMenu(undefined);
+                    }}
+                  >
+                    Dialogue
+                  </button>
+                </>
+              ) : (
+                <>
+                  <span className="canvas-menu-label">Layout</span>
+                  {([
+                    ["branching", "Branching depth"],
+                    ["timeline", "Timeline"],
+                    ["branches", "Branches"],
+                  ] as const).map(([mode, label]) => (
+                    <button
+                      key={mode}
+                      type="button"
+                      className={canvasLayout === mode ? "active" : ""}
+                      onClick={() => {
+                        onApplyCanvasLayout(mode);
+                        setContextMenu(undefined);
+                      }}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </>
+              )}
             </>
           )}
         </div>
@@ -4639,7 +4817,9 @@ function StoryCanvas({
           onUpdateEvent={onUpdateEvent}
           onCreateDecision={onCreateDecision}
           onUpdateDecision={onUpdateDecision}
+          onUpdateDialogue={onUpdateDialogue}
           onDeleteDecision={onDeleteDecision}
+          onDeleteDialogue={onDeleteDialogue}
           onCreateOutcome={onCreateOutcome}
           onUpdateOutcome={onUpdateOutcome}
           onDeleteOutcome={onDeleteOutcome}
@@ -4689,6 +4869,7 @@ export function App() {
   const [activeMarkdownTabId, setActiveMarkdownTabId] = useState<string>();
   const [eventDraft, setEventDraft] = useState<EventDraft>();
   const [storyOutlineTab, setStoryOutlineTab] = useState<StoryOutlineTab>("sequence");
+  const [activeScope, setActiveScopeState] = useState<CanvasScope>();
   const [canvasMode, setCanvasMode] = useState<CanvasMode>("branching");
   const [focusNodeId, setFocusNodeId] = useState<string>();
   const [undoStack, setUndoStack] = useState<BranchingProject[]>([]);
@@ -4724,7 +4905,8 @@ export function App() {
 
   const applyProject = useCallback((nextProject: BranchingProject, options: { dirty?: boolean; revision?: boolean; path?: string; universePath?: string; storyPath?: string; modifiedMs?: number } = {}) => {
     const normalizedProject = normalizeProject(nextProject);
-    const model = buildStoryCanvasModel(normalizedProject, { nodeColors: settingsRef.current.nodeColors });
+    const normalizedScope = activeCanvasScope(normalizedProject);
+    const model = buildStoryCanvasModel(normalizedProject, { nodeColors: settingsRef.current.nodeColors, scope: normalizedScope });
     if (options.dirty || options.revision) {
       projectRevisionRef.current += 1;
     }
@@ -4736,6 +4918,7 @@ export function App() {
         }
       : workspaceRef.current;
     setProject(normalizedProject);
+    setActiveScopeState(normalizedScope);
     setNodes(model.nodes);
     setEdges(model.edges);
     setFiles(model.files);
@@ -4771,13 +4954,24 @@ export function App() {
         ...nextWorkspace.activeProject,
         universeRootPath: universePath,
       });
-      const model = buildStoryCanvasModel(activeProject, { nodeColors: settingsRef.current.nodeColors });
+      const restoredScope = savedSession.activeScope ?? activeProject.canvas?.activeScope ?? activeCanvasScope(activeProject);
+      const activeProjectWithScope = normalizeProject({
+        ...activeProject,
+        canvas: {
+          ...activeProject.canvas,
+          activeScope: restoredScope,
+          activeSequenceId: restoredScope?.kind === "sequence" ? restoredScope.id : activeProject.canvas?.activeSequenceId,
+        },
+      });
+      const normalizedScope = activeCanvasScope(activeProjectWithScope);
+      const model = buildStoryCanvasModel(activeProjectWithScope, { nodeColors: settingsRef.current.nodeColors, scope: normalizedScope });
       workspaceRef.current = nextWorkspace;
-      projectRef.current = activeProject;
+      projectRef.current = activeProjectWithScope;
       projectRevisionRef.current = 0;
       savedRevisionRef.current = 0;
       setWorkspace(nextWorkspace);
-      setProject(activeProject);
+      setProject(activeProjectWithScope);
+      setActiveScopeState(normalizedScope);
       setNodes(model.nodes);
       setEdges(model.edges);
       setFiles(model.files);
@@ -4806,7 +5000,12 @@ export function App() {
       setEventInspector(restoreEventInspectorState(savedSession));
       setEventInspectorTabGroups(savedSession.eventInspectorTabGroups ?? []);
       setStoryOutlineTab(savedSession.storyOutlineTab ?? "sequence");
-      const initialSelectionId = activeProject.canvas?.activeSequenceId ?? activeProject.entrySequenceId ?? activeProject.sequences[0]?.id ?? model.nodes[0]?.id;
+      const initialSelectionId =
+        normalizedScope?.kind === "sequence"
+          ? normalizedScope.id
+          : normalizedScope?.kind === "event"
+            ? normalizedScope.id
+            : activeProjectWithScope.canvas?.activeSequenceId ?? activeProjectWithScope.entrySequenceId ?? activeProjectWithScope.sequences[0]?.id ?? model.nodes[0]?.id;
       setSelection(savedSession.selection ?? (initialSelectionId ? { type: "node", id: initialSelectionId } : undefined));
       setCanvasMode(savedSession.canvasMode ?? "branching");
       setFocusNodeId(savedSession.focusNodeId);
@@ -4854,13 +5053,16 @@ export function App() {
       setRedoStack(snapshot.redoStack);
       setSelection(snapshot.selection);
       if (snapshot.project) {
-        const model = buildStoryCanvasModel(snapshot.project, { nodeColors: settingsRef.current.nodeColors });
+        const snapshotScope = activeCanvasScope(snapshot.project);
+        const model = buildStoryCanvasModel(snapshot.project, { nodeColors: settingsRef.current.nodeColors, scope: snapshotScope });
         setProject(snapshot.project);
+        setActiveScopeState(snapshotScope);
         setNodes(model.nodes);
         setEdges(model.edges);
         setFiles(model.files);
       } else {
         setProject(undefined);
+        setActiveScopeState(undefined);
         setNodes([]);
         setEdges([]);
         setFiles([]);
@@ -5078,6 +5280,7 @@ export function App() {
           canvas: {
             ...project.canvas,
             activeSequenceId: sequenceId,
+            activeScope: { kind: "sequence", id: sequenceId },
           },
         },
         { type: "node", id: sequenceId },
@@ -5169,7 +5372,9 @@ export function App() {
   useEffect(() => {
     const currentProject = projectRef.current;
     if (!currentProject) return;
-    const model = buildStoryCanvasModel(currentProject, { nodeColors: settings.nodeColors });
+    const scope = activeCanvasScope(currentProject);
+    const model = buildStoryCanvasModel(currentProject, { nodeColors: settings.nodeColors, scope });
+    setActiveScopeState(scope);
     setNodes(model.nodes);
     setEdges(model.edges);
     setFiles(model.files);
@@ -5194,6 +5399,7 @@ export function App() {
       eventInspectorOpenEventIds: eventInspector.openEventIds,
       eventInspectorExpandedEventId: eventInspector.expandedEventId,
       eventInspectorTabGroups,
+      activeScope,
       canvasMode,
       focusNodeId,
       markdownTabs: storableMarkdownTabs(markdownTabs),
@@ -5215,6 +5421,7 @@ export function App() {
     });
   }, [
     activeMarkdownTabId,
+    activeScope,
     canonOpen,
     canonWidth,
     canvasMode,
@@ -5810,16 +6017,47 @@ export function App() {
     return () => window.removeEventListener("keydown", handleKeyDown, true);
   }, [openProject, redoProject, saveActiveEventDraft, undoProject]);
 
-  const enterFocus = useCallback((nodeId: string) => {
-    setFocusNodeId(nodeId);
-    setCanvasMode("focus");
-    setSelection({ type: "node", id: nodeId });
-  }, []);
+  const navigateCanvasScope = useCallback(
+    (scope: CanvasScope, nextSelection?: Selection) => {
+      const currentProject = projectRef.current;
+      if (!currentProject) return;
+      const nextProject = normalizeProject({
+        ...currentProject,
+        canvas: {
+          ...currentProject.canvas,
+          activeScope: scope,
+          activeSequenceId: scope.kind === "sequence" ? scope.id : currentProject.canvas?.activeSequenceId,
+        },
+      });
+      const normalizedScope = activeCanvasScope(nextProject);
+      const model = buildStoryCanvasModel(nextProject, { nodeColors: settingsRef.current.nodeColors, scope: normalizedScope });
+      projectRef.current = nextProject;
+      setProject(nextProject);
+      setActiveScopeState(normalizedScope);
+      setNodes(model.nodes);
+      setEdges(model.edges);
+      setFiles(model.files);
+      setCanvasMode("branching");
+      setFocusNodeId(undefined);
+      setSelection(nextSelection ?? { type: "node", id: scope.id });
+    },
+    [],
+  );
 
-  const exitFocus = useCallback(() => {
-    setCanvasMode("branching");
-    setFocusNodeId(undefined);
-  }, []);
+  const enterEventScope = useCallback(
+    (eventId: string) => {
+      navigateCanvasScope({ kind: "event", id: eventId }, { type: "node", id: eventId });
+    },
+    [navigateCanvasScope],
+  );
+
+  const exitToRootScope = useCallback(() => {
+    const currentProject = projectRef.current;
+    const scope = currentProject ? rootSequenceScope(currentProject) : undefined;
+    if (scope) {
+      navigateCanvasScope(scope, { type: "node", id: scope.id });
+    }
+  }, [navigateCanvasScope]);
 
   const findings = useMemo(() => {
     if (!project) {
@@ -6092,6 +6330,24 @@ export function App() {
     [runMutation],
   );
 
+  const createNestedEvent = useCallback(
+    (parentEventId: string, type: EventType = "normal", position?: { x: number; y: number }) => {
+      if (!isTauriRuntime()) {
+        setMessage("Preview web: no guarda en universo. Abre Everend PathBranching con Tauri para crear microeventos persistentes.");
+        return;
+      }
+      const currentProject = projectRef.current;
+      if (!currentProject || workspaceRef.current?.createdDefaultStory) {
+        setMessage("Create an Everend PathBranching story before adding nested events.");
+        return;
+      }
+      const snap = settingsRef.current.canvasBackground;
+      const snappedPosition = position ? snapCanvasPoint(position, snap.snapToGrid, snap.gridSize) : undefined;
+      runMutation(mutations.createNestedEvent(currentProject, parentEventId, type, snappedPosition), "Created nested event");
+    },
+    [runMutation],
+  );
+
   const createEventInBranch = useCallback(
     (branchId: string, type: EventType = "normal") => {
       createEvent(type, undefined, branchId);
@@ -6291,6 +6547,20 @@ export function App() {
     [eventDraft?.eventId, mutateEventDraft, project, runMutation],
   );
 
+  const createDialogue = useCallback(
+    (eventId: string) => {
+      if (!project) {
+        return;
+      }
+      if (eventDraft?.eventId === eventId) {
+        mutateEventDraft((draftProject) => mutations.createDialogue(draftProject, eventId));
+        return;
+      }
+      runMutation(mutations.createDialogue(project, eventId), "Created dialogue");
+    },
+    [eventDraft?.eventId, mutateEventDraft, project, runMutation],
+  );
+
   const updateDecision = useCallback(
     (eventId: string, decisionId: string, updates: Partial<Decision>) => {
       if (!project) {
@@ -6305,6 +6575,20 @@ export function App() {
     [eventDraft?.eventId, mutateEventDraft, project, runMutation],
   );
 
+  const updateDialogue = useCallback(
+    (eventId: string, dialogueId: string, updates: Partial<DialogueNode>) => {
+      if (!project) {
+        return;
+      }
+      if (eventDraft?.eventId === eventId) {
+        mutateEventDraft((draftProject) => mutations.updateDialogue(draftProject, eventId, dialogueId, updates));
+        return;
+      }
+      runMutation(mutations.updateDialogue(project, eventId, dialogueId, updates));
+    },
+    [eventDraft?.eventId, mutateEventDraft, project, runMutation],
+  );
+
   const deleteDecision = useCallback(
     (eventId: string, decisionId: string) => {
       if (!project) {
@@ -6315,6 +6599,20 @@ export function App() {
         return;
       }
       runMutation(mutations.deleteDecision(project, eventId, decisionId));
+    },
+    [eventDraft?.eventId, mutateEventDraft, project, runMutation],
+  );
+
+  const deleteDialogue = useCallback(
+    (eventId: string, dialogueId: string) => {
+      if (!project) {
+        return;
+      }
+      if (eventDraft?.eventId === eventId) {
+        mutateEventDraft((draftProject) => mutations.deleteDialogue(draftProject, eventId, dialogueId));
+        return;
+      }
+      runMutation(mutations.deleteDialogue(project, eventId, dialogueId));
     },
     [eventDraft?.eventId, mutateEventDraft, project, runMutation],
   );
@@ -6474,7 +6772,31 @@ export function App() {
       const targetNode = nodes.find((node) => node.id === connection.target);
       const targetEventId = targetNode?.data.kind === "event" ? nodeStoryId(targetNode) : undefined;
 
-      if (!sourceNode || !targetEventId) {
+      if (!sourceNode || !targetNode) {
+        setMessage("Connection source or target could not be resolved.");
+        return;
+      }
+
+      const boundaryNode = sourceNode.data.kind === "boundary" ? sourceNode : targetNode.data.kind === "boundary" ? targetNode : undefined;
+      if (activeScope?.kind === "event" && boundaryNode) {
+        const internalNode = boundaryNode.id === sourceNode.id ? targetNode : sourceNode;
+        const direction = boundaryNode.data.details?.direction === "output" ? "output" : "input";
+        if (direction === "input" && boundaryNode.id !== sourceNode.id) {
+          setMessage("Input ports connect from the boundary into an internal node.");
+          return;
+        }
+        if (direction === "output" && boundaryNode.id !== targetNode.id) {
+          setMessage("Output ports connect from an internal node into the boundary.");
+          return;
+        }
+        updateProject(mutations.bindBoundaryPort(project, activeScope.id, boundaryNode.id, internalNode.id, direction).project, {
+          type: "edge",
+          id: `edge:boundary:${boundaryNode.id}:${internalNode.id}`,
+        });
+        return;
+      }
+
+      if (!targetEventId) {
         setMessage("Connections must target an event in this MVP.");
         return;
       }
@@ -6567,18 +6889,17 @@ export function App() {
         { type: "edge", id: `edge:transition:${transitionId}` },
       );
     },
-    [nodes, project, updateProject],
+    [activeScope, nodes, project, updateProject],
   );
 
   const handleNodeDragStop = useCallback(
     (_: MouseEvent | TouchEvent | ReactMouseEvent, node: StoryCanvasNode) => {
-      if (!project || node.data.kind !== "event") {
+      if (!project) {
         return;
       }
 
-      const eventId = nodeStoryId(node);
-      const sequenceId = activeSequenceId(project);
-      if (!eventId || !sequenceId) {
+      const storyId = nodeStoryId(node);
+      if (!storyId) {
         return;
       }
       const snap = settingsRef.current.canvasBackground;
@@ -6587,10 +6908,10 @@ export function App() {
         position: snapCanvasPoint(node.position, snap.snapToGrid, snap.gridSize),
       };
       const nextNodes = nodes.map((item) => (item.id === node.id ? nextNode : item));
-      const canvasProject = updateProjectCanvas(project, nextNodes);
-      void commitStructuralAction("Moved event", canvasProject, { type: "node", id: eventId });
+      const canvasProject = updateProjectCanvas(project, nextNodes, activeScope);
+      void commitStructuralAction("Moved node", canvasProject, { type: "node", id: node.id });
     },
-    [commitStructuralAction, nodes, project],
+    [activeScope, commitStructuralAction, nodes, project],
   );
 
   const updateEdgeLabel = useCallback(
@@ -6658,6 +6979,24 @@ export function App() {
       }
 
       const id = targetSelection.id;
+      const selectedNode = nodes.find((node) => node.id === id);
+      if (selectedNode?.data.kind === "dialogue" && typeof selectedNode.data.details?.eventId === "string") {
+        const dialogue = selectedNode.data.details.dialogue as { id?: string } | undefined;
+        if (dialogue?.id) {
+          runMutation(mutations.deleteDialogue(project, selectedNode.data.details.eventId, dialogue.id));
+          setSelection(undefined);
+        }
+        return;
+      }
+      if (selectedNode?.data.kind === "decision" && typeof selectedNode.data.details?.eventId === "string") {
+        const decision = selectedNode.data.details.decision as { id?: string } | undefined;
+        if (decision?.id) {
+          runMutation(mutations.deleteDecision(project, selectedNode.data.details.eventId, decision.id));
+          setSelection(undefined);
+        }
+        return;
+      }
+
       const sequence = findSequence(project, id);
       if (sequence) {
         if (project.entrySequenceId === sequence.id || sequence.eventIds.length > 0) {
@@ -6699,6 +7038,10 @@ export function App() {
 
       const event = findEvent(project, id);
       if (event) {
+        if ((event.childEventIds ?? []).length > 0) {
+          setMessage("Event deletion is blocked while it contains nested events.");
+          return;
+        }
         const incoming = project.events.some((item) => item.transitions?.some((transition) => transition.to === event.id));
         const outgoing = (event.transitions ?? []).length > 0;
         const entryOwner = project.sequences.find((item) => item.entryEventId === event.id);
@@ -6714,14 +7057,24 @@ export function App() {
               eventIds: withoutValue(item.eventIds, event.id),
             })),
             branches: project.branches.map((item) => ({ ...item, eventIds: withoutValue(item.eventIds, event.id) })),
-            events: project.events.filter((item) => item.id !== event.id),
+            events: project.events
+              .filter((item) => item.id !== event.id)
+              .map((item) =>
+                item.id === event.parentEventId
+                  ? {
+                      ...item,
+                      childEventIds: withoutValue(item.childEventIds, event.id),
+                      boundaryBindings: (item.boundaryBindings ?? []).filter((binding) => binding.nodeId !== event.id),
+                    }
+                  : item,
+              ),
           },
           undefined,
         );
         setSelection(undefined);
       }
     },
-    [project, updateProject],
+    [nodes, project, runMutation, updateProject],
   );
 
   useEffect(() => {
@@ -7170,8 +7523,7 @@ export function App() {
           selection={selection}
           findings={findings}
           message={message}
-          canvasMode={canvasMode}
-          focusNodeId={focusNodeId}
+          activeScope={activeScope}
           exportOpen={exportOpen}
           exportPreviewMode={exportPreviewMode}
           dataOpen={dataOpen}
@@ -7187,20 +7539,23 @@ export function App() {
           onConnect={handleConnect}
           onNodeDragStop={handleNodeDragStop}
           onSelect={selectWithEventDraftGuard}
-          onEnterFocus={enterFocus}
-          onExitFocus={exitFocus}
+          onNavigateScope={navigateCanvasScope}
           onExportPreviewModeChange={setExportPreviewMode}
           onToggleData={() => setDataOpen((open) => !open)}
           onApplyCanvasLayout={applyCanvasLayout}
           onCreateEvent={createEvent}
+          onCreateNestedEvent={createNestedEvent}
           onCreateConnectedEvent={createConnectedEvent}
           onUpdateSequence={updateSequence}
           onUpdateBranch={updateBranch}
           onCreateEventInBranch={createEventInBranch}
           onUpdateEvent={updateEvent}
           onCreateDecision={createDecision}
+          onCreateDialogue={createDialogue}
           onUpdateDecision={updateDecision}
+          onUpdateDialogue={updateDialogue}
           onDeleteDecision={deleteDecision}
+          onDeleteDialogue={deleteDialogue}
           onCreateOutcome={createOutcome}
           onUpdateOutcome={updateOutcome}
           onDeleteOutcome={deleteOutcome}

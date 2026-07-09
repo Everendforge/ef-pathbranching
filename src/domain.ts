@@ -153,6 +153,16 @@ export type GraphModuleDefinition = {
   };
 };
 
+export type CanvasScope =
+  | {
+      kind: "sequence";
+      id: string;
+    }
+  | {
+      kind: "event";
+      id: string;
+    };
+
 export type Sequence = {
   id: string;
   name: string;
@@ -183,12 +193,16 @@ export type EventNode = {
   legacyId?: string;
   name: string;
   type: EventType;
+  parentEventId?: string;
+  childEventIds?: string[];
   text?: StoryTextBlock;
   branchRef?: string | null;
   script?: ScriptRef;
   canonRefs?: string[];
   availability?: ConditionInput;
   decisions?: Decision[];
+  dialogues?: DialogueNode[];
+  boundaryBindings?: BoundaryPortBinding[];
   unlocks?: Consequence[];
   transitions?: Transition[];
   ruleSets?: RuleSet[];
@@ -205,6 +219,23 @@ export type Decision = {
   availability?: ConditionInput;
   ruleSets?: RuleSet[];
   outcomes: Outcome[];
+};
+
+export type DialogueNode = {
+  id: string;
+  title: string;
+  speakerRef?: string;
+  text: StoryTextBlock;
+  availability?: ConditionInput;
+  ruleSets?: RuleSet[];
+  canonRefs?: string[];
+};
+
+export type BoundaryPortBinding = {
+  id: string;
+  portId: string;
+  nodeId: string;
+  direction: "input" | "output";
 };
 
 export type Outcome = {
@@ -377,9 +408,20 @@ export type CanvasNodeAuthoringState = {
   collapsed?: boolean;
 };
 
+export type ScopedCanvasAuthoringState = {
+  nodes?: Record<string, CanvasNodeAuthoringState>;
+  viewport?: {
+    x: number;
+    y: number;
+    zoom: number;
+  };
+};
+
 export type CanvasAuthoringState = {
   activeSequenceId?: string;
+  activeScope?: CanvasScope;
   nodes?: Record<string, CanvasNodeAuthoringState>;
+  scopes?: Record<string, ScopedCanvasAuthoringState>;
   viewport?: {
     x: number;
     y: number;
@@ -460,6 +502,7 @@ export type ValidationFinding = {
     | "missing_entry_sequence"
     | "missing_entry_event"
     | "missing_event"
+    | "missing_dialogue"
     | "missing_script"
     | "missing_branch"
     | "missing_canon_ref"
@@ -467,6 +510,8 @@ export type ValidationFinding = {
     | "duplicate_id"
     | "broken_transition"
     | "invalid_branch_membership"
+    | "invalid_nested_event"
+    | "invalid_boundary_binding"
     | "invalid_final_transition"
     | "invalid_projection"
     | "missing_data_class"

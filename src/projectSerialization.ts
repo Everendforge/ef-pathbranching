@@ -114,6 +114,16 @@ function normalizeDataClasses(project: BranchingProject): DataClassDefinition[] 
 export function normalizeProject(project: BranchingProject): BranchingProject {
   const entrySequenceId = project.entrySequenceId ?? project.sequences[0]?.id;
   const activeSequenceId = project.canvas?.activeSequenceId ?? entrySequenceId ?? project.sequences[0]?.id;
+  const activeScope =
+    project.canvas?.activeScope?.kind === "event" &&
+    project.events?.some((event) => event.id === project.canvas?.activeScope?.id)
+      ? project.canvas.activeScope
+      : project.canvas?.activeScope?.kind === "sequence" &&
+          project.sequences?.some((sequence) => sequence.id === project.canvas?.activeScope?.id)
+        ? project.canvas.activeScope
+        : activeSequenceId
+          ? { kind: "sequence" as const, id: activeSequenceId }
+          : undefined;
 
   return normalizeBranchMembership({
     ...project,
@@ -130,13 +140,20 @@ export function normalizeProject(project: BranchingProject): BranchingProject {
     canvas: {
       ...project.canvas,
       activeSequenceId,
+      activeScope,
+      scopes: project.canvas?.scopes ?? {},
     },
     entrySequenceId,
     eventCategories: normalizeEventCategories(project),
     canonRefs: project.canonRefs ?? [],
     sequences: project.sequences ?? [],
     branches: project.branches ?? [],
-    events: project.events ?? [],
+    events: (project.events ?? []).map((event) => ({
+      ...event,
+      childEventIds: event.childEventIds ?? [],
+      dialogues: event.dialogues ?? [],
+      boundaryBindings: event.boundaryBindings ?? [],
+    })),
     scripts: project.scripts ?? [],
     externalFunctions: project.externalFunctions ?? [],
     variables: project.variables ?? {},

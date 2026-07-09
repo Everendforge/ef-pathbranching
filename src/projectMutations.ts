@@ -6,6 +6,7 @@ import type {
   Consequence,
   DataFieldDefinition,
   Decision,
+  DialogueNode,
   EventNode,
   EventType,
   Outcome,
@@ -14,6 +15,7 @@ import type {
   Transition,
 } from "./domain.js";
 import { conditionInputsFromConsequences, walkConditions } from "./logic.js";
+import { canvasScopeKey } from "./storySelection.js";
 
 export type MutationSelection =
   | { type: "node"; id: string }
@@ -207,6 +209,68 @@ export function createEvent(
   };
 }
 
+export function createNestedEvent(
+  project: BranchingProject,
+  parentEventId: string,
+  type: EventType = "normal",
+  position?: { x: number; y: number },
+): MutationResult {
+  const parentEvent = findEvent(project, parentEventId);
+  if (!parentEvent) {
+    return { project, message: "Parent event not found." };
+  }
+
+  const safeType = type || "normal";
+  const eventId = uniqueId(`event:${slugify(parentEvent.name || parentEvent.id)}:${safeType}`, project.events.map((event) => event.id));
+  const newEvent: EventNode = {
+    id: eventId,
+    name: safeType === "final" ? "Final Microevent" : "New Microevent",
+    type: safeType,
+    parentEventId,
+    childEventIds: [],
+    text: { format: "plain", content: "" },
+    canonRefs: [],
+    decisions: [],
+    dialogues: [],
+    transitions: [],
+    boundaryBindings: [],
+  };
+  const scopeKey = canvasScopeKey({ kind: "event", id: parentEventId });
+  const scopedNodes = position
+    ? {
+        ...(project.canvas?.scopes?.[scopeKey]?.nodes ?? {}),
+        [eventId]: {
+          ...project.canvas?.scopes?.[scopeKey]?.nodes?.[eventId],
+          position,
+        },
+      }
+    : project.canvas?.scopes?.[scopeKey]?.nodes;
+
+  return {
+    project: {
+      ...project,
+      events: [
+        ...project.events.map((event) =>
+          event.id === parentEventId ? { ...event, childEventIds: withValue(event.childEventIds, eventId) } : event,
+        ),
+        newEvent,
+      ],
+      canvas: {
+        ...project.canvas,
+        activeScope: { kind: "event", id: parentEventId },
+        scopes: {
+          ...(project.canvas?.scopes ?? {}),
+          [scopeKey]: {
+            ...(project.canvas?.scopes?.[scopeKey] ?? {}),
+            nodes: scopedNodes,
+          },
+        },
+      },
+    },
+    selection: { type: "node", id: eventId },
+  };
+}
+
 export function updateBranch(project: BranchingProject, id: string, updates: Partial<Branch>): MutationResult {
   return {
     project: {
@@ -239,7 +303,11 @@ export function createDecision(project: BranchingProject, eventId: string): Muta
     outcomes: [],
   };
 
-  return updateEvent(project, eventId, { decisions: [...(event.decisions ?? []), decision] });
+  const result = updateEvent(project, eventId, { decisions: [...(event.decisions ?? []), decision] });
+  return {
+    ...result,
+    selection: { type: "node", id: `decision:${eventId}:${decision.id}` },
+  };
 }
 
 export function updateDecision(
@@ -322,6 +390,72 @@ export function deleteOutcome(project: BranchingProject, eventId: string, decisi
   }
   return updateDecision(project, eventId, decisionId, {
     outcomes: decision.outcomes.filter((outcome) => outcome.id !== outcomeId),
+  });
+}
+
+export function createDialogue(project: BranchingProject, eventId: string): MutationResult {
+  const event = findEvent(project, eventId);
+  if (!event) {
+    return { project, message: "Event not found." };
+  }
+  const dialogueId = uniqueId(`dialogue:${slugify(event.name || event.id)}`, (event.dialogues ?? []).map((dialogue) => dialogue.id));
+  const dialogue: DialogueNode = {
+    id: dialogueId,
+    title: "New Dialogue",
+    text: { format: "plain", content: "" },
+    canonRefs: [],
+  };
+  const result = updateEvent(project, eventId, { dialogues: [...(event.dialogues ?? []), dialogue] });
+  return {
+    ...result,
+    selection: { type: "node", id: `dialogue:${eventId}:${dialogue.id}` },
+  };
+}
+
+export function updateDialogue(
+  project: BranchingProject,
+  eventId: string,
+  dialogueId: string,
+  updates: Partial<DialogueNode>,
+): MutationResult {
+  const event = findEvent(project, eventId);
+  if (!event) {
+    return { project, message: "Event not found." };
+  }
+  return updateEvent(project, eventId, {
+    dialogues: (event.dialogues ?? []).map((dialogue) => (dialogue.id === dialogueId ? { ...dialogue, ...updates } : dialogue)),
+  });
+}
+
+export function deleteDialogue(project: BranchingProject, eventId: string, dialogueId: string): MutationResult {
+  const event = findEvent(project, eventId);
+  if (!event) {
+    return { project, message: "Event not found." };
+  }
+  const dialogueNodeId = `dialogue:${eventId}:${dialogueId}`;
+  return updateEvent(project, eventId, {
+    dialogues: (event.dialogues ?? []).filter((dialogue) => dialogue.id !== dialogueId),
+    boundaryBindings: (event.boundaryBindings ?? []).filter((binding) => binding.nodeId !== dialogueNodeId),
+  });
+}
+
+export function bindBoundaryPort(
+  project: BranchingProject,
+  eventId: string,
+  portId: string,
+  nodeId: string,
+  direction: "input" | "output",
+): MutationResult {
+  const event = findEvent(project, eventId);
+  if (!event) {
+    return { project, message: "Event not found." };
+  }
+  const bindingId = uniqueId(`boundary-binding:${slugify(portId)}:${slugify(nodeId)}`, (event.boundaryBindings ?? []).map((binding) => binding.id));
+  return updateEvent(project, eventId, {
+    boundaryBindings: [
+      ...(event.boundaryBindings ?? []).filter((binding) => !(binding.portId === portId && binding.nodeId === nodeId)),
+      { id: bindingId, portId, nodeId, direction },
+    ],
   });
 }
 

@@ -216,6 +216,7 @@ export function validateProject(project: BranchingProject): ValidationFinding[] 
     ...findDuplicates(project.sequences.map((sequence) => sequence.id)),
     ...findDuplicates(project.branches.map((branch) => branch.id)),
     ...findDuplicates(project.events.map((event) => event.id)),
+    ...findDuplicates(project.events.flatMap((event) => (event.dialogues ?? []).map((dialogue) => dialogue.id))),
     ...findDuplicates(project.scripts.map((script) => script.id)),
     ...findDuplicates(project.canonRefs.map((ref) => ref.id)),
     ...findDuplicates((project.dataClasses ?? []).map((dataClass) => dataClass.id)),
@@ -305,6 +306,47 @@ export function validateProject(project: BranchingProject): ValidationFinding[] 
   });
 
   project.events.forEach((event) => {
+    if (event.parentEventId && !eventIds.has(event.parentEventId)) {
+      findings.push(
+        finding("invalid_nested_event", "error", `Event "${event.id}" references missing parent event "${event.parentEventId}".`, {
+          id: event.id,
+          ref: event.parentEventId,
+        }),
+      );
+    }
+    if (event.parentEventId) {
+      const parentEvent = project.events.find((candidate) => candidate.id === event.parentEventId);
+      if (parentEvent && !(parentEvent.childEventIds ?? []).includes(event.id)) {
+        findings.push(
+          finding("invalid_nested_event", "error", `Parent event "${parentEvent.id}" does not include child event "${event.id}".`, {
+            id: event.id,
+            ref: parentEvent.id,
+          }),
+        );
+      }
+    }
+
+    event.childEventIds?.forEach((childEventId) => {
+      const childEvent = project.events.find((candidate) => candidate.id === childEventId);
+      if (!childEvent) {
+        findings.push(
+          finding("missing_event", "error", `Event "${event.id}" references missing child event "${childEventId}".`, {
+            id: event.id,
+            ref: childEventId,
+          }),
+        );
+        return;
+      }
+      if (childEvent.parentEventId !== event.id) {
+        findings.push(
+          finding("invalid_nested_event", "error", `Child event "${childEventId}" does not point back to parent "${event.id}".`, {
+            id: event.id,
+            ref: childEventId,
+          }),
+        );
+      }
+    });
+
     if (event.branchRef && !branchIds.has(event.branchRef)) {
       findings.push(
         finding("missing_branch", "warning", `Event "${event.id}" references missing branch "${event.branchRef}".`, {
@@ -389,6 +431,46 @@ export function validateProject(project: BranchingProject): ValidationFinding[] 
         );
         validateRuleSets(findings, projectRefs, canonIds, outcome.id, `Outcome "${outcome.id}"`, outcome.ruleSets);
       });
+    });
+
+    event.dialogues?.forEach((dialogue) => {
+      dialogue.canonRefs?.forEach((canonRef) => {
+        validateCanonRef(findings, canonIds, dialogue.id, canonRef, `Dialogue "${dialogue.id}" in event "${event.id}"`);
+      });
+      validateConditionRefs(
+        findings,
+        projectRefs,
+        canonIds,
+        dialogue.id,
+        `Dialogue "${dialogue.id}" in event "${event.id}" availability`,
+        dialogue.availability,
+      );
+      validateRuleSets(findings, projectRefs, canonIds, dialogue.id, `Dialogue "${dialogue.id}"`, dialogue.ruleSets);
+    });
+
+    const boundaryNodeIds = new Set([
+      ...(event.childEventIds ?? []),
+      ...(event.decisions ?? []).map((decision) => `decision:${event.id}:${decision.id}`),
+      ...(event.dialogues ?? []).map((dialogue) => `dialogue:${event.id}:${dialogue.id}`),
+    ]);
+    event.boundaryBindings?.forEach((binding) => {
+      const expectedPrefix = `boundary:${event.id}:${binding.direction}:`;
+      if (!binding.portId.startsWith(expectedPrefix)) {
+        findings.push(
+          finding("invalid_boundary_binding", "error", `Boundary binding "${binding.id}" references invalid port "${binding.portId}".`, {
+            id: binding.id,
+            ref: binding.portId,
+          }),
+        );
+      }
+      if (!boundaryNodeIds.has(binding.nodeId)) {
+        findings.push(
+          finding("invalid_boundary_binding", "error", `Boundary binding "${binding.id}" references missing internal node "${binding.nodeId}".`, {
+            id: binding.id,
+            ref: binding.nodeId,
+          }),
+        );
+      }
     });
 
     event.transitions?.forEach((transition) => {

@@ -1,5 +1,6 @@
 import { normalizeThemeId, type ThemeId } from "./themes.js";
 import type { AppView, CanvasMode, MarkdownEditorTab, Selection } from "./appTypes.js";
+import type { CanvasScope } from "./domain.js";
 import type { StoryOutlineTab } from "./storyOutlineModel.js";
 
 export const SETTINGS_KEY = "pathbranching.settings.v1";
@@ -22,9 +23,11 @@ export type CanvasLayoutMode = "branching" | "timeline" | "branches";
 export type NodeColorSettings = {
   sequence: string;
   start: string;
+  boundary: string;
   branch: string;
   event: string;
   decision: string;
+  dialogue: string;
   outcome: string;
   inkSection: string;
   knowledge: string;
@@ -58,9 +61,11 @@ export const DEFAULT_CANVAS_BACKGROUND_SETTINGS: CanvasBackgroundSettings = {
 export const DEFAULT_NODE_COLOR_SETTINGS: NodeColorSettings = {
   sequence: "#7c8da5",
   start: "#2da66f",
+  boundary: "#7c8da5",
   branch: "#b062d6",
   event: "#4f8cff",
   decision: "#c7832f",
+  dialogue: "#8d93ff",
   outcome: "#19a7a1",
   inkSection: "#8d93ff",
   knowledge: "#7ca83a",
@@ -80,6 +85,7 @@ export type PathBranchingWorkspaceSession = {
   eventInspectorOpenEventIds?: string[];
   eventInspectorExpandedEventId?: string;
   eventInspectorTabGroups?: EventInspectorTabGroup[];
+  activeScope?: CanvasScope;
   canvasMode?: CanvasMode;
   focusNodeId?: string;
   markdownTabs?: MarkdownEditorTab[];
@@ -129,9 +135,11 @@ export function normalizeNodeColorSettings(value: unknown): NodeColorSettings {
   return {
     sequence: normalizeColor(settings.sequence, DEFAULT_NODE_COLOR_SETTINGS.sequence),
     start: normalizeColor(settings.start, DEFAULT_NODE_COLOR_SETTINGS.start),
+    boundary: normalizeColor(settings.boundary, DEFAULT_NODE_COLOR_SETTINGS.boundary),
     branch: normalizeColor(settings.branch, DEFAULT_NODE_COLOR_SETTINGS.branch),
     event: normalizeColor(settings.event, DEFAULT_NODE_COLOR_SETTINGS.event),
     decision: normalizeColor(settings.decision, DEFAULT_NODE_COLOR_SETTINGS.decision),
+    dialogue: normalizeColor(settings.dialogue, DEFAULT_NODE_COLOR_SETTINGS.dialogue),
     outcome: normalizeColor(settings.outcome, DEFAULT_NODE_COLOR_SETTINGS.outcome),
     inkSection: normalizeColor(settings.inkSection, DEFAULT_NODE_COLOR_SETTINGS.inkSection),
     knowledge: normalizeColor(settings.knowledge, DEFAULT_NODE_COLOR_SETTINGS.knowledge),
@@ -220,6 +228,12 @@ export function isSelection(value: unknown): value is Selection {
   );
 }
 
+function isCanvasScope(value: unknown): value is CanvasScope {
+  if (!value || typeof value !== "object") return false;
+  const scope = value as { kind?: unknown; id?: unknown };
+  return typeof scope.id === "string" && (scope.kind === "sequence" || scope.kind === "event");
+}
+
 export function sessionMarkdownTabs(value: unknown): MarkdownEditorTab[] {
   if (!Array.isArray(value)) return [];
   return value
@@ -293,6 +307,7 @@ export function normalizeWorkspaceSession(session: PathBranchingWorkspaceSession
     eventInspectorExpandedEventId:
       typeof session.eventInspectorExpandedEventId === "string" ? session.eventInspectorExpandedEventId : undefined,
     eventInspectorTabGroups: sessionEventInspectorTabGroups(session.eventInspectorTabGroups),
+    activeScope: isCanvasScope(session.activeScope) ? session.activeScope : undefined,
     canvasMode: session.canvasMode === "branching" || session.canvasMode === "focus" ? session.canvasMode : undefined,
     focusNodeId: typeof session.focusNodeId === "string" ? session.focusNodeId : undefined,
     markdownTabs: sessionMarkdownTabs(session.markdownTabs),

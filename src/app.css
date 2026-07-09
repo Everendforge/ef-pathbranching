@@ -1965,6 +1965,26 @@ button:disabled {
   max-width: min(720px, calc(100% - 24px));
 }
 
+.canvas-breadcrumb {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  overflow: hidden;
+}
+
+.canvas-breadcrumb button {
+  min-width: 0;
+  max-width: 190px;
+}
+
+.canvas-breadcrumb button span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .canvas-modebar strong {
   max-width: 230px;
   padding: 0 7px;
@@ -2093,6 +2113,13 @@ button:disabled {
   background: color-mix(in srgb, var(--pb-start) 6%, var(--wn-card));
 }
 
+.story-node.boundary {
+  width: 190px;
+  min-height: 74px;
+  border-left-color: var(--node-accent, var(--pb-sequence));
+  background: color-mix(in srgb, var(--pb-sequence) 7%, var(--wn-card));
+}
+
 .node-start-icon {
   width: 28px;
   height: 28px;
@@ -2182,6 +2209,10 @@ button:disabled {
 
 .story-node.decision {
   --node-accent: var(--pb-decision);
+}
+
+.story-node.dialogue {
+  --node-accent: var(--pb-ink);
 }
 
 .story-node.outcome {

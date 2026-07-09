@@ -61,6 +61,13 @@ export type SinpoGameDataExport = {
     exportTarget: "SINPO";
     entrySequenceId?: string;
     eventCategories?: BranchingProject["eventCategories"];
+    nested?: Array<{
+      eventId: string;
+      parentEventId?: string;
+      childEventIds: string[];
+      dialogues: NonNullable<EventNode["dialogues"]>;
+      boundaryBindings: NonNullable<EventNode["boundaryBindings"]>;
+    }>;
   };
 };
 
@@ -179,7 +186,7 @@ export function exportSinpoGameData(project: BranchingProject): SinpoGameDataExp
       eventIds: branch.eventIds,
       conditions: branch.availability,
     })),
-    events: project.events.map((event) => ({
+    events: project.events.filter((event) => !event.parentEventId).map((event) => ({
       id: event.id,
       name: event.name,
       type: event.type,
@@ -203,6 +210,15 @@ export function exportSinpoGameData(project: BranchingProject): SinpoGameDataExp
       exportTarget: "SINPO",
       entrySequenceId: project.entrySequenceId,
       eventCategories: project.eventCategories,
+      nested: project.events
+        .filter((event) => event.parentEventId || event.childEventIds?.length || event.dialogues?.length || event.boundaryBindings?.length)
+        .map((event) => ({
+          eventId: event.id,
+          parentEventId: event.parentEventId,
+          childEventIds: event.childEventIds ?? [],
+          dialogues: event.dialogues ?? [],
+          boundaryBindings: event.boundaryBindings ?? [],
+        })),
     },
   };
 }
