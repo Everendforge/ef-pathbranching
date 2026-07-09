@@ -25,7 +25,8 @@ export type StoryCanvasNodeKind =
   | "outcome"
   | "inkSection"
   | "knowledge"
-  | "runtimeAction";
+  | "runtimeAction"
+  | "missingRef";
 
 export type StoryCanvasEdgeKind =
   | "entry"
@@ -578,6 +579,23 @@ function buildEventScopeModel(project: BranchingProject, scope: CanvasScope, opt
   const childEvents = childIds
     .map((eventId) => project.events.find((candidate) => candidate.id === eventId))
     .filter((candidate): candidate is EventNode => Boolean(candidate));
+  const missingChildIds = childIds.filter((eventId) => !project.events.some((candidate) => candidate.id === eventId));
+
+  missingChildIds.forEach((missingId, index) => {
+    pushNode(
+      project,
+      nodes,
+      missingId,
+      "missingRef",
+      "Missing Event",
+      missingId,
+      380 + ((childEvents.length + index) % 2) * 290,
+      90 + Math.floor((childEvents.length + index) / 2) * 190,
+      ["missing"],
+      { ownerId: eventNode.id, missingEventId: missingId },
+      { nodeColors: options.nodeColors, scope },
+    );
+  });
 
   childEvents.forEach((childEvent, index) => {
     pushNode(
@@ -772,8 +790,9 @@ export function buildStoryCanvasModel(project: BranchingProject, options: StoryC
         branch,
         category: project.eventCategories?.find((category) => category.id === eventNode.type),
         terminal: eventNode.type === "final" || Boolean(project.eventCategories?.some((category) => category.id === eventNode.type && category.terminal)),
-        accentColor: eventTypeColor(project, eventNode, options),
+        accentColor: branchColor(branch, eventNode.branchRef, options) ?? "#ffffff",
         branchColor: branchColor(branch, eventNode.branchRef, options),
+        typeColor: eventTypeColor(project, eventNode, options),
         minimapColor: branchColor(branch, eventNode.branchRef, options) ?? eventTypeColor(project, eventNode, options),
       },
       {
@@ -795,6 +814,24 @@ export function buildStoryCanvasModel(project: BranchingProject, options: StoryC
         }),
       );
     });
+  });
+
+  const missingEventIds = (sequence?.eventIds ?? []).filter((eventId) => !project.events.some((candidate) => candidate.id === eventId));
+  missingEventIds.forEach((missingId) => {
+    const sequenceIndex = eventIndexInSequence.get(missingId) ?? 0;
+    pushNode(
+      project,
+      nodes,
+      missingId,
+      "missingRef",
+      "Missing Event",
+      missingId,
+      360,
+      cursor.eventY + sequenceIndex * 220,
+      ["missing"],
+      { ownerId: sequence?.id, missingEventId: missingId },
+      { nodeColors: options.nodeColors, scope },
+    );
   });
 
   return {

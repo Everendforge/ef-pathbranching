@@ -10,7 +10,7 @@ import {
 import { useEffect, useRef, useState } from "react";
 import forgeLogoOnDark from "../assets/everend-forge-logo-on-dark.png";
 import forgeLogoOnLight from "../assets/everend-forge-logo-on-light.png";
-import type { BranchingProject, ValidationFinding } from "../domain.js";
+import type { BranchingProject } from "../domain.js";
 import { projectFileName, type ProjectFileState } from "../projectPersistence.js";
 import { isDarkTheme, themeById, type ThemeId } from "../themes.js";
 import { UniverseIconFrame } from "./UniverseIconFrame.js";
@@ -40,7 +40,6 @@ function universeDisplayPath(fileState?: ProjectFileState) {
 export function Topbar({
   project,
   fileState,
-  findings,
   exportOpen,
   theme,
   onOpenSettings,
@@ -55,7 +54,6 @@ export function Topbar({
 }: {
   project?: BranchingProject;
   fileState?: ProjectFileState;
-  findings: ValidationFinding[];
   exportOpen: boolean;
   theme: ThemeId;
   onOpenSettings: () => void;
@@ -68,8 +66,6 @@ export function Topbar({
   canUndo: boolean;
   canRedo: boolean;
 }) {
-  const errorCount = findings.filter((finding) => finding.severity === "error").length;
-  const status = findings.length === 0 ? "Clean" : `${findings.length} findings`;
   const universeName = universeDisplayName(project, fileState);
   const universePath = universeDisplayPath(fileState);
   const [forgeMenuOpen, setForgeMenuOpen] = useState(false);
@@ -172,11 +168,6 @@ export function Topbar({
             <span>Export</span>
           </button>
         </div>
-
-        <span className={`pathbranching-status ${errorCount > 0 ? "has-errors" : ""}`} title={status}>
-          {status}
-          {errorCount > 0 ? ` (${errorCount})` : ""}
-        </span>
 
         <button type="button" className="dock-icon-button" onClick={onToggleTheme} title={`Toggle theme (${themeById(theme).label})`}>
           {isDarkTheme(theme) ? <Sun size={15} /> : <Moon size={15} />}

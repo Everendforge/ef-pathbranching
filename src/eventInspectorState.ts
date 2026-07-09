@@ -65,13 +65,21 @@ export function collapseEventInspectorTab(state: EventInspectorState, eventId: s
   };
 }
 
-export function closeEventInspectorTab(state: EventInspectorState, eventId: string): EventInspectorState {
+export function closeEventInspectorTab(
+  state: EventInspectorState,
+  eventId: string,
+  options: { selectNextOnClose?: boolean } = {},
+): EventInspectorState {
+  const selectNextOnClose = options.selectNextOnClose ?? false;
   const closedIndex = state.openEventIds.indexOf(eventId);
   const openEventIds = state.openEventIds.filter((candidate) => candidate !== eventId);
-  const expandedEventId =
-    state.expandedEventId === eventId || (state.expandedEventId && !openEventIds.includes(state.expandedEventId))
+  const expandedNeedsReplacement =
+    state.expandedEventId === eventId || (state.expandedEventId !== undefined && !openEventIds.includes(state.expandedEventId));
+  const expandedEventId = expandedNeedsReplacement
+    ? selectNextOnClose
       ? openEventIds[closedIndex] ?? openEventIds[closedIndex - 1]
-      : state.expandedEventId;
+      : undefined
+    : state.expandedEventId;
   const nextState = {
     open: openEventIds.length > 0 ? state.open : false,
     openEventIds,
@@ -89,6 +97,42 @@ export function closeEventInspectorDock(state: EventInspectorState): EventInspec
     open: false,
     expandedEventId: undefined,
   };
+}
+
+export function closeAllEventInspectorTabs(state: EventInspectorState): EventInspectorState {
+  if (state.openEventIds.length === 0 && !state.open && state.expandedEventId === undefined) {
+    return state;
+  }
+  return { open: false, openEventIds: [], expandedEventId: undefined };
+}
+
+export function closeEventInspectorTabsAbove(state: EventInspectorState, eventId: string): EventInspectorState {
+  const index = state.openEventIds.indexOf(eventId);
+  if (index <= 0) {
+    return state;
+  }
+  const openEventIds = state.openEventIds.slice(index);
+  const expandedEventId = state.expandedEventId && openEventIds.includes(state.expandedEventId) ? state.expandedEventId : undefined;
+  const nextState = { open: openEventIds.length > 0 ? state.open : false, openEventIds, expandedEventId };
+  return sameState(state, nextState) ? state : nextState;
+}
+
+export function closeEventInspectorTabsBelow(state: EventInspectorState, eventId: string): EventInspectorState {
+  const index = state.openEventIds.indexOf(eventId);
+  if (index === -1 || index === state.openEventIds.length - 1) {
+    return state;
+  }
+  const openEventIds = state.openEventIds.slice(0, index + 1);
+  const expandedEventId = state.expandedEventId && openEventIds.includes(state.expandedEventId) ? state.expandedEventId : undefined;
+  const nextState = { open: openEventIds.length > 0 ? state.open : false, openEventIds, expandedEventId };
+  return sameState(state, nextState) ? state : nextState;
+}
+
+export function closeOtherEventInspectorTabs(state: EventInspectorState, eventId: string): EventInspectorState {
+  if (!state.openEventIds.includes(eventId) || (state.openEventIds.length === 1 && state.openEventIds[0] === eventId)) {
+    return state;
+  }
+  return { open: true, openEventIds: [eventId], expandedEventId: eventId };
 }
 
 export function pruneEventInspectorState(state: EventInspectorState, validEventIds: Iterable<string>): EventInspectorState {

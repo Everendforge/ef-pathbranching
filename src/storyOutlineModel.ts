@@ -1,7 +1,7 @@
-import type { Branch, BranchingProject, EventNode, Sequence, Transition } from "./domain.js";
+import type { Branch, BranchingProject, CanvasScope, EventNode, Sequence, Transition } from "./domain.js";
 import { conditionCount } from "./logic.js";
 
-export type StoryOutlineTab = "sequence" | "branches" | "events";
+export type StoryOutlineTab = "sequence" | "branches" | "paths";
 
 export type SequenceConnectionPreview = {
   id: string;
@@ -222,4 +222,77 @@ export function buildEventDependencyOutline(project: BranchingProject, sequenceI
         outgoing,
       };
     });
+}
+
+export type PathTreeNodeKind = "event" | "decision" | "dialogue";
+
+export type PathTreeNode = {
+  id: string;
+  kind: PathTreeNodeKind;
+  label: string;
+  subtitle?: string;
+  badges: string[];
+  scope: CanvasScope;
+  selectId: string;
+  eventId?: string;
+  children: PathTreeNode[];
+};
+
+function buildEventPathNode(project: BranchingProject, event: EventNode, scope: CanvasScope, visited: Set<string>): PathTreeNode {
+  const nestedScope: CanvasScope = { kind: "event", id: event.id };
+  const childEvents = visited.has(event.id)
+    ? []
+    : (event.childEventIds ?? [])
+        .map((childId) => project.events.find((candidate) => candidate.id === childId))
+        .filter((candidate): candidate is EventNode => Boolean(candidate));
+  const nextVisited = new Set(visited).add(event.id);
+
+  const children: PathTreeNode[] = [
+    ...childEvents.map((child) => buildEventPathNode(project, child, nestedScope, nextVisited)),
+    ...(event.decisions ?? []).map((decision): PathTreeNode => ({
+      id: `decision:${event.id}:${decision.id}`,
+      kind: "decision",
+      label: decision.name,
+      subtitle: `${decision.outcomes.length} outcome${decision.outcomes.length === 1 ? "" : "s"}`,
+      badges: [decision.type],
+      scope: nestedScope,
+      selectId: `decision:${event.id}:${decision.id}`,
+      children: [],
+    })),
+    ...(event.dialogues ?? []).map((dialogue): PathTreeNode => ({
+      id: `dialogue:${event.id}:${dialogue.id}`,
+      kind: "dialogue",
+      label: dialogue.title,
+      subtitle: dialogue.speakerRef,
+      badges: [],
+      scope: nestedScope,
+      selectId: `dialogue:${event.id}:${dialogue.id}`,
+      children: [],
+    })),
+  ];
+
+  return {
+    id: event.id,
+    kind: "event",
+    label: event.name,
+    subtitle: event.type,
+    badges: [
+      childEvents.length ? `${childEvents.length} nested` : "",
+      event.decisions?.length ? `${event.decisions.length} decisions` : "",
+      event.dialogues?.length ? `${event.dialogues.length} dialogues` : "",
+    ].filter((badge): badge is string => Boolean(badge)),
+    scope,
+    selectId: event.id,
+    eventId: event.id,
+    children,
+  };
+}
+
+export function buildPathTree(project: BranchingProject, sequence: Sequence | undefined): PathTreeNode[] {
+  if (!sequence) return [];
+  const rootScope: CanvasScope = { kind: "sequence", id: sequence.id };
+  return sequence.eventIds
+    .map((eventId) => project.events.find((event) => event.id === eventId))
+    .filter((event): event is EventNode => Boolean(event))
+    .map((event) => buildEventPathNode(project, event, rootScope, new Set()));
 }

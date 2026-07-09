@@ -70,6 +70,63 @@ export function isTerminalEventType(project: BranchingProject, type: string | un
   return Boolean(type && (type === "final" || project.eventCategories?.some((category) => category.id === type && category.terminal)));
 }
 
+export function removeMissingEventReference(project: BranchingProject, ownerId: string, missingEventId: string): MutationResult {
+  const sequence = project.sequences.find((item) => item.id === ownerId);
+  if (sequence) {
+    return {
+      project: {
+        ...project,
+        sequences: project.sequences.map((item) =>
+          item.id === ownerId ? { ...item, eventIds: withoutValue(item.eventIds, missingEventId) } : item,
+        ),
+      },
+      selection: undefined,
+    };
+  }
+  const branch = project.branches.find((item) => item.id === ownerId);
+  if (branch) {
+    return {
+      project: {
+        ...project,
+        branches: project.branches.map((item) =>
+          item.id === ownerId ? { ...item, eventIds: withoutValue(item.eventIds, missingEventId) } : item,
+        ),
+      },
+      selection: undefined,
+    };
+  }
+  const event = findEvent(project, ownerId);
+  if (event) {
+    return {
+      project: {
+        ...project,
+        events: project.events.map((item) =>
+          item.id === ownerId ? { ...item, childEventIds: withoutValue(item.childEventIds, missingEventId) } : item,
+        ),
+      },
+      selection: undefined,
+    };
+  }
+  return { project, message: "Reference owner not found." };
+}
+
+export function findBoundaryBindingOwnerId(project: BranchingProject, bindingId: string): string | undefined {
+  return project.events.find((event) => event.boundaryBindings?.some((binding) => binding.id === bindingId))?.id;
+}
+
+export function removeBoundaryBinding(project: BranchingProject, bindingId: string): MutationResult {
+  return {
+    project: {
+      ...project,
+      events: project.events.map((event) => ({
+        ...event,
+        boundaryBindings: event.boundaryBindings?.filter((binding) => binding.id !== bindingId),
+      })),
+    },
+    selection: undefined,
+  };
+}
+
 export function updateSequence(project: BranchingProject, id: string, updates: Partial<Sequence>): MutationResult {
   return {
     project: {

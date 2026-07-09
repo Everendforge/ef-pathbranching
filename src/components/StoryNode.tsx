@@ -23,8 +23,12 @@ function StoryNode({ data, selected }: NodeProps<StoryCanvasNode>) {
         ? "output"
         : undefined;
   const focusClass = typeof nodeData.focusState === "string" ? ` focus-${nodeData.focusState}` : "";
-  const canReceive = boundaryDirection ? boundaryDirection === "output" : nodeData.kind !== "start" && nodeData.kind !== "sequence";
-  const canSource = boundaryDirection ? boundaryDirection === "input" : nodeData.kind === "start" || (nodeData.kind !== "sequence" && !isFinalEvent);
+  const canReceive = boundaryDirection
+    ? boundaryDirection === "output"
+    : nodeData.kind !== "start" && nodeData.kind !== "sequence" && nodeData.kind !== "missingRef";
+  const canSource = boundaryDirection
+    ? boundaryDirection === "input"
+    : nodeData.kind !== "missingRef" && (nodeData.kind === "start" || (nodeData.kind !== "sequence" && !isFinalEvent));
   const eventTypeLabel = objectString(nodeData.details?.category, "label") ?? nodeData.subtitle ?? "Event";
   const branchLabel = objectString(nodeData.details?.branch, "title");
   const summaryBadges = Array.isArray(nodeData.summaryBadges)
@@ -34,6 +38,7 @@ function StoryNode({ data, selected }: NodeProps<StoryCanvasNode>) {
   const colorStyle = {
     "--node-accent": typeof nodeData.accentColor === "string" ? nodeData.accentColor : undefined,
     "--node-branch": typeof nodeData.branchColor === "string" ? nodeData.branchColor : undefined,
+    "--node-type": typeof nodeData.details?.typeColor === "string" ? nodeData.details.typeColor : undefined,
   } as CSSProperties;
 
   if (nodeData.isContainer) {

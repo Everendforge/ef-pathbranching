@@ -103,6 +103,8 @@ export type AppSettings = {
   nodeColors: NodeColorSettings;
   worldnotionBridge: WorldNotionBridgeSettings;
   workspaceSessions?: Record<string, PathBranchingWorkspaceSession>;
+  inspectorTabCloseSelectsNext: boolean;
+  collapseInspectorTabOnCanvasClick: boolean;
 };
 
 export function normalizeCanvasBackgroundSettings(value: unknown): CanvasBackgroundSettings {
@@ -177,6 +179,9 @@ export function loadSettings(): AppSettings {
       nodeColors: normalizeNodeColorSettings(parsed.nodeColors),
       worldnotionBridge: normalizeWorldNotionBridgeSettings(parsed.worldnotionBridge),
       workspaceSessions,
+      inspectorTabCloseSelectsNext: typeof parsed.inspectorTabCloseSelectsNext === "boolean" ? parsed.inspectorTabCloseSelectsNext : false,
+      collapseInspectorTabOnCanvasClick:
+        typeof parsed.collapseInspectorTabOnCanvasClick === "boolean" ? parsed.collapseInspectorTabOnCanvasClick : true,
     };
   } catch {
     return {
@@ -188,6 +193,8 @@ export function loadSettings(): AppSettings {
       nodeColors: normalizeNodeColorSettings(undefined),
       worldnotionBridge: normalizeWorldNotionBridgeSettings(undefined),
       workspaceSessions: {},
+      inspectorTabCloseSelectsNext: false,
+      collapseInspectorTabOnCanvasClick: true,
     };
   }
 }
@@ -313,7 +320,7 @@ export function normalizeWorkspaceSession(session: PathBranchingWorkspaceSession
     markdownTabs: sessionMarkdownTabs(session.markdownTabs),
     activeMarkdownTabId: typeof session.activeMarkdownTabId === "string" ? session.activeMarkdownTabId : undefined,
     storyOutlineTab:
-      session.storyOutlineTab === "sequence" || session.storyOutlineTab === "branches" || session.storyOutlineTab === "events"
+      session.storyOutlineTab === "sequence" || session.storyOutlineTab === "branches" || session.storyOutlineTab === "paths"
         ? session.storyOutlineTab
         : undefined,
   };

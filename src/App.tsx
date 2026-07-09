@@ -22,8 +22,11 @@ import { nodeTypes } from "./components/StoryNode.js";
 import { Topbar } from "./components/Topbar.js";
 import { UniverseIconFrame } from "./components/UniverseIconFrame.js";
 import {
+  AlertTriangle,
   Bold,
+  CheckCircle2,
   ChevronDown,
+  ChevronRight,
   ChevronUp,
   Code,
   Database,
@@ -40,10 +43,13 @@ import {
   Link,
   List,
   ListOrdered,
+  MessageSquare,
   Moon,
+  OctagonAlert,
   Quote,
   SearchCheck,
   Settings,
+  Split,
   Sun,
   Pencil,
   Trash2,
@@ -100,7 +106,11 @@ import {
 } from "./eventDraft.js";
 import {
   DEFAULT_EVENT_INSPECTOR_STATE,
+  closeAllEventInspectorTabs,
   closeEventInspectorTab,
+  closeEventInspectorTabsAbove,
+  closeEventInspectorTabsBelow,
+  closeOtherEventInspectorTabs,
   collapseEventInspectorTab,
   deleteEventInspectorTabGroup,
   loadEventInspectorTabGroup,
@@ -140,11 +150,12 @@ import {
 } from "./themes.js";
 import { activeCanvasScope, activeSequenceId, canvasScopeKey, findBranch, findEvent, findSequence, rootSequenceScope } from "./storySelection.js";
 import {
-  buildEventDependencyOutline,
+  buildPathTree,
   buildSequenceConnectionPreview,
   assignEventToBranch,
   branchesForSequence,
   eventsForBranch,
+  type PathTreeNode,
   type StoryOutlineTab,
 } from "./storyOutlineModel.js";
 import {
@@ -1770,6 +1781,8 @@ function PathBranchingSettingsModal({
   onNodeColorChange,
   onThemeChange,
   onToggleTheme,
+  onInspectorTabCloseSelectsNextChange,
+  onCollapseInspectorTabOnCanvasClickChange,
   onConnectBridge,
   onVerifyBridge,
   onDisconnectBridge,
@@ -1788,6 +1801,8 @@ function PathBranchingSettingsModal({
   onNodeColorChange: (updates: Partial<NodeColorSettings>) => void;
   onThemeChange: (theme: ThemeId) => void;
   onToggleTheme: () => void;
+  onInspectorTabCloseSelectsNextChange: (value: boolean) => void;
+  onCollapseInspectorTabOnCanvasClickChange: (value: boolean) => void;
   onConnectBridge: () => void;
   onVerifyBridge: () => void;
   onDisconnectBridge: () => void;
@@ -2030,6 +2045,22 @@ function PathBranchingSettingsModal({
                   <label>
                     <span>Last universe</span>
                     <input value={settings.lastOpenedProject ?? "None"} readOnly />
+                  </label>
+                  <label>
+                    <span>Open next tab on close</span>
+                    <input
+                      type="checkbox"
+                      checked={settings.inspectorTabCloseSelectsNext}
+                      onChange={(event) => onInspectorTabCloseSelectsNextChange(event.target.checked)}
+                    />
+                  </label>
+                  <label>
+                    <span>Collapse tab on canvas click</span>
+                    <input
+                      type="checkbox"
+                      checked={settings.collapseInspectorTabOnCanvasClick}
+                      onChange={(event) => onCollapseInspectorTabOnCanvasClickChange(event.target.checked)}
+                    />
                   </label>
                   <label>
                     <span>Canvas circles</span>
@@ -2578,100 +2609,145 @@ function BranchTagPanel({
   );
 }
 
-function EventDependencyOutlinePanel({
+function pathTreeNodeIcon(kind: PathTreeNode["kind"]) {
+  if (kind === "decision") return <Split size={13} />;
+  if (kind === "dialogue") return <MessageSquare size={13} />;
+  return <GitBranch size={13} />;
+}
+
+function collectPathTreeIds(node: PathTreeNode): string[] {
+  return [node.id, ...node.children.flatMap(collectPathTreeIds)];
+}
+
+function PathTreeRow({
+  node,
+  depth,
+  expanded,
+  onToggle,
+  onNavigate,
+  isActive,
+}: {
+  node: PathTreeNode;
+  depth: number;
+  expanded: Set<string>;
+  onToggle: (id: string) => void;
+  onNavigate: (node: PathTreeNode) => void;
+  isActive: (node: PathTreeNode) => boolean;
+}) {
+  const hasChildren = node.children.length > 0;
+  const isExpanded = expanded.has(node.id);
+
+  return (
+    <div className="path-tree-node">
+      <div className={`path-tree-row ${isActive(node) ? "active" : ""}`} style={{ paddingLeft: 6 + depth * 16 }}>
+        <button
+          type="button"
+          className="path-tree-toggle"
+          onClick={(event) => {
+            event.stopPropagation();
+            if (hasChildren) onToggle(node.id);
+          }}
+          aria-label={hasChildren ? (isExpanded ? "Collapse" : "Expand") : undefined}
+          tabIndex={hasChildren ? 0 : -1}
+        >
+          {hasChildren ? isExpanded ? <ChevronDown size={13} /> : <ChevronRight size={13} /> : <span className="path-tree-toggle-spacer" />}
+        </button>
+        <button type="button" className="path-tree-label" onClick={() => onNavigate(node)}>
+          {pathTreeNodeIcon(node.kind)}
+          <span className="path-tree-title">{node.label}</span>
+          {node.subtitle ? <span className="path-tree-subtitle">{node.subtitle}</span> : null}
+          {node.badges.length ? (
+            <span className="path-tree-badges">
+              {node.badges.map((badge) => (
+                <small key={badge}>{badge}</small>
+              ))}
+            </span>
+          ) : null}
+        </button>
+      </div>
+      {hasChildren && isExpanded ? (
+        <div className="path-tree-children">
+          {node.children.map((child) => (
+            <PathTreeRow
+              key={child.id}
+              node={child}
+              depth={depth + 1}
+              expanded={expanded}
+              onToggle={onToggle}
+              onNavigate={onNavigate}
+              isActive={isActive}
+            />
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function PathOutlinePanel({
   project,
   sequence,
   selectedId,
-  onSelect,
-  onAssignEventToBranch,
+  onNavigate,
 }: {
   project: BranchingProject;
   sequence?: Sequence;
   selectedId?: string;
-  onSelect: (id: string) => void;
-  onAssignEventToBranch: (eventId: string, branchId?: string) => void;
+  onNavigate: (node: PathTreeNode) => void;
 }) {
   const [query, setQuery] = useState("");
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const tree = useMemo(() => buildPathTree(project, sequence), [project, sequence]);
   const normalizedQuery = query.trim().toLowerCase();
-  const outline = buildEventDependencyOutline(project, sequence?.id).filter(({ event, branch }) =>
-    [event.id, event.name, event.type, branch?.title, event.script?.sourcePath, ...(event.canonRefs ?? [])]
-      .filter(Boolean)
-      .some((value) => String(value).toLowerCase().includes(normalizedQuery)),
+
+  const toggle = useCallback((id: string) => {
+    setExpanded((current) => {
+      const next = new Set(current);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  }, []);
+
+  const matchesQuery = useCallback(
+    (node: PathTreeNode): boolean =>
+      !normalizedQuery ||
+      [node.label, node.subtitle, ...node.badges]
+        .filter(Boolean)
+        .some((value) => String(value).toLowerCase().includes(normalizedQuery)) ||
+      node.children.some((child) => matchesQuery(child)),
+    [normalizedQuery],
   );
+
+  const filteredTree = normalizedQuery ? tree.filter((node) => matchesQuery(node)) : tree;
+  const effectiveExpanded = normalizedQuery ? new Set(tree.flatMap(collectPathTreeIds)) : expanded;
+  const isActive = (node: PathTreeNode) => node.kind === "event" && selectedId === `file:event:${node.selectId}`;
 
   return (
     <div className="story-outline-map">
       <div className="outline-toolbar">
-        <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search events" aria-label="Search events" />
-        <span>{outline.length}/{sequence?.eventIds.length ?? 0}</span>
+        <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search paths" aria-label="Search paths" />
+        <span>
+          {tree.length} root event{tree.length === 1 ? "" : "s"}
+        </span>
       </div>
-      {outline.map((item) => (
-        <section className={`outline-card event-outline-card ${selectedId === `file:event:${item.event.id}` ? "active" : ""}`} key={item.event.id}>
-          <button type="button" className="outline-card-button" onClick={() => onSelect(`file:event:${item.event.id}`)}>
-            <strong>{item.event.name}</strong>
-            <span>{item.event.id}</span>
-            <OutlineBadges
-              badges={[
-                item.event.type,
-                item.branch ? `branch: ${item.branch.title}` : "no branch",
-                item.isEntry ? "entry" : "",
-                item.isTerminal ? "terminal" : "",
-                item.event.decisions?.length ? `${item.event.decisions.length} decisions` : "",
-                item.event.canonRefs?.length ? `${item.event.canonRefs.length} refs` : "",
-                item.event.script ? "script" : "",
-              ]}
-            />
-          </button>
-          <div className="outline-row">
-            <span>Branch</span>
-            <select
-              value={item.event.branchRef ?? ""}
-              aria-label={`Branch for ${item.event.name}`}
-              onChange={(event) => onAssignEventToBranch(item.event.id, event.target.value || undefined)}
-            >
-              <option value="">No branch</option>
-              {project.branches.map((branch) => (
-                <option key={branch.id} value={branch.id}>
-                  {branch.title}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div className="outline-children">
-            {item.incoming.length ? (
-              <div className="outline-mini-group">
-                <strong>Incoming</strong>
-                {item.incoming.map((link) => (
-                  <button type="button" key={link.transitionId} onClick={() => onSelect(`file:event:${link.eventId}`)}>
-                    {link.eventName} {"->"} {item.event.name}
-                  </button>
-                ))}
-              </div>
-            ) : null}
-            {item.outgoing.length ? (
-              <div className="outline-mini-group">
-                <strong>Outgoing</strong>
-                {item.outgoing.map((link) => (
-                  <button type="button" key={link.transitionId} onClick={() => onSelect(`file:event:${link.eventId}`)}>
-                    {item.event.name} {"->"} {link.eventName}
-                  </button>
-                ))}
-              </div>
-            ) : null}
-            {item.event.decisions?.map((decision) => (
-              <div className="outline-mini-group" key={decision.id}>
-                <strong>{decision.name}</strong>
-                <span>{decision.type} / {decision.outcomes.length} outcomes</span>
-                {decision.outcomes.map((outcome) => (
-                  <span key={outcome.id}>{outcome.name}</span>
-                ))}
-              </div>
-            ))}
-            {item.event.script ? <span className="outline-note">{item.event.script.sourcePath ?? item.event.script.id}</span> : null}
-          </div>
-        </section>
-      ))}
-      {!outline.length ? <span className="empty-line">No events match this search.</span> : null}
+      <div className="path-tree">
+        {filteredTree.map((node) => (
+          <PathTreeRow
+            key={node.id}
+            node={node}
+            depth={0}
+            expanded={effectiveExpanded}
+            onToggle={toggle}
+            onNavigate={onNavigate}
+            isActive={isActive}
+          />
+        ))}
+      </div>
+      {!filteredTree.length ? <span className="empty-line">No paths match this search.</span> : null}
     </div>
   );
 }
@@ -2705,6 +2781,7 @@ function FilesPanel({
   onSelect,
   activeOutlineTab,
   onOutlineTabChange,
+  onNavigatePathNode,
 }: {
   project: BranchingProject;
   files: PathBranchingFileItem[];
@@ -2713,6 +2790,7 @@ function FilesPanel({
   storyName?: string;
   open: boolean;
   selectedId?: string;
+  onNavigatePathNode: (node: PathTreeNode) => void;
   onToggle: () => void;
   onResize: (width: number) => void;
   onResetWidth: () => void;
@@ -2818,7 +2896,7 @@ function FilesPanel({
       </div>
       <div className="panel-scroll">
         <div className="story-outline-tabs" role="tablist" aria-label="Story outline tabs">
-          {(["sequence", "branches", "events"] as StoryOutlineTab[]).map((tab) => (
+          {(["sequence", "branches", "paths"] as StoryOutlineTab[]).map((tab) => (
             <button
               type="button"
               role="tab"
@@ -2827,7 +2905,7 @@ function FilesPanel({
               key={tab}
               onClick={() => onOutlineTabChange(tab)}
             >
-              {tab === "sequence" ? "Sequence" : tab === "branches" ? "Branches" : "Events"}
+              {tab === "sequence" ? "Sequence" : tab === "branches" ? "Branches" : "Paths"}
             </button>
           ))}
         </div>
@@ -2853,14 +2931,8 @@ function FilesPanel({
             onAssignEventToBranch={onAssignEventToBranch}
           />
         ) : null}
-        {activeOutlineTab === "events" ? (
-          <EventDependencyOutlinePanel
-            project={project}
-            sequence={activeSequence}
-            selectedId={selectedId}
-            onSelect={onSelect}
-            onAssignEventToBranch={onAssignEventToBranch}
-          />
+        {activeOutlineTab === "paths" ? (
+          <PathOutlinePanel project={project} sequence={activeSequence} selectedId={selectedId} onNavigate={onNavigatePathNode} />
         ) : null}
         {totalItems === 0 ? <span className="empty-line">No story objects yet.</span> : null}
       </div>
@@ -2916,6 +2988,10 @@ function EventAuthoringDock({
   onOpenEvent,
   onCollapseEvent,
   onCloseEvent,
+  onCloseAllEvents,
+  onCloseEventsAbove,
+  onCloseEventsBelow,
+  onCloseOtherEvents,
   onPruneEvents,
   onSaveGroup,
   onLoadGroup,
@@ -2935,6 +3011,10 @@ function EventAuthoringDock({
   onOpenEvent: (eventId: string) => void;
   onCollapseEvent: (eventId: string) => void;
   onCloseEvent: (eventId: string) => void;
+  onCloseAllEvents: () => void;
+  onCloseEventsAbove: (eventId: string) => void;
+  onCloseEventsBelow: (eventId: string) => void;
+  onCloseOtherEvents: (eventId: string) => void;
   onPruneEvents: (eventIds: readonly string[]) => void;
   onSaveGroup: () => void;
   onLoadGroup: (groupId: string) => void;
@@ -2949,6 +3029,7 @@ function EventAuthoringDock({
   const manuallyCollapsedEventIdRef = useRef<string | undefined>(undefined);
   const manuallyClosedEventIdRef = useRef<string | undefined>(undefined);
   const [selectedTabGroupId, setSelectedTabGroupId] = useState("");
+  const [tabContextMenu, setTabContextMenu] = useState<{ eventId: string; x: number; y: number }>();
   const currentSequence = project.sequences.find((sequence) => sequence.id === activeSequenceId(project));
   const validEventIds = useMemo(() => currentSequence?.eventIds ?? [], [currentSequence?.eventIds]);
   const eventIds = useMemo(() => new Set(validEventIds), [validEventIds]);
@@ -3077,6 +3158,22 @@ function EventAuthoringDock({
     [eventInspector.expandedEventId, onCollapseEvent],
   );
 
+  useEffect(() => {
+    if (!tabContextMenu) return;
+    function handlePointerDown() {
+      setTabContextMenu(undefined);
+    }
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") setTabContextMenu(undefined);
+    }
+    document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [tabContextMenu]);
+
   const applyMarkdownAction = useCallback(
     (action: MarkdownTextAction) => {
       if (!draftMatchesActiveEvent || !editableEvent) return;
@@ -3146,7 +3243,13 @@ function EventAuthoringDock({
               >
             <div className="event-editor-header">
               {isExpanded ? (
-                <div className="event-header-title">
+                <div
+                  className="event-header-title"
+                  onContextMenu={(contextEvent) => {
+                    contextEvent.preventDefault();
+                    setTabContextMenu({ eventId: event.id, x: contextEvent.clientX, y: contextEvent.clientY });
+                  }}
+                >
                   <strong>
                     {cardEvent.name ?? "No event selected"}
                     {isDraftEvent && eventDraft?.dirty ? <span className="event-dirty-star" aria-label="unsaved edits">*</span> : null}
@@ -3157,6 +3260,10 @@ function EventAuthoringDock({
                   type="button"
                   className="event-minimized-title"
                   onClick={() => toggleInspector(event.id)}
+                  onContextMenu={(contextEvent) => {
+                    contextEvent.preventDefault();
+                    setTabContextMenu({ eventId: event.id, x: contextEvent.clientX, y: contextEvent.clientY });
+                  }}
                   title={`Open ${event.name}`}
                 >
                   <strong>
@@ -3261,6 +3368,46 @@ function EventAuthoringDock({
           })}
         </div>
       </div>
+      {tabContextMenu ? (
+        <div className="canvas-menu tab-context-menu" style={{ left: tabContextMenu.x, top: tabContextMenu.y }}>
+          <button
+            type="button"
+            onClick={() => {
+              onCloseEventsAbove(tabContextMenu.eventId);
+              setTabContextMenu(undefined);
+            }}
+          >
+            Close tabs above
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              onCloseEventsBelow(tabContextMenu.eventId);
+              setTabContextMenu(undefined);
+            }}
+          >
+            Close tabs below
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              onCloseOtherEvents(tabContextMenu.eventId);
+              setTabContextMenu(undefined);
+            }}
+          >
+            Close other tabs
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              onCloseAllEvents();
+              setTabContextMenu(undefined);
+            }}
+          >
+            Close all tabs
+          </button>
+        </div>
+      ) : null}
     </aside>
   );
 }
@@ -3379,6 +3526,15 @@ function Inspector({
           eventId: selectedNode.data.details.eventId,
           decisionId: String(selectedNode.data.details.decisionId ?? "").replace(`decision:${selectedNode.data.details.eventId}:`, ""),
           outcome: selectedNode.data.details.outcome as Outcome | undefined,
+        }
+      : undefined;
+  const selectedMissingRefContext =
+    selectedNode?.data.kind === "missingRef" &&
+    typeof selectedNode.data.details?.ownerId === "string" &&
+    typeof selectedNode.data.details?.missingEventId === "string"
+      ? {
+          ownerId: selectedNode.data.details.ownerId,
+          missingEventId: selectedNode.data.details.missingEventId,
         }
       : undefined;
   const selectedTransitionId = selectedEdge?.id.startsWith("edge:transition:")
@@ -3859,6 +4015,27 @@ function Inspector({
           </>
         ) : null}
 
+        {selectedMissingRefContext ? (
+          <section className="inspector-section">
+            <h2>Missing Reference</h2>
+            <p className="empty-line">
+              "{selectedMissingRefContext.missingEventId}" is referenced by "{selectedMissingRefContext.ownerId}" but no event with
+              that id exists. Recreate the event with this id to restore it, or remove the dangling reference.
+            </p>
+            <div className="inspector-actions">
+              <button
+                type="button"
+                className="danger"
+                onClick={() =>
+                  onDeleteSelection({ type: "node", id: selectedMissingRefContext.missingEventId })
+                }
+              >
+                Remove reference
+              </button>
+            </div>
+          </section>
+        ) : null}
+
         {selectedOutcomeContext?.outcome ? (
           <>
             <section className="inspector-section">
@@ -3945,7 +4122,8 @@ function Inspector({
         !event &&
         !selectedDecisionContext?.decision &&
         !selectedDialogueContext?.dialogue &&
-        !selectedOutcomeContext?.outcome ? (
+        !selectedOutcomeContext?.outcome &&
+        !selectedMissingRefContext ? (
           <section className="inspector-section">
             <h2>{selectedNode.data.title}</h2>
             <dl>
@@ -4340,6 +4518,163 @@ type CanvasContextMenu = {
   sourceNodeId?: string;
 };
 
+function EventTypeMenuButton({
+  label,
+  options,
+  onSelect,
+}: {
+  label: string;
+  options: EventCategoryDefinition[];
+  onSelect: (categoryId: string) => void;
+}) {
+  return (
+    <div className="canvas-menu-submenu">
+      <button type="button" className="canvas-menu-submenu-trigger">
+        <span>{label}</span>
+        <ChevronRight size={13} />
+      </button>
+      <div className="canvas-menu-submenu-flyout">
+        {options.map((category) => (
+          <button key={category.id} type="button" onClick={() => onSelect(category.id)}>
+            {category.label}
+            {category.terminal ? " (final)" : ""}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+const FIXABLE_FINDING_CODES = new Set<ValidationFinding["code"]>(["missing_event", "invalid_boundary_binding"]);
+
+function CanvasFindingsButton({
+  findings,
+  onLocateFinding,
+  onFixFinding,
+}: {
+  findings: ValidationFinding[];
+  onLocateFinding: (finding: ValidationFinding) => void;
+  onFixFinding: (finding: ValidationFinding) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const wrapperRef = useRef<HTMLDivElement | null>(null);
+  const errorCount = findings.filter((finding) => finding.severity === "error").length;
+  const warningCount = findings.filter((finding) => finding.severity === "warning").length;
+  const status = errorCount > 0 ? "error" : warningCount > 0 ? "warning" : "clean";
+  const label =
+    status === "error"
+      ? `${errorCount} error${errorCount === 1 ? "" : "s"}`
+      : status === "warning"
+        ? `${warningCount} warning${warningCount === 1 ? "" : "s"}`
+        : "No validation issues";
+
+  useEffect(() => {
+    if (!open) return;
+    function handlePointerDown(event: PointerEvent) {
+      if (wrapperRef.current?.contains(event.target as Node)) return;
+      setOpen(false);
+    }
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") setOpen(false);
+    }
+    document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [open]);
+
+  return (
+    <div className="canvas-findings-anchor" ref={wrapperRef}>
+      <button
+        type="button"
+        className={`react-flow__controls-button canvas-findings-button ${status} ${open ? "active" : ""}`}
+        onClick={() => setOpen((current) => !current)}
+        title={label}
+        aria-label={`Validation status: ${label}`}
+        aria-expanded={open}
+      >
+        {status === "error" ? <OctagonAlert size={14} /> : status === "warning" ? <AlertTriangle size={14} /> : <CheckCircle2 size={14} />}
+      </button>
+      {open ? (
+        <div className="canvas-findings-popup">
+          <div className="canvas-findings-popup-header">
+            <strong>{label}</strong>
+            <span>{findings.length} total finding{findings.length === 1 ? "" : "s"}</span>
+          </div>
+          {findings.length ? (
+            <div className="stack-list">
+              {findings.map((finding) => (
+                <div className={`finding ${finding.severity}`} key={`${finding.code}:${finding.id ?? ""}:${finding.ref ?? ""}`}>
+                  <strong>{finding.code}</strong>
+                  <span>{finding.message}</span>
+                  {FIXABLE_FINDING_CODES.has(finding.code) && finding.id ? (
+                    <div className="finding-actions">
+                      <button type="button" onClick={() => onLocateFinding(finding)}>
+                        Locate
+                      </button>
+                      <button type="button" className="danger" onClick={() => onFixFinding(finding)}>
+                        Remove reference
+                      </button>
+                    </div>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+          ) : (
+            <span className="clean">Story graph is clean.</span>
+          )}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function BreadcrumbCrumb({
+  crumb,
+  index,
+  isLast,
+  infoBadges,
+  onNavigate,
+}: {
+  crumb: { scope: CanvasScope; label: string };
+  index: number;
+  isLast: boolean;
+  infoBadges: string[];
+  onNavigate: () => void;
+}) {
+  const buttonRef = useRef<HTMLButtonElement | null>(null);
+  const [hoverPosition, setHoverPosition] = useState<{ left: number; top: number }>();
+
+  return (
+    <span className="breadcrumb-crumb">
+      <button
+        ref={buttonRef}
+        type="button"
+        className={isLast ? "active" : ""}
+        onClick={onNavigate}
+        onMouseEnter={() => {
+          const rect = buttonRef.current?.getBoundingClientRect();
+          if (rect) setHoverPosition({ left: rect.left, top: rect.bottom + 6 });
+        }}
+        onMouseLeave={() => setHoverPosition(undefined)}
+      >
+        {index === 0 ? <Home size={14} /> : <GitBranch size={14} />}
+        <span>{crumb.label}</span>
+      </button>
+      {hoverPosition && infoBadges.length ? (
+        <div className="breadcrumb-hover-popup" role="tooltip" style={{ left: hoverPosition.left, top: hoverPosition.top }}>
+          <strong>{crumb.label}</strong>
+          {infoBadges.map((badge) => (
+            <span key={badge}>{badge}</span>
+          ))}
+        </div>
+      ) : null}
+    </span>
+  );
+}
+
 function StoryCanvas({
   project,
   files,
@@ -4386,6 +4721,8 @@ function StoryCanvas({
   onDeleteOutcome,
   onUpdateTransition,
   onDeleteTransition,
+  onRemoveMissingEventReference,
+  onRemoveBoundaryBinding,
   onCreateCanonSuggestion,
   onUpdateCanonSuggestion,
   onDeleteCanonSuggestion,
@@ -4404,7 +4741,12 @@ function StoryCanvas({
   onOpenEventInspectorEvent,
   onCollapseEventInspectorEvent,
   onCloseEventInspectorEvent,
+  onCloseAllEventInspectorEvents,
+  onCloseEventInspectorEventsAbove,
+  onCloseEventInspectorEventsBelow,
+  onCloseOtherEventInspectorEvents,
   onPruneEventInspectorEvents,
+  collapseInspectorTabOnCanvasClick,
   onSaveEventInspectorTabGroup,
   onLoadEventInspectorTabGroup,
   onDeleteEventInspectorTabGroup,
@@ -4457,6 +4799,8 @@ function StoryCanvas({
   onDeleteOutcome: (eventId: string, decisionId: string, outcomeId: string) => void;
   onUpdateTransition: (transitionId: string, updates: Partial<Transition>) => void;
   onDeleteTransition: (transitionId: string) => void;
+  onRemoveMissingEventReference: (ownerId: string, missingEventId: string) => void;
+  onRemoveBoundaryBinding: (bindingId: string) => void;
   onCreateCanonSuggestion: (canonRefId: string, source?: { eventId?: string; dataObjectId?: string }) => void;
   onUpdateCanonSuggestion: (id: string, updates: Partial<CanonEditSuggestion>) => void;
   onDeleteCanonSuggestion: (id: string) => void;
@@ -4475,7 +4819,12 @@ function StoryCanvas({
   onOpenEventInspectorEvent: (eventId: string) => void;
   onCollapseEventInspectorEvent: (eventId: string) => void;
   onCloseEventInspectorEvent: (eventId: string) => void;
+  onCloseAllEventInspectorEvents: () => void;
+  onCloseEventInspectorEventsAbove: (eventId: string) => void;
+  onCloseEventInspectorEventsBelow: (eventId: string) => void;
+  onCloseOtherEventInspectorEvents: (eventId: string) => void;
   onPruneEventInspectorEvents: (eventIds: readonly string[]) => void;
+  collapseInspectorTabOnCanvasClick: boolean;
   onSaveEventInspectorTabGroup: () => void;
   onLoadEventInspectorTabGroup: (groupId: string) => void;
   onDeleteEventInspectorTabGroup: (groupId: string) => void;
@@ -4489,11 +4838,43 @@ function StoryCanvas({
   const [draggingEvent, setDraggingEvent] = useState(false);
   const [minimapOpen, setMinimapOpen] = useState(true);
   const graph = useMemo(() => ({ nodes, edges }), [edges, nodes]);
-  const currentSequence = project.sequences.find((sequence) => sequence.id === activeSequenceId(project));
   const activeEventScope = activeScope?.kind === "event" ? project.events.find((event) => event.id === activeScope.id) : undefined;
   const breadcrumbs = useMemo(() => canvasBreadcrumb(project, activeScope), [activeScope, project]);
-  const sequenceEvents = currentSequence?.eventIds.length ?? 0;
-  const sequenceBranches = currentSequence?.branchIds?.length ?? nodes.filter((node) => node.data.kind === "branch").length;
+  const locateFinding = useCallback(
+    (findingItem: ValidationFinding) => {
+      if (findingItem.code === "missing_event" && findingItem.id && findingItem.ref) {
+        const ownerId = findingItem.id;
+        const missingId = findingItem.ref;
+        if (project.sequences.some((candidate) => candidate.id === ownerId)) {
+          onNavigateScope({ kind: "sequence", id: ownerId }, { type: "node", id: missingId });
+          return;
+        }
+        if (project.events.some((candidate) => candidate.id === ownerId)) {
+          onNavigateScope({ kind: "event", id: ownerId }, { type: "node", id: missingId });
+        }
+        return;
+      }
+      if (findingItem.code === "invalid_boundary_binding" && findingItem.id) {
+        const ownerEventId = project.events.find((event) => event.boundaryBindings?.some((binding) => binding.id === findingItem.id))?.id;
+        if (ownerEventId) {
+          onNavigateScope({ kind: "event", id: ownerEventId });
+        }
+      }
+    },
+    [onNavigateScope, project.events, project.sequences],
+  );
+  const fixFinding = useCallback(
+    (findingItem: ValidationFinding) => {
+      if (findingItem.code === "missing_event" && findingItem.id && findingItem.ref) {
+        onRemoveMissingEventReference(findingItem.id, findingItem.ref);
+        return;
+      }
+      if (findingItem.code === "invalid_boundary_binding" && findingItem.id) {
+        onRemoveBoundaryBinding(findingItem.id);
+      }
+    },
+    [onRemoveBoundaryBinding, onRemoveMissingEventReference],
+  );
   const snapGrid: [number, number] = [canvasBackground.gridSize, canvasBackground.gridSize];
   const backgroundColor = `color-mix(in srgb, var(--wn-border) ${Math.round(canvasBackground.opacity * 100)}%, transparent)`;
   const inspectorProject = useMemo(
@@ -4590,24 +4971,29 @@ function StoryCanvas({
         <div className="canvas-breadcrumb" aria-label="Canvas path">
           {breadcrumbs.map((crumb, index) => {
             const last = index === breadcrumbs.length - 1;
+            const crumbEvent = crumb.scope.kind === "event" ? project.events.find((event) => event.id === crumb.scope.id) : undefined;
+            const crumbSequence = crumb.scope.kind === "sequence" ? project.sequences.find((seq) => seq.id === crumb.scope.id) : undefined;
+            const infoBadges = crumbEvent
+              ? [
+                  `${crumbEvent.childEventIds?.length ?? 0} nested events`,
+                  `${crumbEvent.decisions?.length ?? 0} decisions`,
+                  `${crumbEvent.dialogues?.length ?? 0} dialogues`,
+                ]
+              : crumbSequence
+                ? [`${crumbSequence.eventIds.length} events`, `${crumbSequence.branchIds?.length ?? 0} branches`]
+                : [];
             return (
-              <button
-                type="button"
+              <BreadcrumbCrumb
                 key={`${crumb.scope.kind}:${crumb.scope.id}`}
-                className={last ? "active" : ""}
-                onClick={() => onNavigateScope(crumb.scope, { type: "node", id: crumb.scope.id })}
-              >
-                {index === 0 ? <Home size={14} /> : <GitBranch size={14} />}
-                <span>{crumb.label}</span>
-              </button>
+                crumb={crumb}
+                index={index}
+                isLast={last}
+                infoBadges={infoBadges}
+                onNavigate={() => onNavigateScope(crumb.scope, { type: "node", id: crumb.scope.id })}
+              />
             );
           })}
         </div>
-        <span>
-          {activeEventScope
-            ? `${activeEventScope.childEventIds?.length ?? 0} nested events - ${activeEventScope.decisions?.length ?? 0} decisions`
-            : `${sequenceBranches} branches - ${sequenceEvents} events`}
-        </span>
       </div>
 
       <ReactFlowProvider>
@@ -4634,9 +5020,16 @@ function StoryCanvas({
               onNavigateScope({ kind: "event", id: node.id }, { type: "node", id: node.id });
             }
           }}
-          onEdgeClick={() => setContextMenu(undefined)}
+          onEdgeClick={(_, edgeItem) => {
+            setContextMenu(undefined);
+            onSelect({ type: "edge", id: edgeItem.id });
+          }}
           onPaneClick={() => {
             setContextMenu(undefined);
+            if (collapseInspectorTabOnCanvasClick && eventInspector.expandedEventId) {
+              onCollapseEventInspectorEvent(eventInspector.expandedEventId);
+              onSelect(undefined);
+            }
           }}
           onPaneContextMenu={openContextMenu}
           fitView
@@ -4666,6 +5059,7 @@ function StoryCanvas({
             >
               {minimapOpen ? <Eye size={14} /> : <EyeOff size={14} />}
             </button>
+            <CanvasFindingsButton findings={findings} onLocateFinding={locateFinding} onFixFinding={fixFinding} />
           </Controls>
           {canvasBackground.showGrid ? (
             <Background id="grid" variant={BackgroundVariant.Lines} gap={canvasBackground.gridSize} size={1} color={backgroundColor} />
@@ -4681,46 +5075,36 @@ function StoryCanvas({
           {contextMenu.kind === "connect-create" ? (
             <>
               <span className="canvas-menu-label">Create connected event</span>
-              {eventTypeOptions.map((category) => (
-                <button
-                  key={category.id}
-                  type="button"
-                  onClick={() => {
-                    if (contextMenu.sourceNodeId) {
-                      if (activeEventScope) {
-                        onCreateNestedEvent(activeEventScope.id, category.id, { x: contextMenu.flowX, y: contextMenu.flowY });
-                      } else {
-                        onCreateConnectedEvent(contextMenu.sourceNodeId, category.id, { x: contextMenu.flowX, y: contextMenu.flowY });
-                      }
+              <EventTypeMenuButton
+                label="Events"
+                options={eventTypeOptions}
+                onSelect={(categoryId) => {
+                  if (contextMenu.sourceNodeId) {
+                    if (activeEventScope) {
+                      onCreateNestedEvent(activeEventScope.id, categoryId, { x: contextMenu.flowX, y: contextMenu.flowY });
+                    } else {
+                      onCreateConnectedEvent(contextMenu.sourceNodeId, categoryId, { x: contextMenu.flowX, y: contextMenu.flowY });
                     }
-                    setContextMenu(undefined);
-                  }}
-                >
-                  {category.label}
-                  {category.terminal ? " (final)" : ""}
-                </button>
-              ))}
+                  }
+                  setContextMenu(undefined);
+                }}
+              />
             </>
           ) : (
             <>
               <span className="canvas-menu-label">{activeEventScope ? "Create inside event" : "Create event"}</span>
-              {eventTypeOptions.map((category) => (
-                <button
-                  key={category.id}
-                  type="button"
-                  onClick={() => {
-                    if (activeEventScope) {
-                      onCreateNestedEvent(activeEventScope.id, category.id, { x: contextMenu.flowX, y: contextMenu.flowY });
-                    } else {
-                      onCreateEvent(category.id, { x: contextMenu.flowX, y: contextMenu.flowY });
-                    }
-                    setContextMenu(undefined);
-                  }}
-                >
-                  {category.label}
-                  {category.terminal ? " (final)" : ""}
-                </button>
-              ))}
+              <EventTypeMenuButton
+                label="Events"
+                options={eventTypeOptions}
+                onSelect={(categoryId) => {
+                  if (activeEventScope) {
+                    onCreateNestedEvent(activeEventScope.id, categoryId, { x: contextMenu.flowX, y: contextMenu.flowY });
+                  } else {
+                    onCreateEvent(categoryId, { x: contextMenu.flowX, y: contextMenu.flowY });
+                  }
+                  setContextMenu(undefined);
+                }}
+              />
               {activeEventScope ? (
                 <>
                   <button
@@ -4790,6 +5174,10 @@ function StoryCanvas({
         onOpenEvent={onOpenEventInspectorEvent}
         onCollapseEvent={onCollapseEventInspectorEvent}
         onCloseEvent={onCloseEventInspectorEvent}
+        onCloseAllEvents={onCloseAllEventInspectorEvents}
+        onCloseEventsAbove={onCloseEventInspectorEventsAbove}
+        onCloseEventsBelow={onCloseEventInspectorEventsBelow}
+        onCloseOtherEvents={onCloseOtherEventInspectorEvents}
         onPruneEvents={onPruneEventInspectorEvents}
         onSaveGroup={onSaveEventInspectorTabGroup}
         onLoadGroup={onLoadEventInspectorTabGroup}
@@ -5458,6 +5846,14 @@ export function App() {
     }));
   }, []);
 
+  const changeInspectorTabCloseSelectsNext = useCallback((value: boolean) => {
+    setSettings((current) => ({ ...current, inspectorTabCloseSelectsNext: value }));
+  }, []);
+
+  const changeCollapseInspectorTabOnCanvasClick = useCallback((value: boolean) => {
+    setSettings((current) => ({ ...current, collapseInspectorTabOnCanvasClick: value }));
+  }, []);
+
   const changeNodeColors = useCallback((updates: Partial<NodeColorSettings>) => {
     setSettings((current) => ({
       ...current,
@@ -5730,8 +6126,58 @@ export function App() {
       setEventDraftDialog({ kind: "closeInspectorTab", eventId });
       return;
     }
-    setEventInspector((current) => closeEventInspectorTab(current, eventId));
+    setEventInspector((current) => closeEventInspectorTab(current, eventId, { selectNextOnClose: settings.inspectorTabCloseSelectsNext }));
+  }, [eventDraft, settings.inspectorTabCloseSelectsNext]);
+
+  const closeAllInspectorTabs = useCallback(() => {
+    if (eventDraft?.dirty) {
+      setSelection({ type: "node", id: eventDraft.eventId });
+      setMessage("Save or discard edits before closing all tabs.");
+      return;
+    }
+    setEventInspector((current) => closeAllEventInspectorTabs(current));
   }, [eventDraft]);
+
+  const closeInspectorTabsAbove = useCallback(
+    (eventId: string) => {
+      const index = eventInspector.openEventIds.indexOf(eventId);
+      const idsToClose = eventInspector.openEventIds.slice(0, index);
+      if (eventDraft?.dirty && idsToClose.includes(eventDraft.eventId)) {
+        setSelection({ type: "node", id: eventDraft.eventId });
+        setMessage("Save or discard edits before closing that tab.");
+        return;
+      }
+      setEventInspector((current) => closeEventInspectorTabsAbove(current, eventId));
+    },
+    [eventDraft, eventInspector.openEventIds],
+  );
+
+  const closeInspectorTabsBelow = useCallback(
+    (eventId: string) => {
+      const index = eventInspector.openEventIds.indexOf(eventId);
+      const idsToClose = index === -1 ? [] : eventInspector.openEventIds.slice(index + 1);
+      if (eventDraft?.dirty && idsToClose.includes(eventDraft.eventId)) {
+        setSelection({ type: "node", id: eventDraft.eventId });
+        setMessage("Save or discard edits before closing that tab.");
+        return;
+      }
+      setEventInspector((current) => closeEventInspectorTabsBelow(current, eventId));
+    },
+    [eventDraft, eventInspector.openEventIds],
+  );
+
+  const closeOtherInspectorTabs = useCallback(
+    (eventId: string) => {
+      const idsToClose = eventInspector.openEventIds.filter((candidate) => candidate !== eventId);
+      if (eventDraft?.dirty && idsToClose.includes(eventDraft.eventId)) {
+        setSelection({ type: "node", id: eventDraft.eventId });
+        setMessage("Save or discard edits before closing that tab.");
+        return;
+      }
+      setEventInspector((current) => closeOtherEventInspectorTabs(current, eventId));
+    },
+    [eventDraft, eventInspector.openEventIds],
+  );
 
   const loadInspectorTabGroup = useCallback(
     (groupId: string) => {
@@ -5809,7 +6255,9 @@ export function App() {
       setEventDraftDialog(undefined);
       setEventDraft(undefined);
       if (pendingAction?.kind === "closeInspectorTab") {
-        setEventInspector((current) => closeEventInspectorTab(current, pendingAction.eventId));
+        setEventInspector((current) =>
+          closeEventInspectorTab(current, pendingAction.eventId, { selectNextOnClose: settings.inspectorTabCloseSelectsNext }),
+        );
         return;
       }
       if (pendingAction?.kind === "loadInspectorGroup") {
@@ -5824,7 +6272,7 @@ export function App() {
         openEventInspectorForEvent(nextEventId);
       }
     },
-    [eventDraftDialog, loadInspectorTabGroup, nodes, openEventInspectorForEvent, saveActiveEventDraft],
+    [eventDraftDialog, loadInspectorTabGroup, nodes, openEventInspectorForEvent, saveActiveEventDraft, settings.inspectorTabCloseSelectsNext],
   );
 
   useEffect(() => {
@@ -6042,6 +6490,16 @@ export function App() {
       setSelection(nextSelection ?? { type: "node", id: scope.id });
     },
     [],
+  );
+
+  const navigatePathTreeNode = useCallback(
+    (node: PathTreeNode) => {
+      navigateCanvasScope(node.scope, { type: "node", id: node.selectId });
+      if (node.eventId) {
+        openEventInspectorForEvent(node.eventId);
+      }
+    },
+    [navigateCanvasScope, openEventInspectorForEvent],
   );
 
   const enterEventScope = useCallback(
@@ -6687,6 +7145,26 @@ export function App() {
     [eventDraft?.draftEvent.transitions, mutateEventDraft, project, runMutation],
   );
 
+  const removeMissingEventReference = useCallback(
+    (ownerId: string, missingEventId: string) => {
+      if (!project) {
+        return;
+      }
+      runMutation(mutations.removeMissingEventReference(project, ownerId, missingEventId));
+    },
+    [project, runMutation],
+  );
+
+  const removeBoundaryBinding = useCallback(
+    (bindingId: string) => {
+      if (!project) {
+        return;
+      }
+      runMutation(mutations.removeBoundaryBinding(project, bindingId));
+    },
+    [project, runMutation],
+  );
+
   const createCanonSuggestion = useCallback(
     (canonRefId: string, source?: { eventId?: string; dataObjectId?: string }) => {
       if (!project) {
@@ -6996,6 +7474,15 @@ export function App() {
         }
         return;
       }
+      if (selectedNode?.data.kind === "missingRef") {
+        const ownerId = selectedNode.data.details?.ownerId;
+        const missingEventId = selectedNode.data.details?.missingEventId;
+        if (typeof ownerId === "string" && typeof missingEventId === "string") {
+          runMutation(mutations.removeMissingEventReference(project, ownerId, missingEventId));
+          setSelection(undefined);
+        }
+        return;
+      }
 
       const sequence = findSequence(project, id);
       if (sequence) {
@@ -7042,13 +7529,20 @@ export function App() {
           setMessage("Event deletion is blocked while it contains nested events.");
           return;
         }
-        const incoming = project.events.some((item) => item.transitions?.some((transition) => transition.to === event.id));
-        const outgoing = (event.transitions ?? []).length > 0;
         const entryOwner = project.sequences.find((item) => item.entryEventId === event.id);
-        if (incoming || outgoing || entryOwner) {
-          setMessage("Event deletion is blocked while it is connected or used as a sequence entry.");
+        if (entryOwner) {
+          setMessage(`Event deletion is blocked while it is the entry event of "${entryOwner.name}".`);
           return;
         }
+
+        const removedTransitionIds = new Set(
+          project.events.flatMap((item) =>
+            (item.transitions ?? [])
+              .filter((transition) => transition.to === event.id || transition.from === event.id)
+              .map((transition) => transition.id),
+          ),
+        );
+
         updateProject(
           {
             ...project,
@@ -7059,15 +7553,23 @@ export function App() {
             branches: project.branches.map((item) => ({ ...item, eventIds: withoutValue(item.eventIds, event.id) })),
             events: project.events
               .filter((item) => item.id !== event.id)
-              .map((item) =>
-                item.id === event.parentEventId
-                  ? {
-                      ...item,
-                      childEventIds: withoutValue(item.childEventIds, event.id),
-                      boundaryBindings: (item.boundaryBindings ?? []).filter((binding) => binding.nodeId !== event.id),
-                    }
-                  : item,
-              ),
+              .map((item) => {
+                const withoutParentLink =
+                  item.id === event.parentEventId
+                    ? { ...item, childEventIds: withoutValue(item.childEventIds, event.id) }
+                    : item;
+                return {
+                  ...withoutParentLink,
+                  transitions: (withoutParentLink.transitions ?? []).filter(
+                    (transition) => transition.to !== event.id && transition.from !== event.id,
+                  ),
+                  boundaryBindings: (withoutParentLink.boundaryBindings ?? []).filter(
+                    (binding) =>
+                      binding.nodeId !== event.id &&
+                      !Array.from(removedTransitionIds).some((transitionId) => binding.portId.endsWith(`:${transitionId}`)),
+                  ),
+                };
+              }),
           },
           undefined,
         );
@@ -7094,17 +7596,26 @@ export function App() {
 
       const currentProject = projectRef.current;
       const currentSelection = selectionRef.current;
-      if (!currentProject || currentSelection?.type !== "node" || !findEvent(currentProject, currentSelection.id)) {
+      if (!currentProject || !currentSelection) {
         return;
       }
 
-      event.preventDefault();
-      deleteSelection(currentSelection);
+      if (currentSelection.type === "node") {
+        event.preventDefault();
+        deleteSelection(currentSelection);
+        return;
+      }
+
+      if (currentSelection.type === "edge" && currentSelection.id.startsWith("edge:transition:")) {
+        event.preventDefault();
+        deleteTransition(currentSelection.id.replace("edge:transition:", ""));
+        setSelection(undefined);
+      }
     };
 
     window.addEventListener("keydown", handleDeleteKey, true);
     return () => window.removeEventListener("keydown", handleDeleteKey, true);
-  }, [deleteSelection]);
+  }, [deleteSelection, deleteTransition]);
 
   const createKnowledgeObject = useCallback(() => {
     if (!project) {
@@ -7319,6 +7830,8 @@ export function App() {
       onNodeColorChange={changeNodeColors}
       onThemeChange={changeTheme}
       onToggleTheme={toggleTheme}
+      onInspectorTabCloseSelectsNextChange={changeInspectorTabCloseSelectsNext}
+      onCollapseInspectorTabOnCanvasClickChange={changeCollapseInspectorTabOnCanvasClick}
       onConnectBridge={connectBridge}
       onVerifyBridge={verifyBridge}
       onDisconnectBridge={disconnectBridge}
@@ -7370,7 +7883,6 @@ export function App() {
         <div className="app-shell">
           <Topbar
             fileState={fileState}
-            findings={[]}
             exportOpen={exportOpen}
             theme={settings.theme}
             onOpenSettings={() => setShowSettings(true)}
@@ -7398,7 +7910,6 @@ export function App() {
         <div className="app-shell">
           <Topbar
             fileState={fileState}
-            findings={[]}
             exportOpen={exportOpen}
             theme={settings.theme}
             onOpenSettings={() => setShowSettings(true)}
@@ -7454,7 +7965,6 @@ export function App() {
         <Topbar
         project={project}
         fileState={fileState}
-        findings={findings}
         exportOpen={exportOpen}
         theme={settings.theme}
         onOpenSettings={() => setShowSettings(true)}
@@ -7514,6 +8024,7 @@ export function App() {
           onSelect={handleFileSelect}
           activeOutlineTab={storyOutlineTab}
           onOutlineTabChange={setStoryOutlineTab}
+          onNavigatePathNode={navigatePathTreeNode}
         />
         <StoryCanvas
           project={project}
@@ -7560,6 +8071,8 @@ export function App() {
           onUpdateOutcome={updateOutcome}
           onDeleteOutcome={deleteOutcome}
           onUpdateTransition={updateTransition}
+          onRemoveMissingEventReference={removeMissingEventReference}
+          onRemoveBoundaryBinding={removeBoundaryBinding}
           onDeleteTransition={deleteTransition}
           onCreateCanonSuggestion={createCanonSuggestion}
           onUpdateCanonSuggestion={updateCanonSuggestion}
@@ -7578,7 +8091,12 @@ export function App() {
           onSaveMarkdownTab={saveMarkdownTab}
           onOpenEventInspectorEvent={openEventInspectorForEvent}
           onCollapseEventInspectorEvent={collapseEventInspectorForEvent}
+          collapseInspectorTabOnCanvasClick={settings.collapseInspectorTabOnCanvasClick}
           onCloseEventInspectorEvent={requestCloseEventInspectorForEvent}
+          onCloseAllEventInspectorEvents={closeAllInspectorTabs}
+          onCloseEventInspectorEventsAbove={closeInspectorTabsAbove}
+          onCloseEventInspectorEventsBelow={closeInspectorTabsBelow}
+          onCloseOtherEventInspectorEvents={closeOtherInspectorTabs}
           onPruneEventInspectorEvents={pruneEventInspectorEvents}
           onSaveEventInspectorTabGroup={requestSaveInspectorTabGroup}
           onLoadEventInspectorTabGroup={requestLoadInspectorTabGroup}
