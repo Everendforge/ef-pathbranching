@@ -16,7 +16,82 @@ export type CanonRef = {
   identityWarning?: string;
   source?: "worldnotion" | "engine-legacy" | "manual" | string;
   canonSourcePath?: string;
+  canonSourceModifiedMs?: number;
   workingCopyPath?: string;
+};
+
+export type CanonChangeSetStatus =
+  "draft" | "proposed" | "conflicted" | "applied" | "dismissed";
+
+export type CanonChangeSet = {
+  specVersion: "0.1";
+  id: string;
+  kind: "canon-change-set";
+  sourceApp: "pathbranching" | "worldnotion" | string;
+  target: { entityId: string; path: string };
+  base: {
+    content: string;
+    modifiedMs?: number;
+    contentHash: string;
+    capturedAt: string;
+  };
+  proposed: { content: string; diff?: string };
+  status: CanonChangeSetStatus;
+  revision: number;
+  createdAt: string;
+  updatedAt: string;
+  appliedAt?: string;
+  appliedBy?: string;
+  note?: string;
+};
+
+export type CanonWorkingCopy = {
+  canonRefId: string;
+  sourcePath: string;
+  sourceModifiedMs?: number;
+  sourceContent: string;
+  draftContent: string;
+  path: string;
+  createdAt: string;
+  updatedAt: string;
+  legacy?: boolean;
+};
+
+export type LocalExplorerEntity = {
+  id: string;
+  type: string;
+  name: string;
+  status: string;
+  tags?: string[];
+  aliases?: string[];
+  properties?: Record<string, unknown>;
+  body?: string;
+  createdAt: string;
+  updatedAt: string;
+  exportedPath?: string;
+  publishedPath?: string;
+  publishedAt?: string;
+};
+
+export type LocalExplorerType = {
+  id: string;
+  label: string;
+  description?: string;
+  icon?: string;
+  color?: string;
+  suggestedFolder?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type LocalExplorerProperty = {
+  id: string;
+  label: string;
+  valueType: string;
+  description?: string;
+  appliesToTypes?: string[];
+  createdAt: string;
+  updatedAt: string;
 };
 
 export type CanonEditSuggestionStatus =
@@ -94,7 +169,8 @@ export type DataClassDefinition = {
   label: string;
   description?: string;
   extends?: string;
-  category?: "canonProjection" | "narrative" | "runtime" | "engineAdapter" | string;
+  category?:
+    "canonProjection" | "narrative" | "runtime" | "engineAdapter" | string;
   roles?: string[];
   fields: DataFieldDefinition[];
 };
@@ -136,13 +212,7 @@ export type GraphPortDefinition = {
 export type GraphModuleDefinition = {
   id: string;
   label: string;
-  graph:
-    | "narrative"
-    | "script"
-    | "data"
-    | "projection"
-    | "engine"
-    | string;
+  graph: "narrative" | "script" | "data" | "projection" | "engine" | string;
   nodeType: string;
   description?: string;
   dataClassId?: string;
@@ -386,7 +456,13 @@ export type ProjectDataObject = {
 
 export type ExternalFunction = {
   name: string;
-  kind: "condition" | "consequence" | "transition" | "runtimeAction" | "engineSignal" | string;
+  kind:
+    | "condition"
+    | "consequence"
+    | "transition"
+    | "runtimeAction"
+    | "engineSignal"
+    | string;
   mapsTo?: string;
   arguments?: Array<{
     name: string;
@@ -448,6 +524,11 @@ export type BranchingProject = {
   dataClasses?: DataClassDefinition[];
   projectDataObjects?: ProjectDataObject[];
   canonEditSuggestions?: CanonEditSuggestion[];
+  canonWorkingCopies?: CanonWorkingCopy[];
+  canonChangeSets?: CanonChangeSet[];
+  localExplorerEntities?: LocalExplorerEntity[];
+  localExplorerTypes?: LocalExplorerType[];
+  localExplorerProperties?: LocalExplorerProperty[];
   projectionRules?: ProjectionRule[];
   graphModules?: GraphModuleDefinition[];
   canvas?: CanvasAuthoringState;

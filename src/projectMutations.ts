@@ -21,7 +21,10 @@ export type MutationSelection =
   | { type: "node"; id: string }
   | { type: "edge"; id: string }
   | { type: "dataObject"; id: string }
-  | { type: "canonSuggestion"; id: string };
+  | { type: "canonSuggestion"; id: string }
+  | { type: "explorerEntity"; id: string }
+  | { type: "explorerType"; id: string; source: "canon" | "local" }
+  | { type: "explorerProperty"; id: string; source: "canon" | "local" };
 
 export type MutationResult = {
   project: BranchingProject;
@@ -59,25 +62,47 @@ export function withValue(values: string[] | undefined, value: string) {
 }
 
 export function activeSequenceId(project: BranchingProject) {
-  return project.canvas?.activeSequenceId ?? project.entrySequenceId ?? project.sequences[0]?.id;
+  return (
+    project.canvas?.activeSequenceId ??
+    project.entrySequenceId ??
+    project.sequences[0]?.id
+  );
 }
 
-export function findEvent(project: BranchingProject, id: string): EventNode | undefined {
+export function findEvent(
+  project: BranchingProject,
+  id: string,
+): EventNode | undefined {
   return project.events.find((event) => event.id === id);
 }
 
-export function isTerminalEventType(project: BranchingProject, type: string | undefined) {
-  return Boolean(type && (type === "final" || project.eventCategories?.some((category) => category.id === type && category.terminal)));
+export function isTerminalEventType(
+  project: BranchingProject,
+  type: string | undefined,
+) {
+  return Boolean(
+    type &&
+    (type === "final" ||
+      project.eventCategories?.some(
+        (category) => category.id === type && category.terminal,
+      )),
+  );
 }
 
-export function removeMissingEventReference(project: BranchingProject, ownerId: string, missingEventId: string): MutationResult {
+export function removeMissingEventReference(
+  project: BranchingProject,
+  ownerId: string,
+  missingEventId: string,
+): MutationResult {
   const sequence = project.sequences.find((item) => item.id === ownerId);
   if (sequence) {
     return {
       project: {
         ...project,
         sequences: project.sequences.map((item) =>
-          item.id === ownerId ? { ...item, eventIds: withoutValue(item.eventIds, missingEventId) } : item,
+          item.id === ownerId
+            ? { ...item, eventIds: withoutValue(item.eventIds, missingEventId) }
+            : item,
         ),
       },
       selection: undefined,
@@ -89,7 +114,9 @@ export function removeMissingEventReference(project: BranchingProject, ownerId: 
       project: {
         ...project,
         branches: project.branches.map((item) =>
-          item.id === ownerId ? { ...item, eventIds: withoutValue(item.eventIds, missingEventId) } : item,
+          item.id === ownerId
+            ? { ...item, eventIds: withoutValue(item.eventIds, missingEventId) }
+            : item,
         ),
       },
       selection: undefined,
@@ -101,7 +128,12 @@ export function removeMissingEventReference(project: BranchingProject, ownerId: 
       project: {
         ...project,
         events: project.events.map((item) =>
-          item.id === ownerId ? { ...item, childEventIds: withoutValue(item.childEventIds, missingEventId) } : item,
+          item.id === ownerId
+            ? {
+                ...item,
+                childEventIds: withoutValue(item.childEventIds, missingEventId),
+              }
+            : item,
         ),
       },
       selection: undefined,
@@ -110,43 +142,75 @@ export function removeMissingEventReference(project: BranchingProject, ownerId: 
   return { project, message: "Reference owner not found." };
 }
 
-export function findBoundaryBindingOwnerId(project: BranchingProject, bindingId: string): string | undefined {
-  return project.events.find((event) => event.boundaryBindings?.some((binding) => binding.id === bindingId))?.id;
+export function findBoundaryBindingOwnerId(
+  project: BranchingProject,
+  bindingId: string,
+): string | undefined {
+  return project.events.find((event) =>
+    event.boundaryBindings?.some((binding) => binding.id === bindingId),
+  )?.id;
 }
 
-export function removeBoundaryBinding(project: BranchingProject, bindingId: string): MutationResult {
+export function removeBoundaryBinding(
+  project: BranchingProject,
+  bindingId: string,
+): MutationResult {
   return {
     project: {
       ...project,
       events: project.events.map((event) => ({
         ...event,
-        boundaryBindings: event.boundaryBindings?.filter((binding) => binding.id !== bindingId),
+        boundaryBindings: event.boundaryBindings?.filter(
+          (binding) => binding.id !== bindingId,
+        ),
       })),
     },
     selection: undefined,
   };
 }
 
-export function updateSequence(project: BranchingProject, id: string, updates: Partial<Sequence>): MutationResult {
+export function updateSequence(
+  project: BranchingProject,
+  id: string,
+  updates: Partial<Sequence>,
+): MutationResult {
   return {
     project: {
       ...project,
-      sequences: project.sequences.map((sequence) => (sequence.id === id ? { ...sequence, ...updates } : sequence)),
+      sequences: project.sequences.map((sequence) =>
+        sequence.id === id ? { ...sequence, ...updates } : sequence,
+      ),
     },
   };
 }
 
-export function setEntrySequence(project: BranchingProject, id: string): MutationResult {
+export function setEntrySequence(
+  project: BranchingProject,
+  id: string,
+): MutationResult {
   return {
-    project: { ...project, entrySequenceId: id, canvas: { ...project.canvas, activeSequenceId: id } },
+    project: {
+      ...project,
+      entrySequenceId: id,
+      canvas: { ...project.canvas, activeSequenceId: id },
+    },
     selection: { type: "node", id },
   };
 }
 
-export function createSequence(project: BranchingProject, name = "New Sequence"): MutationResult {
+export function createSequence(
+  project: BranchingProject,
+  name = "New Sequence",
+): MutationResult {
   const trimmedName = name.trim() || "New Sequence";
-  const sequenceId = uniqueId(`sequence:${slugify(trimmedName) || "new-route"}`, project.sequences.map((sequence) => sequence.id));
-  const eventId = uniqueId(`event:${sequenceId}:entry`, project.events.map((event) => event.id));
+  const sequenceId = uniqueId(
+    `sequence:${slugify(trimmedName) || "new-route"}`,
+    project.sequences.map((sequence) => sequence.id),
+  );
+  const eventId = uniqueId(
+    `event:${sequenceId}:entry`,
+    project.events.map((event) => event.id),
+  );
   const newEvent: EventNode = {
     id: eventId,
     name: "Opening Event",
@@ -174,13 +238,19 @@ export function createSequence(project: BranchingProject, name = "New Sequence")
   };
 }
 
-export function createBranch(project: BranchingProject, position?: { x: number; y: number }): MutationResult {
+export function createBranch(
+  project: BranchingProject,
+  position?: { x: number; y: number },
+): MutationResult {
   const sequenceId = activeSequenceId(project);
   if (!sequenceId) {
     return { project, message: "Create a sequence before adding branches." };
   }
 
-  const branchId = uniqueId(`branch:${slugify(sequenceId)}:section`, project.branches.map((branch) => branch.id));
+  const branchId = uniqueId(
+    `branch:${slugify(sequenceId)}:section`,
+    project.branches.map((branch) => branch.id),
+  );
   const newBranch: Branch = {
     id: branchId,
     title: "New Branch",
@@ -202,9 +272,15 @@ export function createBranch(project: BranchingProject, position?: { x: number; 
       ...project,
       branches: [...project.branches, newBranch],
       sequences: project.sequences.map((sequence) =>
-        sequence.id === sequenceId ? { ...sequence, branchIds: withValue(sequence.branchIds, branchId) } : sequence,
+        sequence.id === sequenceId
+          ? { ...sequence, branchIds: withValue(sequence.branchIds, branchId) }
+          : sequence,
       ),
-      canvas: { ...project.canvas, activeSequenceId: sequenceId, nodes: canvasNodes },
+      canvas: {
+        ...project.canvas,
+        activeSequenceId: sequenceId,
+        nodes: canvasNodes,
+      },
     },
     selection: { type: "node", id: branchId },
   };
@@ -222,8 +298,13 @@ export function createEvent(
   }
 
   const safeType = type || "normal";
-  const eventId = uniqueId(`event:${slugify(sequenceId)}:${safeType}`, project.events.map((event) => event.id));
-  const targetBranch = branchId ? project.branches.find((branch) => branch.id === branchId) : undefined;
+  const eventId = uniqueId(
+    `event:${slugify(sequenceId)}:${safeType}`,
+    project.events.map((event) => event.id),
+  );
+  const targetBranch = branchId
+    ? project.branches.find((branch) => branch.id === branchId)
+    : undefined;
   const newEvent: EventNode = {
     id: eventId,
     name: safeType === "final" ? "Final Event" : "New Event",
@@ -252,15 +333,23 @@ export function createEvent(
               ...sequence,
               entryEventId: sequence.entryEventId || eventId,
               eventIds: withValue(sequence.eventIds, eventId),
-              branchIds: targetBranch ? withValue(sequence.branchIds, targetBranch.id) : sequence.branchIds,
+              branchIds: targetBranch
+                ? withValue(sequence.branchIds, targetBranch.id)
+                : sequence.branchIds,
             }
           : sequence,
       ),
       branches: project.branches.map((branch) =>
-        branch.id === targetBranch?.id ? { ...branch, eventIds: withValue(branch.eventIds, eventId) } : branch,
+        branch.id === targetBranch?.id
+          ? { ...branch, eventIds: withValue(branch.eventIds, eventId) }
+          : branch,
       ),
       events: [...project.events, newEvent],
-      canvas: { ...project.canvas, activeSequenceId: sequenceId, nodes: canvasNodes },
+      canvas: {
+        ...project.canvas,
+        activeSequenceId: sequenceId,
+        nodes: canvasNodes,
+      },
     },
     selection: { type: "node", id: eventId },
   };
@@ -278,7 +367,10 @@ export function createNestedEvent(
   }
 
   const safeType = type || "normal";
-  const eventId = uniqueId(`event:${slugify(parentEvent.name || parentEvent.id)}:${safeType}`, project.events.map((event) => event.id));
+  const eventId = uniqueId(
+    `event:${slugify(parentEvent.name || parentEvent.id)}:${safeType}`,
+    project.events.map((event) => event.id),
+  );
   const newEvent: EventNode = {
     id: eventId,
     name: safeType === "final" ? "Final Microevent" : "New Microevent",
@@ -308,7 +400,12 @@ export function createNestedEvent(
       ...project,
       events: [
         ...project.events.map((event) =>
-          event.id === parentEventId ? { ...event, childEventIds: withValue(event.childEventIds, eventId) } : event,
+          event.id === parentEventId
+            ? {
+                ...event,
+                childEventIds: withValue(event.childEventIds, eventId),
+              }
+            : event,
         ),
         newEvent,
       ],
@@ -328,30 +425,48 @@ export function createNestedEvent(
   };
 }
 
-export function updateBranch(project: BranchingProject, id: string, updates: Partial<Branch>): MutationResult {
+export function updateBranch(
+  project: BranchingProject,
+  id: string,
+  updates: Partial<Branch>,
+): MutationResult {
   return {
     project: {
       ...project,
-      branches: project.branches.map((branch) => (branch.id === id ? { ...branch, ...updates } : branch)),
+      branches: project.branches.map((branch) =>
+        branch.id === id ? { ...branch, ...updates } : branch,
+      ),
     },
   };
 }
 
-export function updateEvent(project: BranchingProject, id: string, updates: Partial<EventNode>): MutationResult {
+export function updateEvent(
+  project: BranchingProject,
+  id: string,
+  updates: Partial<EventNode>,
+): MutationResult {
   return {
     project: {
       ...project,
-      events: project.events.map((event) => (event.id === id ? { ...event, ...updates } : event)),
+      events: project.events.map((event) =>
+        event.id === id ? { ...event, ...updates } : event,
+      ),
     },
   };
 }
 
-export function createDecision(project: BranchingProject, eventId: string): MutationResult {
+export function createDecision(
+  project: BranchingProject,
+  eventId: string,
+): MutationResult {
   const event = findEvent(project, eventId);
   if (!event) {
     return { project, message: "Event not found." };
   }
-  const decisionId = uniqueId(`decision:${slugify(event.name || event.id)}`, (event.decisions ?? []).map((decision) => decision.id));
+  const decisionId = uniqueId(
+    `decision:${slugify(event.name || event.id)}`,
+    (event.decisions ?? []).map((decision) => decision.id),
+  );
   const decision: Decision = {
     id: decisionId,
     name: "New Decision",
@@ -360,7 +475,9 @@ export function createDecision(project: BranchingProject, eventId: string): Muta
     outcomes: [],
   };
 
-  const result = updateEvent(project, eventId, { decisions: [...(event.decisions ?? []), decision] });
+  const result = updateEvent(project, eventId, {
+    decisions: [...(event.decisions ?? []), decision],
+  });
   return {
     ...result,
     selection: { type: "node", id: `decision:${eventId}:${decision.id}` },
@@ -378,33 +495,53 @@ export function updateDecision(
     return { project, message: "Event not found." };
   }
   return updateEvent(project, eventId, {
-    decisions: (event.decisions ?? []).map((decision) => (decision.id === decisionId ? { ...decision, ...updates } : decision)),
+    decisions: (event.decisions ?? []).map((decision) =>
+      decision.id === decisionId ? { ...decision, ...updates } : decision,
+    ),
   });
 }
 
-export function deleteDecision(project: BranchingProject, eventId: string, decisionId: string): MutationResult {
+export function deleteDecision(
+  project: BranchingProject,
+  eventId: string,
+  decisionId: string,
+): MutationResult {
   const event = findEvent(project, eventId);
   if (!event) {
     return { project, message: "Event not found." };
   }
   const transitionUsesDecision = project.events.some((item) =>
-    item.transitions?.some((transition) => transition.from.includes(decisionId)),
+    item.transitions?.some((transition) =>
+      transition.from.includes(decisionId),
+    ),
   );
   if (transitionUsesDecision) {
-    return { project, message: "Decision deletion is blocked while transitions reference it." };
+    return {
+      project,
+      message: "Decision deletion is blocked while transitions reference it.",
+    };
   }
   return updateEvent(project, eventId, {
-    decisions: (event.decisions ?? []).filter((decision) => decision.id !== decisionId),
+    decisions: (event.decisions ?? []).filter(
+      (decision) => decision.id !== decisionId,
+    ),
   });
 }
 
-export function createOutcome(project: BranchingProject, eventId: string, decisionId: string): MutationResult {
+export function createOutcome(
+  project: BranchingProject,
+  eventId: string,
+  decisionId: string,
+): MutationResult {
   const event = findEvent(project, eventId);
   const decision = event?.decisions?.find((item) => item.id === decisionId);
   if (!event || !decision) {
     return { project, message: "Decision not found." };
   }
-  const outcomeId = uniqueId(`outcome:${slugify(decision.name || decision.id)}`, decision.outcomes.map((outcome) => outcome.id));
+  const outcomeId = uniqueId(
+    `outcome:${slugify(decision.name || decision.id)}`,
+    decision.outcomes.map((outcome) => outcome.id),
+  );
   const outcome: Outcome = {
     id: outcomeId,
     name: "New Outcome",
@@ -412,7 +549,9 @@ export function createOutcome(project: BranchingProject, eventId: string, decisi
     requiredCanonRefs: [],
     consequences: [],
   };
-  return updateDecision(project, eventId, decisionId, { outcomes: [...decision.outcomes, outcome] });
+  return updateDecision(project, eventId, decisionId, {
+    outcomes: [...decision.outcomes, outcome],
+  });
 }
 
 export function updateOutcome(
@@ -428,11 +567,18 @@ export function updateOutcome(
     return { project, message: "Decision not found." };
   }
   return updateDecision(project, eventId, decisionId, {
-    outcomes: decision.outcomes.map((outcome) => (outcome.id === outcomeId ? { ...outcome, ...updates } : outcome)),
+    outcomes: decision.outcomes.map((outcome) =>
+      outcome.id === outcomeId ? { ...outcome, ...updates } : outcome,
+    ),
   });
 }
 
-export function deleteOutcome(project: BranchingProject, eventId: string, decisionId: string, outcomeId: string): MutationResult {
+export function deleteOutcome(
+  project: BranchingProject,
+  eventId: string,
+  decisionId: string,
+  outcomeId: string,
+): MutationResult {
   const event = findEvent(project, eventId);
   const decision = event?.decisions?.find((item) => item.id === decisionId);
   if (!event || !decision) {
@@ -440,29 +586,42 @@ export function deleteOutcome(project: BranchingProject, eventId: string, decisi
   }
   const outcomeNodeIdPrefix = `outcome:${eventId}:${decisionId}:${outcomeId}`;
   const transitionUsesOutcome = project.events.some((item) =>
-    item.transitions?.some((transition) => transition.from === outcomeNodeIdPrefix),
+    item.transitions?.some(
+      (transition) => transition.from === outcomeNodeIdPrefix,
+    ),
   );
   if (transitionUsesOutcome) {
-    return { project, message: "Outcome deletion is blocked while transitions reference it." };
+    return {
+      project,
+      message: "Outcome deletion is blocked while transitions reference it.",
+    };
   }
   return updateDecision(project, eventId, decisionId, {
     outcomes: decision.outcomes.filter((outcome) => outcome.id !== outcomeId),
   });
 }
 
-export function createDialogue(project: BranchingProject, eventId: string): MutationResult {
+export function createDialogue(
+  project: BranchingProject,
+  eventId: string,
+): MutationResult {
   const event = findEvent(project, eventId);
   if (!event) {
     return { project, message: "Event not found." };
   }
-  const dialogueId = uniqueId(`dialogue:${slugify(event.name || event.id)}`, (event.dialogues ?? []).map((dialogue) => dialogue.id));
+  const dialogueId = uniqueId(
+    `dialogue:${slugify(event.name || event.id)}`,
+    (event.dialogues ?? []).map((dialogue) => dialogue.id),
+  );
   const dialogue: DialogueNode = {
     id: dialogueId,
     title: "New Dialogue",
     text: { format: "plain", content: "" },
     canonRefs: [],
   };
-  const result = updateEvent(project, eventId, { dialogues: [...(event.dialogues ?? []), dialogue] });
+  const result = updateEvent(project, eventId, {
+    dialogues: [...(event.dialogues ?? []), dialogue],
+  });
   return {
     ...result,
     selection: { type: "node", id: `dialogue:${eventId}:${dialogue.id}` },
@@ -480,19 +639,29 @@ export function updateDialogue(
     return { project, message: "Event not found." };
   }
   return updateEvent(project, eventId, {
-    dialogues: (event.dialogues ?? []).map((dialogue) => (dialogue.id === dialogueId ? { ...dialogue, ...updates } : dialogue)),
+    dialogues: (event.dialogues ?? []).map((dialogue) =>
+      dialogue.id === dialogueId ? { ...dialogue, ...updates } : dialogue,
+    ),
   });
 }
 
-export function deleteDialogue(project: BranchingProject, eventId: string, dialogueId: string): MutationResult {
+export function deleteDialogue(
+  project: BranchingProject,
+  eventId: string,
+  dialogueId: string,
+): MutationResult {
   const event = findEvent(project, eventId);
   if (!event) {
     return { project, message: "Event not found." };
   }
   const dialogueNodeId = `dialogue:${eventId}:${dialogueId}`;
   return updateEvent(project, eventId, {
-    dialogues: (event.dialogues ?? []).filter((dialogue) => dialogue.id !== dialogueId),
-    boundaryBindings: (event.boundaryBindings ?? []).filter((binding) => binding.nodeId !== dialogueNodeId),
+    dialogues: (event.dialogues ?? []).filter(
+      (dialogue) => dialogue.id !== dialogueId,
+    ),
+    boundaryBindings: (event.boundaryBindings ?? []).filter(
+      (binding) => binding.nodeId !== dialogueNodeId,
+    ),
   });
 }
 
@@ -507,53 +676,77 @@ export function bindBoundaryPort(
   if (!event) {
     return { project, message: "Event not found." };
   }
-  const bindingId = uniqueId(`boundary-binding:${slugify(portId)}:${slugify(nodeId)}`, (event.boundaryBindings ?? []).map((binding) => binding.id));
+  const bindingId = uniqueId(
+    `boundary-binding:${slugify(portId)}:${slugify(nodeId)}`,
+    (event.boundaryBindings ?? []).map((binding) => binding.id),
+  );
   return updateEvent(project, eventId, {
     boundaryBindings: [
-      ...(event.boundaryBindings ?? []).filter((binding) => !(binding.portId === portId && binding.nodeId === nodeId)),
+      ...(event.boundaryBindings ?? []).filter(
+        (binding) => !(binding.portId === portId && binding.nodeId === nodeId),
+      ),
       { id: bindingId, portId, nodeId, direction },
     ],
   });
 }
 
-export function updateTransition(project: BranchingProject, transitionId: string, updates: Partial<Transition>): MutationResult {
+export function updateTransition(
+  project: BranchingProject,
+  transitionId: string,
+  updates: Partial<Transition>,
+): MutationResult {
   return {
     project: {
       ...project,
       events: project.events.map((event) => ({
         ...event,
         transitions: event.transitions?.map((transition) =>
-          transition.id === transitionId ? { ...transition, ...updates } : transition,
+          transition.id === transitionId
+            ? { ...transition, ...updates }
+            : transition,
         ),
       })),
     },
   };
 }
 
-export function deleteTransition(project: BranchingProject, transitionId: string): MutationResult {
+export function deleteTransition(
+  project: BranchingProject,
+  transitionId: string,
+): MutationResult {
   return {
     project: {
       ...project,
       events: project.events.map((event) => ({
         ...event,
-        transitions: event.transitions?.filter((transition) => transition.id !== transitionId),
+        transitions: event.transitions?.filter(
+          (transition) => transition.id !== transitionId,
+        ),
       })),
     },
   };
 }
 
-export function updateDataObject(project: BranchingProject, id: string, updates: Partial<ProjectDataObject>): MutationResult {
+export function updateDataObject(
+  project: BranchingProject,
+  id: string,
+  updates: Partial<ProjectDataObject>,
+): MutationResult {
   return {
     project: {
       ...project,
-      projectDataObjects: (project.projectDataObjects ?? []).map((dataObject) =>
-        dataObject.id === id ? { ...dataObject, ...updates } : dataObject,
+      projectDataObjects: (project.projectDataObjects ?? []).map(
+        (dataObject) =>
+          dataObject.id === id ? { ...dataObject, ...updates } : dataObject,
       ),
     },
   };
 }
 
-export function deleteDataObject(project: BranchingProject, id: string): MutationResult {
+export function deleteDataObject(
+  project: BranchingProject,
+  id: string,
+): MutationResult {
   let used = false;
   const checkConditions = (input: ConditionInput | undefined) => {
     walkConditions(input, (condition) => {
@@ -571,7 +764,9 @@ export function deleteDataObject(project: BranchingProject, id: string): Mutatio
     conditionInputsFromConsequences(consequences).forEach(checkConditions);
   };
 
-  project.sequences.forEach((sequence) => checkConditions(sequence.availability));
+  project.sequences.forEach((sequence) =>
+    checkConditions(sequence.availability),
+  );
   project.branches.forEach((branch) => checkConditions(branch.availability));
   project.events.forEach((event) => {
     checkConditions(event.availability);
@@ -590,13 +785,19 @@ export function deleteDataObject(project: BranchingProject, id: string): Mutatio
   });
 
   if (used) {
-    return { project, message: "Data object deletion is blocked while conditions or consequences reference it." };
+    return {
+      project,
+      message:
+        "Data object deletion is blocked while conditions or consequences reference it.",
+    };
   }
 
   return {
     project: {
       ...project,
-      projectDataObjects: (project.projectDataObjects ?? []).filter((dataObject) => dataObject.id !== id),
+      projectDataObjects: (project.projectDataObjects ?? []).filter(
+        (dataObject) => dataObject.id !== id,
+      ),
     },
   };
 }
@@ -621,7 +822,9 @@ export function createCanonEditSuggestion(
     canonRefId: canonRef.id,
     targetPath: canonRef.canonSourcePath,
     title: `Suggestion for ${canonRef.label ?? canonRef.id}`,
-    summary: source?.eventId ? `Suggested while authoring event ${source.eventId}.` : "Suggested from PathBranching.",
+    summary: source?.eventId
+      ? `Suggested while authoring event ${source.eventId}.`
+      : "Suggested from PathBranching.",
     proposedContent: canonRef.preview ?? "",
     status: "draft",
     sourceEventId: source?.eventId,
@@ -634,7 +837,10 @@ export function createCanonEditSuggestion(
   return {
     project: {
       ...project,
-      canonEditSuggestions: [...(project.canonEditSuggestions ?? []), suggestion],
+      canonEditSuggestions: [
+        ...(project.canonEditSuggestions ?? []),
+        suggestion,
+      ],
     },
     selection: { type: "canonSuggestion", id: suggestionId },
     message: "Created a safe WorldNotion edit suggestion in PathBranching.",
@@ -649,18 +855,26 @@ export function updateCanonEditSuggestion(
   return {
     project: {
       ...project,
-      canonEditSuggestions: (project.canonEditSuggestions ?? []).map((suggestion) =>
-        suggestion.id === id ? { ...suggestion, ...updates, updatedAt: new Date().toISOString() } : suggestion,
+      canonEditSuggestions: (project.canonEditSuggestions ?? []).map(
+        (suggestion) =>
+          suggestion.id === id
+            ? { ...suggestion, ...updates, updatedAt: new Date().toISOString() }
+            : suggestion,
       ),
     },
   };
 }
 
-export function deleteCanonEditSuggestion(project: BranchingProject, id: string): MutationResult {
+export function deleteCanonEditSuggestion(
+  project: BranchingProject,
+  id: string,
+): MutationResult {
   return {
     project: {
       ...project,
-      canonEditSuggestions: (project.canonEditSuggestions ?? []).filter((suggestion) => suggestion.id !== id),
+      canonEditSuggestions: (project.canonEditSuggestions ?? []).filter(
+        (suggestion) => suggestion.id !== id,
+      ),
     },
   };
 }
@@ -687,20 +901,36 @@ function defaultFieldValue(field: DataFieldDefinition, canonRefId?: string) {
   return "";
 }
 
-export function createDataObject(project: BranchingProject, classId?: string, canonRefId?: string): MutationResult {
-  const dataClass = project.dataClasses?.find((definition) => definition.id === classId) ?? project.dataClasses?.[0];
+export function createDataObject(
+  project: BranchingProject,
+  classId?: string,
+  canonRefId?: string,
+): MutationResult {
+  const dataClass =
+    project.dataClasses?.find((definition) => definition.id === classId) ??
+    project.dataClasses?.[0];
   if (!dataClass) {
-    return { project, message: "Create a data class before adding project data." };
+    return {
+      project,
+      message: "Create a data class before adding project data.",
+    };
   }
 
-  const canonRef = canonRefId ? project.canonRefs.find((ref) => ref.id === canonRefId) : undefined;
+  const canonRef = canonRefId
+    ? project.canonRefs.find((ref) => ref.id === canonRefId)
+    : undefined;
   const label = canonRef?.label ?? canonRef?.id ?? dataClass.label;
   const baseId = `data:${slugify(dataClass.label || dataClass.id)}:${slugify(label || "object") || "object"}`;
-  const objectId = uniqueId(baseId, (project.projectDataObjects ?? []).map((object) => object.id));
+  const objectId = uniqueId(
+    baseId,
+    (project.projectDataObjects ?? []).map((object) => object.id),
+  );
   const fields = Object.fromEntries(
     dataClass.fields.map((field) => [
       field.name,
-      field.name === "title" || field.name === "displayName" ? label : defaultFieldValue(field, canonRef?.id),
+      field.name === "title" || field.name === "displayName"
+        ? label
+        : defaultFieldValue(field, canonRef?.id),
     ]),
   );
 
@@ -723,18 +953,34 @@ export function createDataObject(project: BranchingProject, classId?: string, ca
   };
 }
 
-export function createKnowledgeObject(project: BranchingProject, canonRefId?: string): MutationResult {
-  if (project.dataClasses?.some((dataClass) => dataClass.id === "class:KnowledgeEntry")) {
+export function createKnowledgeObject(
+  project: BranchingProject,
+  canonRefId?: string,
+): MutationResult {
+  if (
+    project.dataClasses?.some(
+      (dataClass) => dataClass.id === "class:KnowledgeEntry",
+    )
+  ) {
     return createDataObject(project, "class:KnowledgeEntry", canonRefId);
   }
 
-  const selectedCanonRef = canonRefId ? project.canonRefs.find((canonRef) => canonRef.id === canonRefId) : undefined;
-  const safeBase = (selectedCanonRef?.id ?? `manual-${(project.projectDataObjects?.length ?? 0) + 1}`)
+  const selectedCanonRef = canonRefId
+    ? project.canonRefs.find((canonRef) => canonRef.id === canonRefId)
+    : undefined;
+  const safeBase = (
+    selectedCanonRef?.id ??
+    `manual-${(project.projectDataObjects?.length ?? 0) + 1}`
+  )
     .replace(/[^a-zA-Z0-9:_-]/g, "-")
     .toLowerCase();
   const objectId = `data:knowledge:${safeBase}`;
-  const existingIds = new Set((project.projectDataObjects ?? []).map((dataObject) => dataObject.id));
-  const finalId = existingIds.has(objectId) ? `${objectId}-${existingIds.size + 1}` : objectId;
+  const existingIds = new Set(
+    (project.projectDataObjects ?? []).map((dataObject) => dataObject.id),
+  );
+  const finalId = existingIds.has(objectId)
+    ? `${objectId}-${existingIds.size + 1}`
+    : objectId;
   const newObject: ProjectDataObject = {
     id: finalId,
     classId: "class:KnowledgeEntry",
@@ -758,10 +1004,16 @@ export function createKnowledgeObject(project: BranchingProject, canonRefId?: st
   };
 }
 
-export function setAvailability<T extends { availability?: ConditionInput }>(object: T, availability: ConditionInput | undefined): T {
+export function setAvailability<T extends { availability?: ConditionInput }>(
+  object: T,
+  availability: ConditionInput | undefined,
+): T {
   return { ...object, availability };
 }
 
-export function appendConsequence(consequences: Consequence[] | undefined, consequence: Consequence) {
+export function appendConsequence(
+  consequences: Consequence[] | undefined,
+  consequence: Consequence,
+) {
   return [...(consequences ?? []), consequence];
 }

@@ -1,4 +1,8 @@
-import type { BranchingProject, DataClassDefinition, EventCategoryDefinition } from "./domain.js";
+import type {
+  BranchingProject,
+  DataClassDefinition,
+  EventCategoryDefinition,
+} from "./domain.js";
 import { normalizeBranchMembership } from "./storyOutlineModel.js";
 
 export function projectFileName(path: string | undefined) {
@@ -23,7 +27,12 @@ export const DEFAULT_DATA_CLASSES: DataClassDefinition[] = [
       { name: "title", type: "text", label: "Title", required: true },
       { name: "body", type: "text", label: "Body" },
       { name: "sourceRef", type: "canonRef", label: "Canon Source" },
-      { name: "unlockedByDefault", type: "boolean", label: "Unlocked By Default", defaultValue: false },
+      {
+        name: "unlockedByDefault",
+        type: "boolean",
+        label: "Unlocked By Default",
+        defaultValue: false,
+      },
     ],
   },
   {
@@ -32,7 +41,12 @@ export const DEFAULT_DATA_CLASSES: DataClassDefinition[] = [
     category: "narrative",
     roles: ["speaker", "presentation"],
     fields: [
-      { name: "displayName", type: "text", label: "Display Name", required: true },
+      {
+        name: "displayName",
+        type: "text",
+        label: "Display Name",
+        required: true,
+      },
       { name: "canonRef", type: "canonRef", label: "Canon Source" },
       { name: "voice", type: "text", label: "Voice" },
     ],
@@ -43,9 +57,24 @@ export const DEFAULT_DATA_CLASSES: DataClassDefinition[] = [
     category: "runtime",
     roles: ["condition", "inventory", "runtime"],
     fields: [
-      { name: "displayName", type: "text", label: "Display Name", required: true },
-      { name: "itemId", type: "text", label: "Runtime Item ID", required: true },
-      { name: "startsOwned", type: "boolean", label: "Starts Owned", defaultValue: false },
+      {
+        name: "displayName",
+        type: "text",
+        label: "Display Name",
+        required: true,
+      },
+      {
+        name: "itemId",
+        type: "text",
+        label: "Runtime Item ID",
+        required: true,
+      },
+      {
+        name: "startsOwned",
+        type: "boolean",
+        label: "Starts Owned",
+        defaultValue: false,
+      },
     ],
   },
   {
@@ -66,41 +95,67 @@ export const DEFAULT_DATA_CLASSES: DataClassDefinition[] = [
     roles: ["condition", "state", "runtime"],
     fields: [
       { name: "flag", type: "text", label: "Flag", required: true },
-      { name: "initialValue", type: "boolean", label: "Initial Value", defaultValue: false },
+      {
+        name: "initialValue",
+        type: "boolean",
+        label: "Initial Value",
+        defaultValue: false,
+      },
     ],
   },
 ];
 
 function labelFromCategoryId(id: string) {
-  return id
-    .split(/[-_:]/g)
-    .filter(Boolean)
-    .map((part) => `${part.slice(0, 1).toUpperCase()}${part.slice(1)}`)
-    .join(" ") || id;
+  return (
+    id
+      .split(/[-_:]/g)
+      .filter(Boolean)
+      .map((part) => `${part.slice(0, 1).toUpperCase()}${part.slice(1)}`)
+      .join(" ") || id
+  );
 }
 
-function normalizeEventCategories(project: BranchingProject): EventCategoryDefinition[] {
+function normalizeEventCategories(
+  project: BranchingProject,
+): EventCategoryDefinition[] {
   const categories = new Map<string, EventCategoryDefinition>();
-  DEFAULT_EVENT_CATEGORIES.forEach((category) => categories.set(category.id, category));
+  DEFAULT_EVENT_CATEGORIES.forEach((category) =>
+    categories.set(category.id, category),
+  );
   (project.eventCategories ?? []).forEach((category) => {
     if (!category.id) return;
-    const migratedLabel = category.id === "normal" && category.label === "Normal" ? "Event" : category.label;
+    const migratedLabel =
+      category.id === "normal" && category.label === "Normal"
+        ? "Event"
+        : category.label;
     categories.set(category.id, {
       ...category,
       label: migratedLabel || labelFromCategoryId(category.id),
-      terminal: category.id === "final" ? true : category.id === "normal" ? false : category.terminal,
+      terminal:
+        category.id === "final"
+          ? true
+          : category.id === "normal"
+            ? false
+            : category.terminal,
     });
   });
   (project.events ?? []).forEach((event) => {
     if (!event.type || categories.has(event.type)) return;
-    categories.set(event.type, { id: event.type, label: labelFromCategoryId(event.type) });
+    categories.set(event.type, {
+      id: event.type,
+      label: labelFromCategoryId(event.type),
+    });
   });
   return Array.from(categories.values());
 }
 
-function normalizeDataClasses(project: BranchingProject): DataClassDefinition[] {
+function normalizeDataClasses(
+  project: BranchingProject,
+): DataClassDefinition[] {
   const classes = new Map<string, DataClassDefinition>();
-  DEFAULT_DATA_CLASSES.forEach((dataClass) => classes.set(dataClass.id, dataClass));
+  DEFAULT_DATA_CLASSES.forEach((dataClass) =>
+    classes.set(dataClass.id, dataClass),
+  );
   (project.dataClasses ?? []).forEach((dataClass) => {
     if (!dataClass.id) return;
     classes.set(dataClass.id, {
@@ -113,13 +168,20 @@ function normalizeDataClasses(project: BranchingProject): DataClassDefinition[] 
 
 export function normalizeProject(project: BranchingProject): BranchingProject {
   const entrySequenceId = project.entrySequenceId ?? project.sequences[0]?.id;
-  const activeSequenceId = project.canvas?.activeSequenceId ?? entrySequenceId ?? project.sequences[0]?.id;
+  const activeSequenceId =
+    project.canvas?.activeSequenceId ??
+    entrySequenceId ??
+    project.sequences[0]?.id;
   const activeScope =
     project.canvas?.activeScope?.kind === "event" &&
-    project.events?.some((event) => event.id === project.canvas?.activeScope?.id)
+    project.events?.some(
+      (event) => event.id === project.canvas?.activeScope?.id,
+    )
       ? project.canvas.activeScope
       : project.canvas?.activeScope?.kind === "sequence" &&
-          project.sequences?.some((sequence) => sequence.id === project.canvas?.activeScope?.id)
+          project.sequences?.some(
+            (sequence) => sequence.id === project.canvas?.activeScope?.id,
+          )
         ? project.canvas.activeScope
         : activeSequenceId
           ? { kind: "sequence" as const, id: activeSequenceId }
@@ -131,6 +193,11 @@ export function normalizeProject(project: BranchingProject): BranchingProject {
     dataClasses: normalizeDataClasses(project),
     projectDataObjects: project.projectDataObjects ?? [],
     canonEditSuggestions: project.canonEditSuggestions ?? [],
+    canonWorkingCopies: project.canonWorkingCopies ?? [],
+    canonChangeSets: project.canonChangeSets ?? [],
+    localExplorerEntities: project.localExplorerEntities ?? [],
+    localExplorerTypes: project.localExplorerTypes ?? [],
+    localExplorerProperties: project.localExplorerProperties ?? [],
     projectionRules: project.projectionRules ?? [],
     graphModules: project.graphModules ?? [],
     panels: {

@@ -1,9 +1,14 @@
 import YAML from "yaml";
-import type { BranchingProject, CanonRef, ValidationFinding } from "./domain.js";
+import type {
+  BranchingProject,
+  CanonRef,
+  ValidationFinding,
+} from "./domain.js";
 
 export type WorldNotionVaultFile = {
   relativePath: string;
   content: string;
+  modifiedMs?: number;
 };
 
 export type WorldNotionEntity = {
@@ -20,6 +25,8 @@ export type WorldNotionEntity = {
   customProperties: Record<string, unknown>;
   frontmatter: Record<string, unknown>;
   body: string;
+  content: string;
+  modifiedMs?: number;
 };
 
 export type WorldNotionPropertiesConfig = Record<string, unknown>;
@@ -44,7 +51,11 @@ const BASE_ENTITY_FIELDS = new Set([
   "folder",
 ]);
 
-function splitMarkdown(content: string): { data?: Record<string, unknown>; body: string; error?: string } {
+function splitMarkdown(content: string): {
+  data?: Record<string, unknown>;
+  body: string;
+  error?: string;
+} {
   const normalized = content.replace(/\r\n/g, "\n");
   if (!normalized.startsWith("---\n")) {
     return { body: normalized };
@@ -61,7 +72,10 @@ function splitMarkdown(content: string): { data?: Record<string, unknown>; body:
   try {
     const parsed = YAML.parse(frontmatter) as unknown;
     return {
-      data: parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : {},
+      data:
+        parsed && typeof parsed === "object" && !Array.isArray(parsed)
+          ? (parsed as Record<string, unknown>)
+          : {},
       body,
     };
   } catch (error) {
@@ -73,15 +87,24 @@ function splitMarkdown(content: string): { data?: Record<string, unknown>; body:
 }
 
 function stringArray(value: unknown): string[] {
-  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.length > 0) : [];
+  return Array.isArray(value)
+    ? value.filter(
+        (item): item is string => typeof item === "string" && item.length > 0,
+      )
+    : [];
 }
 
 function requiredString(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
 
-function parsePropertiesConfig(files: WorldNotionVaultFile[], findings: ValidationFinding[]): WorldNotionPropertiesConfig | undefined {
-  const propertiesFile = files.find((file) => file.relativePath === ".everend/properties.json");
+function parsePropertiesConfig(
+  files: WorldNotionVaultFile[],
+  findings: ValidationFinding[],
+): WorldNotionPropertiesConfig | undefined {
+  const propertiesFile = files.find(
+    (file) => file.relativePath === ".everend/properties.json",
+  );
   if (!propertiesFile) return undefined;
 
   try {
@@ -108,7 +131,9 @@ function parsePropertiesConfig(files: WorldNotionVaultFile[], findings: Validati
 }
 
 function isTemplateLikeValue(value: unknown): boolean {
-  return typeof value === "string" && value.trim().toLowerCase().includes("template");
+  return (
+    typeof value === "string" && value.trim().toLowerCase().includes("template")
+  );
 }
 
 function isPlaceholderValue(value: unknown): boolean {
@@ -125,7 +150,10 @@ function isTemplatePath(path: string): boolean {
   );
 }
 
-function isWorldNotionTemplateFile(file: WorldNotionVaultFile, data: Record<string, unknown>): boolean {
+function isWorldNotionTemplateFile(
+  file: WorldNotionVaultFile,
+  data: Record<string, unknown>,
+): boolean {
   const normalizedPath = file.relativePath.replace(/\\/g, "/").toLowerCase();
   if (isTemplatePath(normalizedPath)) {
     return true;
@@ -161,31 +189,37 @@ function toCanonRef(entity: WorldNotionEntity): CanonRef {
     childrenIds: entity.childrenIds,
     properties: entity.customProperties,
     frontmatter: entity.frontmatter,
-    folderDescription: entity.type === "folder-description" || typeof entity.folder === "string",
+    folderDescription:
+      entity.type === "folder-description" || typeof entity.folder === "string",
     source: "worldnotion",
     canonSourcePath: entity.path,
+    canonSourceModifiedMs: entity.modifiedMs,
   };
 }
 
 function slugifyPath(path: string): string {
-  return path
-    .replace(/\\/g, "/")
-    .replace(/\.md$/i, "")
-    .toLowerCase()
-    .replace(/[^a-z0-9/_-]+/g, "-")
-    .replace(/[/_]+/g, ":")
-    .replace(/^-+|-+$/g, "")
-    .replace(/:{2,}/g, ":") || "untitled";
+  return (
+    path
+      .replace(/\\/g, "/")
+      .replace(/\.md$/i, "")
+      .toLowerCase()
+      .replace(/[^a-z0-9/_-]+/g, "-")
+      .replace(/[/_]+/g, ":")
+      .replace(/^-+|-+$/g, "")
+      .replace(/:{2,}/g, ":") || "untitled"
+  );
 }
 
 function titleFromPath(path: string): string {
-  return path
-    .replace(/\\/g, "/")
-    .split("/")
-    .pop()
-    ?.replace(/\.md$/i, "")
-    .replace(/[-_]+/g, " ")
-    .trim() || path;
+  return (
+    path
+      .replace(/\\/g, "/")
+      .split("/")
+      .pop()
+      ?.replace(/\.md$/i, "")
+      .replace(/[-_]+/g, " ")
+      .trim() || path
+  );
 }
 
 function isFolderDescriptionPath(path: string): boolean {
@@ -193,10 +227,20 @@ function isFolderDescriptionPath(path: string): boolean {
   const parts = normalized.split("/");
   const basename = parts.at(-1)?.toLowerCase();
   const parent = parts.at(-2)?.toLowerCase();
-  return Boolean(basename && (basename === "_folder" || basename === "folder" || basename === "index" || basename === parent));
+  return Boolean(
+    basename &&
+    (basename === "_folder" ||
+      basename === "folder" ||
+      basename === "index" ||
+      basename === parent),
+  );
 }
 
-function toUnidentifiedCanonRef(file: WorldNotionVaultFile, body: string, reason: string): CanonRef {
+function toUnidentifiedCanonRef(
+  file: WorldNotionVaultFile,
+  body: string,
+  reason: string,
+): CanonRef {
   return {
     id: `unidentified:${slugifyPath(file.relativePath)}`,
     kind: "unidentified-note",
@@ -209,10 +253,13 @@ function toUnidentifiedCanonRef(file: WorldNotionVaultFile, body: string, reason
     identityWarning: reason,
     source: "worldnotion",
     canonSourcePath: file.relativePath,
+    canonSourceModifiedMs: file.modifiedMs,
   };
 }
 
-export function indexWorldNotionVaultFiles(files: WorldNotionVaultFile[]): WorldNotionBridgeIndex {
+export function indexWorldNotionVaultFiles(
+  files: WorldNotionVaultFile[],
+): WorldNotionBridgeIndex {
   const findings: ValidationFinding[] = [];
   const entities: WorldNotionEntity[] = [];
   const looseCanonRefs: CanonRef[] = [];
@@ -250,7 +297,11 @@ export function indexWorldNotionVaultFiles(files: WorldNotionVaultFile[]): World
 
       if (!id || !type || !name) {
         looseCanonRefs.push(
-          toUnidentifiedCanonRef(file, parsed.body, "This note is missing id, type, or name in frontmatter."),
+          toUnidentifiedCanonRef(
+            file,
+            parsed.body,
+            "This note is missing id, type, or name in frontmatter.",
+          ),
         );
         findings.push({
           code: "missing_canon_identity",
@@ -265,7 +316,9 @@ export function indexWorldNotionVaultFiles(files: WorldNotionVaultFile[]): World
       seenIds.add(id);
 
       const customProperties = Object.fromEntries(
-        Object.entries(parsed.data).filter(([key]) => !BASE_ENTITY_FIELDS.has(key)),
+        Object.entries(parsed.data).filter(
+          ([key]) => !BASE_ENTITY_FIELDS.has(key),
+        ),
       );
 
       entities.push({
@@ -282,6 +335,8 @@ export function indexWorldNotionVaultFiles(files: WorldNotionVaultFile[]): World
         customProperties,
         frontmatter: parsed.data,
         body: parsed.body,
+        content: file.content,
+        modifiedMs: file.modifiedMs,
       });
     });
 
@@ -294,10 +349,13 @@ export function indexWorldNotionVaultFiles(files: WorldNotionVaultFile[]): World
     });
   });
 
-  const typeCounts = entities.reduce<Record<string, number>>((counts, entity) => {
-    counts[entity.type] = (counts[entity.type] ?? 0) + 1;
-    return counts;
-  }, {});
+  const typeCounts = entities.reduce<Record<string, number>>(
+    (counts, entity) => {
+      counts[entity.type] = (counts[entity.type] ?? 0) + 1;
+      return counts;
+    },
+    {},
+  );
 
   return {
     entities,

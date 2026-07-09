@@ -5,13 +5,18 @@ import {
   type WorldNotionBridgeIndex,
   type WorldNotionVaultFile,
 } from "./worldnotionBridge.js";
-import { normalizeProject, parseProject, serializeProject } from "./projectSerialization.js";
+import {
+  normalizeProject,
+  parseProject,
+  serializeProject,
+} from "./projectSerialization.js";
 
 export const pathBranchingMetadataPaths = {
   root: ".everend/.pathbranching",
   manifest: ".everend/.pathbranching/manifest.json",
   stories: ".everend/.pathbranching/stories",
   workingCopies: ".everend/.pathbranching/working-copies",
+  changeSets: ".everend/changes",
 } as const;
 
 export type UniverseFile = WorldNotionVaultFile & {
@@ -47,6 +52,7 @@ export type PathBranchingWorkspace = {
   manifest: PathBranchingManifest;
   universeProfile?: UniverseProfile;
   canonIndex: WorldNotionBridgeIndex;
+  files: UniverseFile[];
   activeStory?: PathBranchingStoryManifestEntry;
   activeProject: BranchingProject;
   storyModifiedMs?: number;
@@ -64,7 +70,9 @@ function slugify(value: string): string {
 }
 
 export function defaultStoryId(files: UniverseFile[]): string {
-  const universeFile = files.find((file) => file.relativePath === ".everend/universe.json");
+  const universeFile = files.find(
+    (file) => file.relativePath === ".everend/universe.json",
+  );
   if (universeFile) {
     try {
       const parsed = JSON.parse(universeFile.content) as { name?: unknown };
@@ -104,11 +112,19 @@ export function sequencePath(storyId: string, sequenceId: string): string {
   return `${sequenceDirectory(storyId, sequenceId)}/sequence.json`;
 }
 
-export function eventPath(storyId: string, sequenceId: string, eventId: string): string {
+export function eventPath(
+  storyId: string,
+  sequenceId: string,
+  eventId: string,
+): string {
   return `${sequenceDirectory(storyId, sequenceId)}/events/${slugify(eventId) || eventId}.json`;
 }
 
-export function branchPath(storyId: string, sequenceId: string, branchId: string): string {
+export function branchPath(
+  storyId: string,
+  sequenceId: string,
+  branchId: string,
+): string {
   return `${sequenceDirectory(storyId, sequenceId)}/branches/${slugify(branchId) || branchId}.json`;
 }
 
@@ -116,13 +132,22 @@ export function authoringCanvasPath(storyId: string): string {
   return `${storyDirectory(storyId)}/authoring/canvas.json`;
 }
 
-function parseManifest(files: UniverseFile[], loadWarnings: string[]): PathBranchingManifest | undefined {
-  const manifestFile = files.find((file) => file.relativePath === pathBranchingMetadataPaths.manifest);
+function parseManifest(
+  files: UniverseFile[],
+  loadWarnings: string[],
+): PathBranchingManifest | undefined {
+  const manifestFile = files.find(
+    (file) => file.relativePath === pathBranchingMetadataPaths.manifest,
+  );
   if (!manifestFile) return undefined;
 
   let parsed: { version?: unknown; activeStoryId?: unknown; stories?: unknown };
   try {
-    parsed = JSON.parse(manifestFile.content) as { version?: unknown; activeStoryId?: unknown; stories?: unknown };
+    parsed = JSON.parse(manifestFile.content) as {
+      version?: unknown;
+      activeStoryId?: unknown;
+      stories?: unknown;
+    };
   } catch (error) {
     loadWarnings.push(
       `Could not parse ${pathBranchingMetadataPaths.manifest}: ${error instanceof Error ? error.message : String(error)}`,
@@ -145,17 +170,26 @@ function parseManifest(files: UniverseFile[], loadWarnings: string[]): PathBranc
     })
     .map((story) => ({ ...story }));
   if (stories.length && normalizedStories.length !== stories.length) {
-    loadWarnings.push(`Ignored ${stories.length - normalizedStories.length} invalid PathBranching manifest story entries.`);
+    loadWarnings.push(
+      `Ignored ${stories.length - normalizedStories.length} invalid PathBranching manifest story entries.`,
+    );
   }
   return {
     version: parsed.version === "0.2" ? "0.2" : "0.1",
-    activeStoryId: typeof parsed.activeStoryId === "string" ? parsed.activeStoryId : undefined,
+    activeStoryId:
+      typeof parsed.activeStoryId === "string"
+        ? parsed.activeStoryId
+        : undefined,
     stories: normalizedStories,
   };
 }
 
-function parseUniverseProfile(files: UniverseFile[]): UniverseProfile | undefined {
-  const profileFile = files.find((file) => file.relativePath === ".everend/universe.json");
+function parseUniverseProfile(
+  files: UniverseFile[],
+): UniverseProfile | undefined {
+  const profileFile = files.find(
+    (file) => file.relativePath === ".everend/universe.json",
+  );
   if (!profileFile) return undefined;
 
   try {
@@ -169,16 +203,27 @@ function parseUniverseProfile(files: UniverseFile[]): UniverseProfile | undefine
           }
         : undefined;
     return {
-      name: typeof parsed.name === "string" && parsed.name.trim() ? parsed.name.trim() : undefined,
+      name:
+        typeof parsed.name === "string" && parsed.name.trim()
+          ? parsed.name.trim()
+          : undefined,
       icon,
-      taxonomyVersion: typeof parsed.taxonomyVersion === "string" ? parsed.taxonomyVersion : undefined,
+      taxonomyVersion:
+        typeof parsed.taxonomyVersion === "string"
+          ? parsed.taxonomyVersion
+          : undefined,
     };
   } catch {
     return undefined;
   }
 }
 
-function createDefaultProject(files: UniverseFile[], canonIndex: WorldNotionBridgeIndex, storyId: string, name = "Branching Story"): BranchingProject {
+function createDefaultProject(
+  files: UniverseFile[],
+  canonIndex: WorldNotionBridgeIndex,
+  storyId: string,
+  name = "Branching Story",
+): BranchingProject {
   return normalizeProject(
     createEmptyBranchingProjectFromWorldNotionIndex(canonIndex, {
       projectId: `pathbranching:${storyId}`,
@@ -220,28 +265,43 @@ function parseJsonFile<T>(file: UniverseFile | undefined): T | undefined {
   }
 }
 
-function unwrapSequence(parsed: unknown): BranchingProject["sequences"][number] | undefined {
+function unwrapSequence(
+  parsed: unknown,
+): BranchingProject["sequences"][number] | undefined {
   if (!parsed || typeof parsed !== "object") return undefined;
-  const value = "sequence" in parsed ? (parsed as { sequence?: unknown }).sequence : parsed;
+  const value =
+    "sequence" in parsed ? (parsed as { sequence?: unknown }).sequence : parsed;
   if (!value || typeof value !== "object") return undefined;
   const sequence = value as BranchingProject["sequences"][number];
-  return typeof sequence.id === "string" && typeof sequence.name === "string" ? sequence : undefined;
+  return typeof sequence.id === "string" && typeof sequence.name === "string"
+    ? sequence
+    : undefined;
 }
 
-function unwrapEvent(parsed: unknown): BranchingProject["events"][number] | undefined {
+function unwrapEvent(
+  parsed: unknown,
+): BranchingProject["events"][number] | undefined {
   if (!parsed || typeof parsed !== "object") return undefined;
-  const value = "event" in parsed ? (parsed as { event?: unknown }).event : parsed;
+  const value =
+    "event" in parsed ? (parsed as { event?: unknown }).event : parsed;
   if (!value || typeof value !== "object") return undefined;
   const event = value as BranchingProject["events"][number];
-  return typeof event.id === "string" && typeof event.name === "string" ? event : undefined;
+  return typeof event.id === "string" && typeof event.name === "string"
+    ? event
+    : undefined;
 }
 
-function unwrapBranch(parsed: unknown): BranchingProject["branches"][number] | undefined {
+function unwrapBranch(
+  parsed: unknown,
+): BranchingProject["branches"][number] | undefined {
   if (!parsed || typeof parsed !== "object") return undefined;
-  const value = "branch" in parsed ? (parsed as { branch?: unknown }).branch : parsed;
+  const value =
+    "branch" in parsed ? (parsed as { branch?: unknown }).branch : parsed;
   if (!value || typeof value !== "object") return undefined;
   const branch = value as BranchingProject["branches"][number];
-  return typeof branch.id === "string" && typeof branch.title === "string" ? branch : undefined;
+  return typeof branch.id === "string" && typeof branch.title === "string"
+    ? branch
+    : undefined;
 }
 
 function parseModularStoryProject(
@@ -249,46 +309,89 @@ function parseModularStoryProject(
   story: PathBranchingStoryManifestEntry,
   storyId: string,
 ): { project: BranchingProject; modifiedMs?: number } | undefined {
-  const modularPath = story.path.endsWith("/story.json") ? story.path : storyPath(storyId);
+  const modularPath = story.path.endsWith("/story.json")
+    ? story.path
+    : storyPath(storyId);
   const storyFile = files.find((file) => file.relativePath === modularPath);
   const parsedStory = parseJsonFile<ModularStoryFile>(storyFile);
   if (!storyFile || !parsedStory) return undefined;
-  if (parsedStory.storageVersion !== "0.2" && !Array.isArray(parsedStory.sequenceIds)) return undefined;
+  if (
+    parsedStory.storageVersion !== "0.2" &&
+    !Array.isArray(parsedStory.sequenceIds)
+  )
+    return undefined;
 
-  const sequenceIds = Array.isArray(parsedStory.sequenceIds) ? parsedStory.sequenceIds : [];
+  const sequenceIds = Array.isArray(parsedStory.sequenceIds)
+    ? parsedStory.sequenceIds
+    : [];
   const sequences = sequenceIds
-    .map((sequenceId) => parseJsonFile<unknown>(files.find((file) => file.relativePath === sequencePath(storyId, sequenceId))))
+    .map((sequenceId) =>
+      parseJsonFile<unknown>(
+        files.find(
+          (file) => file.relativePath === sequencePath(storyId, sequenceId),
+        ),
+      ),
+    )
     .map(unwrapSequence)
-    .filter((sequence): sequence is BranchingProject["sequences"][number] => Boolean(sequence));
+    .filter((sequence): sequence is BranchingProject["sequences"][number] =>
+      Boolean(sequence),
+    );
 
-  const eventIds = new Set(sequences.flatMap((sequence) => sequence.eventIds ?? []));
-  const branchIds = new Set(sequences.flatMap((sequence) => sequence.branchIds ?? []));
+  const eventIds = new Set(
+    sequences.flatMap((sequence) => sequence.eventIds ?? []),
+  );
+  const branchIds = new Set(
+    sequences.flatMap((sequence) => sequence.branchIds ?? []),
+  );
   const sequenceOwnerByEvent = new Map<string, string>();
   const sequenceOwnerByBranch = new Map<string, string>();
   sequences.forEach((sequence) => {
-    sequence.eventIds?.forEach((eventId) => sequenceOwnerByEvent.set(eventId, sequence.id));
-    sequence.branchIds?.forEach((branchId) => sequenceOwnerByBranch.set(branchId, sequence.id));
+    sequence.eventIds?.forEach((eventId) =>
+      sequenceOwnerByEvent.set(eventId, sequence.id),
+    );
+    sequence.branchIds?.forEach((branchId) =>
+      sequenceOwnerByBranch.set(branchId, sequence.id),
+    );
   });
 
   const events = Array.from(eventIds)
     .map((eventId) => {
       const sequenceId = sequenceOwnerByEvent.get(eventId);
-      return sequenceId ? parseJsonFile<unknown>(files.find((file) => file.relativePath === eventPath(storyId, sequenceId, eventId))) : undefined;
+      return sequenceId
+        ? parseJsonFile<unknown>(
+            files.find(
+              (file) =>
+                file.relativePath === eventPath(storyId, sequenceId, eventId),
+            ),
+          )
+        : undefined;
     })
     .map(unwrapEvent)
-    .filter((event): event is BranchingProject["events"][number] => Boolean(event));
+    .filter((event): event is BranchingProject["events"][number] =>
+      Boolean(event),
+    );
 
   const branches = Array.from(branchIds)
     .map((branchId) => {
       const sequenceId = sequenceOwnerByBranch.get(branchId);
-      return sequenceId ? parseJsonFile<unknown>(files.find((file) => file.relativePath === branchPath(storyId, sequenceId, branchId))) : undefined;
+      return sequenceId
+        ? parseJsonFile<unknown>(
+            files.find(
+              (file) =>
+                file.relativePath === branchPath(storyId, sequenceId, branchId),
+            ),
+          )
+        : undefined;
     })
     .map(unwrapBranch)
-    .filter((branch): branch is BranchingProject["branches"][number] => Boolean(branch));
+    .filter((branch): branch is BranchingProject["branches"][number] =>
+      Boolean(branch),
+    );
 
-  const authoring = parseJsonFile<{ canvas?: BranchingProject["canvas"]; panels?: BranchingProject["panels"] }>(
-    files.find((file) => file.relativePath === authoringCanvasPath(storyId)),
-  );
+  const authoring = parseJsonFile<{
+    canvas?: BranchingProject["canvas"];
+    panels?: BranchingProject["panels"];
+  }>(files.find((file) => file.relativePath === authoringCanvasPath(storyId)));
 
   return {
     modifiedMs: storyFile.modifiedMs,
@@ -325,7 +428,9 @@ function parseLegacyStoryProject(
   story: PathBranchingStoryManifestEntry,
   storyId: string,
 ): { project: BranchingProject; modifiedMs?: number } | undefined {
-  const legacyPath = story.path.endsWith(".pathbranching.json") ? story.path : legacyStoryPath(storyId);
+  const legacyPath = story.path.endsWith(".pathbranching.json")
+    ? story.path
+    : legacyStoryPath(storyId);
   const storyFile = files.find((file) => file.relativePath === legacyPath);
   if (!storyFile) return undefined;
   return {
@@ -337,7 +442,10 @@ function parseLegacyStoryProject(
   };
 }
 
-function mergeCanonRefs(canonIndex: WorldNotionBridgeIndex, storyProject: BranchingProject) {
+function mergeCanonRefs(
+  canonIndex: WorldNotionBridgeIndex,
+  storyProject: BranchingProject,
+) {
   const storyRefs = new Map(storyProject.canonRefs.map((ref) => [ref.id, ref]));
   return canonIndex.canonRefs.map((ref) => {
     const storyRef = storyRefs.get(ref.id);
@@ -348,7 +456,9 @@ function mergeCanonRefs(canonIndex: WorldNotionBridgeIndex, storyProject: Branch
   });
 }
 
-export function loadPathBranchingWorkspace(files: UniverseFile[]): PathBranchingWorkspace {
+export function loadPathBranchingWorkspace(
+  files: UniverseFile[],
+): PathBranchingWorkspace {
   const canonIndex = indexWorldNotionVaultFiles(files);
   const universeProfile = parseUniverseProfile(files);
   const loadWarnings: string[] = [];
@@ -376,12 +486,23 @@ export function loadPathBranchingWorkspace(files: UniverseFile[]): PathBranching
   const activeStory =
     manifest.stories.find((story) => story.id === manifest.activeStoryId) ??
     manifest.stories[0];
-  const loadedStory =
-    activeStory ? parseModularStoryProject(files, activeStory, activeStory.id) ?? parseLegacyStoryProject(files, activeStory, activeStory.id) : undefined;
+  const loadedStory = activeStory
+    ? (parseModularStoryProject(files, activeStory, activeStory.id) ??
+      parseLegacyStoryProject(files, activeStory, activeStory.id))
+    : undefined;
   if (hasPersistedManifest && activeStory && !loadedStory) {
-    loadWarnings.push(`Could not load PathBranching story "${activeStory.name}" from ${activeStory.path}.`);
+    loadWarnings.push(
+      `Could not load PathBranching story "${activeStory.name}" from ${activeStory.path}.`,
+    );
   }
-  const activeProject = loadedStory?.project ?? createDefaultProject(files, canonIndex, activeStory?.id ?? fallbackStoryId, activeStory?.name);
+  const activeProject =
+    loadedStory?.project ??
+    createDefaultProject(
+      files,
+      canonIndex,
+      activeStory?.id ?? fallbackStoryId,
+      activeStory?.name,
+    );
 
   return {
     manifest: {
@@ -390,6 +511,7 @@ export function loadPathBranchingWorkspace(files: UniverseFile[]): PathBranching
     },
     universeProfile,
     canonIndex,
+    files: [...files],
     activeStory,
     activeProject: normalizeProject({
       ...activeProject,
@@ -402,7 +524,9 @@ export function loadPathBranchingWorkspace(files: UniverseFile[]): PathBranching
   };
 }
 
-export function serializePathBranchingManifest(manifest: PathBranchingManifest): string {
+export function serializePathBranchingManifest(
+  manifest: PathBranchingManifest,
+): string {
   return `${JSON.stringify(manifest, null, 2)}\n`;
 }
 
@@ -410,14 +534,35 @@ export function serializePathBranchingStory(project: BranchingProject): string {
   return serializeProject(project);
 }
 
-function ownerSequenceIdForEvent(project: BranchingProject, eventId: string): string | undefined {
-  return project.sequences.find((sequence) => sequence.eventIds.includes(eventId))?.id ?? project.canvas?.activeSequenceId ?? project.entrySequenceId ?? project.sequences[0]?.id;
+function ownerSequenceIdForEvent(
+  project: BranchingProject,
+  eventId: string,
+): string | undefined {
+  return (
+    project.sequences.find((sequence) => sequence.eventIds.includes(eventId))
+      ?.id ??
+    project.canvas?.activeSequenceId ??
+    project.entrySequenceId ??
+    project.sequences[0]?.id
+  );
 }
 
-function ownerSequenceIdForBranch(project: BranchingProject, branchId: string): string | undefined {
-  return project.sequences.find((sequence) => sequence.branchIds?.includes(branchId))?.id ?? project.sequences.find((sequence) =>
-    project.branches.find((branch) => branch.id === branchId)?.eventIds.some((eventId) => sequence.eventIds.includes(eventId)),
-  )?.id ?? project.canvas?.activeSequenceId ?? project.entrySequenceId ?? project.sequences[0]?.id;
+function ownerSequenceIdForBranch(
+  project: BranchingProject,
+  branchId: string,
+): string | undefined {
+  return (
+    project.sequences.find((sequence) => sequence.branchIds?.includes(branchId))
+      ?.id ??
+    project.sequences.find((sequence) =>
+      project.branches
+        .find((branch) => branch.id === branchId)
+        ?.eventIds.some((eventId) => sequence.eventIds.includes(eventId)),
+    )?.id ??
+    project.canvas?.activeSequenceId ??
+    project.entrySequenceId ??
+    project.sequences[0]?.id
+  );
 }
 
 export function serializeModularStoryFiles(
