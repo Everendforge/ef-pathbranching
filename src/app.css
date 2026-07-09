@@ -682,9 +682,7 @@ button:disabled {
   background:
     linear-gradient(135deg, color-mix(in srgb, var(--wn-panel) 78%, var(--wn-accent) 22%), color-mix(in srgb, var(--wn-panel-2) 72%, var(--wn-accent) 28%));
   color: var(--wn-text);
-  box-shadow:
-    0 5px 16px color-mix(in srgb, #000 20%, transparent),
-    inset 0 1px 0 color-mix(in srgb, #fff 32%, transparent);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, #fff 32%, transparent);
   pointer-events: auto;
 }
 
@@ -719,9 +717,7 @@ button:disabled {
   border-color: color-mix(in srgb, var(--wn-accent) 58%, var(--wn-border));
   background:
     linear-gradient(135deg, color-mix(in srgb, var(--wn-panel-2) 68%, var(--wn-accent) 32%), color-mix(in srgb, var(--wn-panel) 78%, #000 22%));
-  box-shadow:
-    0 6px 18px color-mix(in srgb, #000 34%, transparent),
-    inset 0 1px 0 color-mix(in srgb, #fff 16%, transparent);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, #fff 16%, transparent);
 }
 
 :root[data-theme="worldnotion-dark"] .forge-logo-on-dark,

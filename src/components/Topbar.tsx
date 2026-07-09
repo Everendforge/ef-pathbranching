@@ -7,7 +7,7 @@ import {
   Settings,
   Sun,
 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import forgeLogoOnDark from "../assets/everend-forge-logo-on-dark.png";
 import forgeLogoOnLight from "../assets/everend-forge-logo-on-light.png";
 import type { BranchingProject, ValidationFinding } from "../domain.js";
@@ -73,16 +73,37 @@ export function Topbar({
   const universeName = universeDisplayName(project, fileState);
   const universePath = universeDisplayPath(fileState);
   const [forgeMenuOpen, setForgeMenuOpen] = useState(false);
+  const forgeMenuRef = useRef<HTMLDivElement | null>(null);
 
   const openExternalUrl = (url: string) => {
     window.open(url, "_blank", "noopener,noreferrer");
     setForgeMenuOpen(false);
   };
 
+  useEffect(() => {
+    if (!forgeMenuOpen) return;
+
+    function handlePointerDown(event: PointerEvent) {
+      if (forgeMenuRef.current?.contains(event.target as Node)) return;
+      setForgeMenuOpen(false);
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") setForgeMenuOpen(false);
+    }
+
+    document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [forgeMenuOpen]);
+
   return (
     <header className="topbar dock-top-bar pathbranching-topbar" aria-label="Workspace controls">
       <div className="dock-top-left">
-        <div className={`forge-corner-menu ${forgeMenuOpen ? "open" : ""}`}>
+        <div ref={forgeMenuRef} className={`forge-corner-menu ${forgeMenuOpen ? "open" : ""}`}>
           <div className="forge-orbit-panel" aria-label="Everend menu">
             <button type="button" onClick={() => openExternalUrl(EVEREND_FORGE_GITHUB_URL)}>
               Github
