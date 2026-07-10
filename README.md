@@ -1,4 +1,20 @@
-# Everend PathBranching
+<p align="center">
+  <img src="src/assets/pathbranching-icon.png" width="120" alt="Everend PathBranching icon" />
+</p>
+
+<h1 align="center">Everend PathBranching</h1>
+<p align="center">
+  The visual branching narrative editor for <a href="https://github.com/Everendforge/everend-forge">Everend Forge</a>.<br />
+  Interactive narrative graphs, Ink and SINPO GameData export, Everend Spec compatible.
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg" alt="License">
+  <img src="https://img.shields.io/badge/built%20with-Tauri%20%2B%20React%20Flow%20%2B%20TypeScript-1e2a4a.svg" alt="Built with Tauri, React Flow, TypeScript">
+  <a href="https://github.com/Everendforge/everend-forge"><img src="https://img.shields.io/badge/Everend%20Forge-open%20core%20suite-0a0e1a.svg" alt="Part of Everend Forge"></a>
+</p>
+
+---
 
 Everend PathBranching is the visual branching narrative editor for Everend Forge. It creates interactive narrative graphs and exports runtime packages and narrative format projections defined by Everend Spec.
 
