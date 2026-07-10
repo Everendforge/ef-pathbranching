@@ -13,6 +13,7 @@ import forgeLogoOnDark from "../assets/everend-forge-logo-on-dark.png";
 import forgeLogoOnLight from "../assets/everend-forge-logo-on-light.png";
 import type { BranchingProject } from "../domain.js";
 import { projectFileName, type ProjectFileState } from "../projectPersistence.js";
+import type { SuiteChrome } from "../suiteChrome.js";
 import { isDarkTheme, themeById, type ThemeId } from "../themes.js";
 import { UniverseIconFrame } from "./UniverseIconFrame.js";
 import type { WorkspacePanelId, WorkspacePanelState } from "../workspaceSettings.js";

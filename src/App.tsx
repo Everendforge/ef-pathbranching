@@ -2136,7 +2136,13 @@ function ConfirmActionDialog({
 }
 
 type PathBranchingSettingsSection =
-  "overview" | "authoring" | "markdown" | "bridge" | "workspace" | "recents";
+  "suite" | "overview" | "authoring" | "markdown" | "bridge" | "workspace" | "recents";
+
+const primaryFontOptions = [
+  ["sans", "Sans serif"],
+  ["serif", "Serif editorial"],
+  ["humanist", "Humanist"],
+] as const;
 
 const NODE_COLOR_FIELDS: Array<{
   key: keyof NodeColorSettings;
@@ -2308,6 +2314,7 @@ function PathBranchingSettingsModal({
   onOpenRecentUniverse,
   onRemoveRecentUniverse,
   onClose,
+  suiteSettings,
 }: {
   project?: BranchingProject;
   fileState: ProjectFileState;
@@ -2331,6 +2338,12 @@ function PathBranchingSettingsModal({
   onOpenRecentUniverse: (path: string) => void;
   onRemoveRecentUniverse: (path: string) => void;
   onClose: () => void;
+  suiteSettings?: {
+    primaryFont: string;
+    onPrimaryFontChange: (font: string) => void;
+    style: string;
+    onStyleChange: (style: string) => void;
+  };
 }) {
   const [activeSection, setActiveSection] =
     useState<PathBranchingSettingsSection>(project ? "overview" : "workspace");
@@ -2365,6 +2378,19 @@ function PathBranchingSettingsModal({
 
         <div className="settings-body">
           <nav className="settings-nav">
+            {suiteSettings ? (
+              <div className="settings-nav-group">
+                <p>Forge</p>
+                <button
+                  className={activeSection === "suite" ? "active" : ""}
+                  onClick={() => setActiveSection("suite")}
+                  type="button"
+                >
+                  <Settings size={14} />
+                  Suite
+                </button>
+              </div>
+            ) : null}
             <div className="settings-nav-group">
               <p>Universe</p>
               <button
@@ -2423,6 +2449,42 @@ function PathBranchingSettingsModal({
           </nav>
 
           <section className="settings-section">
+            {activeSection === "suite" && suiteSettings ? (
+              <div className="settings-panel">
+                <div className="settings-page-title">
+                  <h3>Everend Forge Suite</h3>
+                  <p>Shared preferences applied to every app in this Suite.</p>
+                </div>
+                <div className="settings-grid">
+                  <label>
+                    <span>Style</span>
+                    <select
+                      value={suiteSettings.style}
+                      onChange={(event) => suiteSettings.onStyleChange(event.target.value)}
+                    >
+                      {THEMES.map((themeOption) => (
+                        <option key={themeOption.id} value={themeOption.id}>
+                          {themeOption.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    <span>Primary typeface</span>
+                    <select
+                      value={suiteSettings.primaryFont}
+                      onChange={(event) => suiteSettings.onPrimaryFontChange(event.target.value)}
+                    >
+                      {primaryFontOptions.map(([value, label]) => (
+                        <option key={value} value={value}>
+                          {label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+              </div>
+            ) : null}
             {activeSection === "overview" ? (
               <div className="settings-panel">
                 <div className="settings-page-title universe-profile-summary">
@@ -8797,9 +8859,9 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
 
   useEffect(() => {
     settingsRef.current = settings;
-    document.documentElement.dataset.theme = settings.theme;
+    document.documentElement.dataset.theme = suiteChrome?.suiteSettings?.style ?? settings.theme;
     saveSettings({ ...settings, lastView: view });
-  }, [settings, view]);
+  }, [settings, suiteChrome?.suiteSettings?.style, view]);
 
   useEffect(() => {
     const currentProject = projectRef.current;
@@ -8884,11 +8946,15 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
   ]);
 
   const toggleTheme = useCallback(() => {
+    if (suiteChrome?.suiteSettings) {
+      suiteChrome.suiteSettings.onToggleStyleMode();
+      return;
+    }
     setSettings((current) => ({
       ...current,
       theme: toggledThemeMode(current.theme),
     }));
-  }, []);
+  }, [suiteChrome?.suiteSettings]);
 
   const changeThemeFamily = useCallback((family: ThemeFamily) => {
     setSettings((current) => ({
@@ -11707,6 +11773,7 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
       onOpenRecentUniverse={openRecentProject}
       onRemoveRecentUniverse={removeRecentProject}
       onClose={() => setShowSettings(false)}
+      suiteSettings={suiteChrome?.suiteSettings}
     />
   ) : null;
 
