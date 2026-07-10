@@ -210,6 +210,7 @@ import {
   findSequence,
   rootSequenceScope,
 } from "./storySelection.js";
+import type { SuiteChrome } from "./suiteChrome.js";
 import {
   buildPathTree,
   buildSequenceConnectionPreview,
@@ -7628,7 +7629,7 @@ function StoryCanvas({
   );
 }
 
-export function App() {
+export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
   const desktopRuntime = isTauriRuntime();
   const [settings, setSettings] = useState<AppSettings>(() => loadSettings());
   const [view, setView] = useState<AppView>(
@@ -11771,6 +11772,7 @@ export function App() {
             onRedo={redoProject}
             canUndo={undoStack.length > 0}
             canRedo={redoStack.length > 0}
+            suiteChrome={suiteChrome}
           />
           {webPreviewBanner}
           <div className="error-state">{error}</div>
@@ -11798,6 +11800,7 @@ export function App() {
             onRedo={redoProject}
             canUndo={undoStack.length > 0}
             canRedo={redoStack.length > 0}
+          suiteChrome={suiteChrome}
           />
           {webPreviewBanner}
           <div className="loading-state">
@@ -11855,6 +11858,7 @@ export function App() {
           onRedo={redoProject}
           canUndo={undoStack.length > 0}
           canRedo={redoStack.length > 0}
+          suiteChrome={suiteChrome}
           panelVisibility={panelVisibility}
           onTogglePanelVisibility={togglePanelVisibility}
         />

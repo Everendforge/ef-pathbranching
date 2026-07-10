@@ -57,6 +57,7 @@ export function Topbar({
   onRedo,
   canUndo,
   canRedo,
+  suiteChrome,
   panelVisibility,
   onTogglePanelVisibility,
 }: {
@@ -73,6 +74,7 @@ export function Topbar({
   onRedo: () => void;
   canUndo: boolean;
   canRedo: boolean;
+  suiteChrome?: SuiteChrome;
   panelVisibility?: WorkspacePanelState;
   onTogglePanelVisibility?: (panel: WorkspacePanelId) => void;
 }) {
@@ -118,28 +120,32 @@ export function Topbar({
   return (
     <header className="topbar dock-top-bar pathbranching-topbar" aria-label="Workspace controls">
       <div className="dock-top-left">
-        <div ref={forgeMenuRef} className={`forge-corner-menu ${forgeMenuOpen ? "open" : ""}`}>
-          <div className="forge-orbit-panel" aria-label="Everend menu">
-            <button type="button" onClick={() => openExternalUrl(EVEREND_FORGE_GITHUB_URL)}>
-              Github
-            </button>
-            <button type="button" onClick={() => openExternalUrl(BUY_SUITE_URL)}>
-              Buy Suite
+        {suiteChrome ? (
+          suiteChrome.renderAppSwitcher()
+        ) : (
+          <div ref={forgeMenuRef} className={`forge-corner-menu ${forgeMenuOpen ? "open" : ""}`}>
+            <div className="forge-orbit-panel" aria-label="Everend menu">
+              <button type="button" onClick={() => openExternalUrl(EVEREND_FORGE_GITHUB_URL)}>
+                Github
+              </button>
+              <button type="button" onClick={() => openExternalUrl(BUY_SUITE_URL)}>
+                Buy Suite
+              </button>
+            </div>
+            <button
+              type="button"
+              className="forge-corner-button"
+              onClick={() => setForgeMenuOpen((open) => !open)}
+              aria-expanded={forgeMenuOpen}
+              aria-label="Open Everend menu"
+              title="Everend menu"
+            >
+              <ForgeLogoMark />
             </button>
           </div>
-          <button
-            type="button"
-            className="forge-corner-button"
-            onClick={() => setForgeMenuOpen((open) => !open)}
-            aria-expanded={forgeMenuOpen}
-            aria-label="Open Everend menu"
-            title="Everend menu"
-          >
-            <ForgeLogoMark />
-          </button>
-        </div>
+        )}
 
-        <button type="button" className="dock-icon-button" title="Home" onClick={onHome}>
+        <button type="button" className="dock-icon-button" title="Home" onClick={suiteChrome?.onHome ?? onHome}>
           <Home size={15} />
         </button>
 
