@@ -94,8 +94,8 @@ PathBranching exports JSON/YAML runtime packages that engine plugins can execute
 ## Related Repositories
 
 - [Everend Forge portal](https://github.com/Everendforge/everend-forge)
-- [Everend Spec](https://github.com/Everendforge/spec)
-- [Everend WorldNotion](https://github.com/Everendforge/worldnotion)
+- [Everend Spec](https://github.com/Everendforge/specs)
+- [Everend WorldNotion](https://github.com/Everendforge/ef-worldnotion)
 
 ## License
 
