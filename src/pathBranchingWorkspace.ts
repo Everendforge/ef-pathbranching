@@ -10,10 +10,16 @@ import {
   parseProject,
   serializeProject,
 } from "./projectSerialization.js";
+import {
+  DEFAULT_INTEGRATION_CONFIG,
+  parseIntegrationConfigYaml,
+  serializeIntegrationConfigYaml,
+} from "./integrationConfig.js";
 
 export const pathBranchingMetadataPaths = {
   root: ".everend/.pathbranching",
   manifest: ".everend/.pathbranching/manifest.json",
+  config: ".everend/.pathbranching/config.yaml",
   stories: ".everend/.pathbranching/stories",
   workingCopies: ".everend/.pathbranching/working-copies",
   changeSets: ".everend/changes",
@@ -130,6 +136,20 @@ export function branchPath(
 
 export function authoringCanvasPath(storyId: string): string {
   return `${storyDirectory(storyId)}/authoring/canvas.json`;
+}
+
+export function storyIntegrationConfigPath(storyId: string): string {
+  return `${storyDirectory(storyId)}/config.yaml`;
+}
+
+function parseIntegrationConfigFile(files: UniverseFile[], relativePath: string) {
+  const file = files.find((candidate) => candidate.relativePath === relativePath);
+  if (!file) return undefined;
+  try {
+    return parseIntegrationConfigYaml(file.content);
+  } catch {
+    return undefined;
+  }
 }
 
 function parseManifest(
@@ -250,6 +270,7 @@ type ModularStoryFile = {
   eventCategories?: BranchingProject["eventCategories"];
   canonRefs?: BranchingProject["canonRefs"];
   scripts?: BranchingProject["scripts"];
+  scriptDocuments?: BranchingProject["scriptDocuments"];
   externalFunctions?: BranchingProject["externalFunctions"];
   variables?: BranchingProject["variables"];
   engineTargets?: BranchingProject["engineTargets"];
@@ -416,6 +437,14 @@ function parseModularStoryProject(
       branches,
       events,
       scripts: parsedStory.scripts ?? [],
+      scriptDocuments: parsedStory.scriptDocuments ?? [],
+      integrationConfig:
+        parseIntegrationConfigFile(files, pathBranchingMetadataPaths.config) ??
+        DEFAULT_INTEGRATION_CONFIG,
+      integrationConfigOverride: parseIntegrationConfigFile(
+        files,
+        storyIntegrationConfigPath(storyId),
+      ),
       externalFunctions: parsedStory.externalFunctions ?? [],
       variables: parsedStory.variables ?? {},
       engineTargets: parsedStory.engineTargets,
@@ -516,6 +545,14 @@ export function loadPathBranchingWorkspace(
     activeProject: normalizeProject({
       ...activeProject,
       storyId: activeStory?.id ?? fallbackStoryId,
+      integrationConfig:
+        parseIntegrationConfigFile(files, pathBranchingMetadataPaths.config) ??
+        activeProject.integrationConfig ??
+        DEFAULT_INTEGRATION_CONFIG,
+      integrationConfigOverride:
+        (activeStory
+          ? parseIntegrationConfigFile(files, storyIntegrationConfigPath(activeStory.id))
+          : undefined) ?? activeProject.integrationConfigOverride,
       canonRefs: mergeCanonRefs(canonIndex, activeProject),
     }),
     storyModifiedMs: loadedStory?.modifiedMs,
@@ -591,6 +628,7 @@ export function serializeModularStoryFiles(
     eventCategories: project.eventCategories,
     canonRefs: project.canonRefs,
     scripts: project.scripts,
+    scriptDocuments: project.scriptDocuments,
     externalFunctions: project.externalFunctions,
     variables: project.variables,
     engineTargets: project.engineTargets,
@@ -607,6 +645,13 @@ export function serializeModularStoryFiles(
       content: `${JSON.stringify({ storageVersion: "0.2", storyId: story.id, canvas: project.canvas, panels: project.panels }, null, 2)}\n`,
     },
   ];
+
+  if (project.integrationConfigOverride?.mappings.length) {
+    files.push({
+      relativePath: storyIntegrationConfigPath(story.id),
+      content: serializeIntegrationConfigYaml(project.integrationConfigOverride),
+    });
+  }
 
   project.sequences.forEach((sequence) => {
     files.push({

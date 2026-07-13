@@ -1,4 +1,4 @@
-import { GitBranch } from "lucide-react";
+import { BookOpen, Castle, Globe2, Sparkles } from "lucide-react";
 import type { UniverseProfile } from "../pathBranchingWorkspace.js";
 
 export function UniverseIconFrame({ profile, size = 28 }: { profile?: UniverseProfile; size?: number }) {
@@ -11,9 +11,20 @@ export function UniverseIconFrame({ profile, size = 28 }: { profile?: UniversePr
     );
   }
 
+  const preset = icon?.value ?? "book";
+  const iconSize = Math.max(16, Math.round(size * 0.56));
+  const Icon =
+    preset === "globe"
+      ? Globe2
+      : preset === "castle"
+        ? Castle
+        : preset === "sparkles"
+          ? Sparkles
+          : BookOpen;
+
   return (
     <span className="pathbranching-universe-icon" style={{ width: size, height: size }}>
-      {icon?.type === "preset" && icon.value ? <span className="universe-preset-icon">{icon.value.slice(0, 2).toUpperCase()}</span> : <GitBranch size={16} />}
+      <Icon size={iconSize} />
     </span>
   );
 }

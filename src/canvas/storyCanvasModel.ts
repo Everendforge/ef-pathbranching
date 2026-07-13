@@ -9,6 +9,7 @@ import type {
   EventNode,
   Outcome,
   ScriptRef,
+  Transition,
   ValidationFinding,
 } from "../domain.js";
 import { conditionCount, conditionLabels, consequenceLabel, walkConditions } from "../logic.js";
@@ -18,10 +19,13 @@ export type StoryCanvasNodeKind =
   | "sequence"
   | "start"
   | "boundary"
+  | "routeGate"
   | "branch"
   | "event"
   | "decision"
   | "dialogue"
+  | "speechBeat"
+  | "directionBeat"
   | "outcome"
   | "inkSection"
   | "knowledge"
@@ -199,6 +203,70 @@ function edge(
   };
 }
 
+function transitionCanvasLabel(transition: Transition) {
+  return transition.label?.trim() ?? "";
+}
+
+function transitionEdgeData(transition: Transition): Partial<StoryCanvasEdgeData> {
+  return {
+    conditions: transition.conditions,
+    consequences: transition.consequences,
+    order: transition.order ?? 0,
+    mode: transition.mode ?? "conditional",
+    customLabel: transition.label ?? "",
+  };
+}
+
+function insertRouteGates(
+  project: BranchingProject,
+  nodes: StoryCanvasNode[],
+  edges: StoryCanvasEdge[],
+  scope: CanvasScope,
+  options: StoryCanvasModelOptions,
+) {
+  const transitionGroups = new Map<string, StoryCanvasEdge[]>();
+  edges
+    .filter((item) => item.data?.kind === "transition")
+    .forEach((item) => {
+      transitionGroups.set(item.source, [
+        ...(transitionGroups.get(item.source) ?? []),
+        item,
+      ]);
+    });
+
+  transitionGroups.forEach((routes, sourceId) => {
+    if (routes.length < 2 || nodes.some((node) => node.id === `route-gate:${sourceId}`)) {
+      return;
+    }
+    const source = nodes.find((node) => node.id === sourceId);
+    if (!source) return;
+
+    const gateId = `route-gate:${sourceId}`;
+    const conditionalCount = routes.filter((route) => route.data?.conditions).length;
+    pushNode(
+      project,
+      nodes,
+      gateId,
+      "routeGate",
+      "Route Gate",
+      `${routes.length} routes`,
+      source.position.x + NODE_WIDTH + 58,
+      source.position.y + 4,
+      [
+        `${routes.length} routes`,
+        ...(conditionalCount ? [`${conditionalCount} conditional`] : []),
+      ],
+      { routeSourceId: sourceId, transitionIds: routes.map((route) => route.id) },
+      { nodeColors: options.nodeColors, scope },
+    );
+
+    routes.forEach((route) => {
+      route.source = gateId;
+    });
+    edges.push(edge(`edge:route-gate:${sourceId}`, sourceId, gateId, "contains", ""));
+  });
+}
+
 function boundaryPortId(eventId: string, direction: "input" | "output", ownerId: string) {
   return `boundary:${eventId}:${direction}:${ownerId}`;
 }
@@ -304,7 +372,7 @@ function buildEventBoundaryPorts(project: BranchingProject, eventNode: EventNode
   const inbound = parentLevelInboundTransitions(project, eventNode.id).map(({ event, transition }) => ({
     id: boundaryPortId(eventNode.id, "input", transition.id),
     direction: "input" as const,
-    title: transition.label || event.name,
+    title: "Entry",
     subtitle: `from ${event.name}`,
     transitionId: transition.id,
   }));
@@ -313,7 +381,7 @@ function buildEventBoundaryPorts(project: BranchingProject, eventNode: EventNode
     .map((transition) => ({
       id: boundaryPortId(eventNode.id, "output", transition.id),
       direction: "output" as const,
-      title: transition.label || "Exit",
+      title: "Exit",
       subtitle: `to ${project.events.find((event) => event.id === transition.to)?.name ?? transition.to}`,
       transitionId: transition.id,
     }));
@@ -424,11 +492,15 @@ function addOutcomeNodes(
   options: StoryCanvasModelOptions,
 ) {
   const outcomeId = `outcome:${event.id}:${decisionId}:${outcome.id}`;
+  const availability = outcome.availability ?? outcome.conditions;
   const badges = [
-    ...conditionLabels(outcome.conditions),
+    ...conditionLabels(availability),
+    ...(availability
+      ? [outcome.unavailableBehavior === "hidden" ? "hidden when unavailable" : "locks when unavailable"]
+      : []),
     ...(outcome.consequences ?? []).map(consequenceLabel),
-    ...logicBadges(outcome.conditions, outcome.ruleSets?.length ?? 0),
-    ...dataUseBadges(project, outcome.conditions),
+    ...logicBadges(availability, outcome.ruleSets?.length ?? 0),
+    ...dataUseBadges(project, availability),
   ];
 
   pushNode(
@@ -447,7 +519,7 @@ function addOutcomeNodes(
 
   edges.push(
     edge(`edge:choice:${decisionId}:${outcomeId}`, decisionId, outcomeId, "choice", "choice", {
-      conditions: outcome.conditions,
+      conditions: availability,
       consequences: outcome.consequences,
     }),
   );
@@ -508,8 +580,6 @@ function addEventSupportNodes(
       { eventId: eventNode.id, decision },
       { nodeColors: options.nodeColors, summaryBadges: [`${decision.outcomes.length} outcome${decision.outcomes.length === 1 ? "" : "s"}`] },
     );
-    edges.push(edge(`edge:contains:${eventNode.id}:${decisionId}`, eventNode.id, decisionId, "contains", "decision"));
-
     decision.outcomes.forEach((outcome, outcomeIndex) => {
       addOutcomeNodes(project, eventNode, outcome, decisionId, outcomeIndex, nodes, edges, createdKnowledge, cursor, options);
     });
@@ -626,15 +696,12 @@ function buildEventScopeModel(project: BranchingProject, scope: CanvasScope, opt
     childEvent.transitions?.forEach((transition) => {
       if (!childIds.includes(transition.to)) return;
       edges.push(
-        edge(`edge:transition:${transition.id}`, childEvent.id, transition.to, "transition", transition.label ?? "transition", {
-          conditions: transition.conditions,
-          consequences: transition.consequences,
-        }),
+        edge(`edge:transition:${transition.id}`, childEvent.id, transition.to, "transition", transitionCanvasLabel(transition), transitionEdgeData(transition)),
       );
     });
   });
 
-  eventNode.decisions?.forEach((decision, index) => {
+  eventNode.decisions?.filter((decision) => !decision.dialogueId).forEach((decision, index) => {
     const decisionId = `decision:${eventNode.id}:${decision.id}`;
     pushNode(
       project,
@@ -664,7 +731,7 @@ function buildEventScopeModel(project: BranchingProject, scope: CanvasScope, opt
       dialogueId,
       "dialogue",
       dialogue.title,
-      dialogue.speakerRef ?? dialogue.text.format,
+      `${dialogue.beats?.length ?? 0} beats`,
       690,
       420 + index * 168,
       dialogueBadges(project, dialogue),
@@ -679,6 +746,13 @@ function buildEventScopeModel(project: BranchingProject, scope: CanvasScope, opt
     }
     const source = binding.direction === "input" ? binding.portId : binding.nodeId;
     const target = binding.direction === "input" ? binding.nodeId : binding.portId;
+    if (
+      eventNode.transitions?.some(
+        (transition) => transition.from === source && transition.to === target,
+      )
+    ) {
+      return;
+    }
     edges.push(edge(`edge:boundary:${binding.id}`, source, target, "boundary", binding.direction === "input" ? "enters" : "exits"));
   });
 
@@ -686,10 +760,7 @@ function buildEventScopeModel(project: BranchingProject, scope: CanvasScope, opt
   eventNode.transitions?.forEach((transition) => {
     if (nodeIds.has(transition.from) && nodeIds.has(transition.to)) {
       edges.push(
-        edge(`edge:transition:${transition.id}`, transition.from, transition.to, "transition", transition.label ?? "transition", {
-          conditions: transition.conditions,
-          consequences: transition.consequences,
-        }),
+        edge(`edge:transition:${transition.id}`, transition.from, transition.to, "transition", transitionCanvasLabel(transition), transitionEdgeData(transition)),
       );
     }
   });
@@ -713,6 +784,102 @@ function buildEventScopeModel(project: BranchingProject, scope: CanvasScope, opt
     { ...options, scope },
   );
 
+  insertRouteGates(project, nodes, edges, scope, options);
+
+  return {
+    nodes,
+    edges,
+    files: buildPathBranchingFiles(project),
+    viewport,
+    activeSequenceId: project.canvas?.activeSequenceId,
+  };
+}
+
+function buildDialogueScopeModel(
+  project: BranchingProject,
+  scope: Extract<CanvasScope, { kind: "dialogue" }>,
+  options: StoryCanvasModelOptions,
+): StoryCanvasModel {
+  const nodes: StoryCanvasNode[] = [];
+  const edges: StoryCanvasEdge[] = [];
+  const eventNode = project.events.find((event) => event.id === scope.eventId);
+  const dialogue = eventNode?.dialogues?.find((item) => item.id === scope.id);
+  const viewport = project.canvas?.scopes?.[canvasScopeKey(scope)]?.viewport ?? project.canvas?.viewport;
+  if (!eventNode || !dialogue) {
+    return { nodes, edges, files: buildPathBranchingFiles(project), viewport };
+  }
+
+  const inputId = `dialogue-boundary:${eventNode.id}:${dialogue.id}:input`;
+  const outputId = `dialogue-boundary:${eventNode.id}:${dialogue.id}:output`;
+  pushNode(project, nodes, inputId, "boundary", "Entry", dialogue.title, 70, 120, ["input"], {
+    eventId: eventNode.id,
+    dialogueId: dialogue.id,
+    direction: "input",
+  }, { nodeColors: options.nodeColors, scope });
+  pushNode(project, nodes, outputId, "boundary", "Exit", dialogue.title, 1120, 120, ["output"], {
+    eventId: eventNode.id,
+    dialogueId: dialogue.id,
+    direction: "output",
+  }, { nodeColors: options.nodeColors, scope });
+
+  const scriptBlocks = new Map(
+    (project.scriptDocuments ?? []).flatMap((script) =>
+      script.blocks.map((block) => [`${script.id}:${block.id}`, block] as const),
+    ),
+  );
+  (dialogue.beats ?? []).forEach((beat, index) => {
+    const block = scriptBlocks.get(`${beat.blockRef.scriptId}:${beat.blockRef.blockId}`);
+    const nodeId = `beat:${eventNode.id}:${dialogue.id}:${beat.id}`;
+    const speaker = block?.speakerRef
+      ? project.canonRefs.find((ref) => ref.id === block.speakerRef)?.label ?? block.speakerRef
+      : undefined;
+    pushNode(
+      project,
+      nodes,
+      nodeId,
+      beat.kind === "speech" ? "speechBeat" : "directionBeat",
+      block?.content.trim().slice(0, 80) || (beat.kind === "speech" ? "New speech" : "New direction"),
+      speaker ?? (beat.kind === "speech" ? "No speaker" : "Stage direction"),
+      330 + (index % 2) * 310,
+      90 + Math.floor(index / 2) * 175,
+      logicBadges(beat.displayCondition, beat.ruleSets?.length ?? 0),
+      { eventId: eventNode.id, dialogueId: dialogue.id, beat, block },
+      { nodeColors: options.nodeColors, scope },
+    );
+  });
+
+  const dialogueDecisions = (eventNode.decisions ?? []).filter((decision) => decision.dialogueId === dialogue.id);
+  dialogueDecisions.forEach((decision, index) => {
+    const decisionId = `decision:${eventNode.id}:${decision.id}`;
+    pushNode(project, nodes, decisionId, "decision", decision.name, decision.description ?? "Player choice", 650, 430 + index * 210, [
+      `${decision.outcomes.length} outcomes`,
+      ...logicBadges(decision.availability, decision.ruleSets?.length ?? 0),
+    ], { eventId: eventNode.id, dialogueId: dialogue.id, decision }, { nodeColors: options.nodeColors, scope });
+    decision.outcomes.forEach((outcome, outcomeIndex) => {
+      const outcomeId = `outcome:${eventNode.id}:${decision.id}:${outcome.id}`;
+      const availability = outcome.availability ?? outcome.conditions;
+      pushNode(project, nodes, outcomeId, "outcome", outcome.name, outcome.description ?? "Choice", 900, 400 + index * 210 + outcomeIndex * 130, [
+        ...(availability ? [outcome.unavailableBehavior === "hidden" ? "hidden" : "locked"] : []),
+        ...conditionLabels(availability),
+      ], { eventId: eventNode.id, dialogueId: dialogue.id, decisionId: decision.id, outcome }, { nodeColors: options.nodeColors, scope });
+      edges.push(edge(`edge:choice:${decision.id}:${outcome.id}`, decisionId, outcomeId, "choice", "choice", { conditions: availability }));
+    });
+  });
+
+  const entryBeat = dialogue.entryBeatId
+    ? `beat:${eventNode.id}:${dialogue.id}:${dialogue.entryBeatId}`
+    : undefined;
+  if (entryBeat && nodes.some((node) => node.id === entryBeat)) {
+    edges.push(edge(`edge:dialogue-entry:${dialogue.id}`, inputId, entryBeat, "boundary", "enters"));
+  }
+  const nodeIds = new Set(nodes.map((node) => node.id));
+  (eventNode.transitions ?? []).forEach((transition) => {
+    if (!nodeIds.has(transition.from) || !nodeIds.has(transition.to)) return;
+    edges.push(edge(`edge:transition:${transition.id}`, transition.from, transition.to, "transition", transitionCanvasLabel(transition), transitionEdgeData(transition)));
+  });
+
+  insertRouteGates(project, nodes, edges, scope, options);
+
   return {
     nodes,
     edges,
@@ -724,6 +891,9 @@ function buildEventScopeModel(project: BranchingProject, scope: CanvasScope, opt
 
 export function buildStoryCanvasModel(project: BranchingProject, options: StoryCanvasModelOptions = {}): StoryCanvasModel {
   const scope = options.scope ?? activeCanvasScope(project);
+  if (scope?.kind === "dialogue") {
+    return buildDialogueScopeModel(project, scope, options);
+  }
   if (scope?.kind === "event") {
     return buildEventScopeModel(project, scope, options);
   }
@@ -765,7 +935,9 @@ export function buildStoryCanvasModel(project: BranchingProject, options: StoryC
     );
 
     if (sequence.entryEventId && activeEventIds.has(sequence.entryEventId)) {
-      edges.push(edge(`edge:entry:${startNodeId}:${sequence.entryEventId}`, startNodeId, sequence.entryEventId, "entry", "entry"));
+      edges.push(edge(`edge:entry:${startNodeId}:${sequence.entryEventId}`, startNodeId, sequence.entryEventId, "entry", sequence.entryLabel ?? "", {
+        customLabel: sequence.entryLabel ?? "",
+      }));
     }
     cursor.sequenceY += 190;
   }
@@ -803,15 +975,12 @@ export function buildStoryCanvasModel(project: BranchingProject, options: StoryC
     );
 
     eventNode.transitions?.forEach((transition) => {
-      if (!activeEventIds.has(transition.to)) {
+      if (transition.from !== eventNode.id || !activeEventIds.has(transition.to)) {
         return;
       }
 
       edges.push(
-        edge(`edge:transition:${transition.id}`, eventNode.id, transition.to, "transition", transition.label ?? "transition", {
-          conditions: transition.conditions,
-          consequences: transition.consequences,
-        }),
+        edge(`edge:transition:${transition.id}`, eventNode.id, transition.to, "transition", transitionCanvasLabel(transition), transitionEdgeData(transition)),
       );
     });
   });
@@ -885,6 +1054,12 @@ export function buildPathBranchingFiles(project: BranchingProject): PathBranchin
       id: `file:script:${script.id}`,
       label: script.sourcePath ?? script.id,
       detail: script.compiledPath ?? script.format,
+      group: "scripts" as const,
+    })),
+    ...(project.scriptDocuments ?? []).map((script) => ({
+      id: `file:script-document:${script.id}`,
+      label: script.name,
+      detail: `${script.blocks.length} structured blocks`,
       group: "scripts" as const,
     })),
     ...(project.dataClasses ?? []).map((dataClass) => ({

@@ -1,5 +1,7 @@
-import type { BranchingProject, ConditionInput, Consequence, RuleSet, ValidationFinding } from "./domain.js";
+import type { BranchingProject, ConditionInput, Consequence, RuleSet, RuleSetBinding, ScriptBlock, ValidationFinding } from "./domain.js";
 import { conditionInputsFromConsequences, walkConditions } from "./logic.js";
+import { ruleSetPhasesByOwner, type RuleBindingOwnerKind } from "./ruleLibrary.js";
+import { canonRefHasRole, mappingsForCanonRef } from "./integrationConfig.js";
 
 function finding(
   code: ValidationFinding["code"],
@@ -55,8 +57,35 @@ function validateConditionRefs(
   conditions: ConditionInput | undefined,
 ) {
   walkConditions(conditions, (condition, path) => {
-    if (condition.type === "canonEntryUnlocked" && typeof condition.ref === "string") {
+    if (
+      (condition.type === "canonEntryUnlocked" || condition.type === "canonProperty" || condition.type === "canonState") &&
+      typeof condition.ref === "string"
+    ) {
       validateCanonRef(findings, canonIds, ownerId, condition.ref, `${context} ${path}`);
+      const canonRef = projectRefs.project.canonRefs.find((ref) => ref.id === condition.ref);
+      const mappings = mappingsForCanonRef(projectRefs.project, canonRef);
+      if (condition.type === "canonProperty") {
+        const property = typeof condition.property === "string" ? condition.property : "";
+        if (!mappings.some((mapping) => mapping.comparableProperties?.includes(property))) {
+          findings.push(
+            finding("invalid_condition", "error", `${context} uses canon property "${property}" that is not enabled by the Pathbranching role mapping.`, {
+              id: ownerId,
+              ref: property,
+            }),
+          );
+        }
+      }
+      if (condition.type === "canonState") {
+        const state = typeof condition.state === "string" ? condition.state : "";
+        if (!mappings.some((mapping) => mapping.states?.includes(state))) {
+          findings.push(
+            finding("invalid_condition", "error", `${context} uses canon state "${state}" that is not enabled by the Pathbranching role mapping.`, {
+              id: ownerId,
+              ref: state,
+            }),
+          );
+        }
+      }
       return;
     }
 
@@ -153,6 +182,7 @@ function validateConsequenceCanonRefs(
 }
 
 type ProjectReferenceSets = {
+  project: BranchingProject;
   sequenceIds: Set<string>;
   branchIds: Set<string>;
   eventIds: Set<string>;
@@ -184,12 +214,39 @@ function validateRuleSets(
   });
 }
 
+function validateRuleSetBindings(
+  findings: ValidationFinding[],
+  rules: Set<string>,
+  ownerId: string,
+  context: string,
+  kind: RuleBindingOwnerKind,
+  bindings: RuleSetBinding[] | undefined,
+) {
+  const allowed = ruleSetPhasesByOwner[kind];
+  bindings?.forEach((binding) => {
+    if (!rules.has(binding.ruleId)) {
+      findings.push(finding("missing_rule_set", "error", `${context} references missing rule set "${binding.ruleId}".`, { id: ownerId, ref: binding.ruleId }));
+    }
+    if (!allowed.includes(binding.phase)) {
+      findings.push(finding("invalid_rule_set_binding", "error", `${context} uses unsupported rule phase "${binding.phase}".`, { id: ownerId, ref: binding.id }));
+    }
+  });
+}
+
 export function validateProject(project: BranchingProject): ValidationFinding[] {
   const findings: ValidationFinding[] = [];
   const sequenceIds = new Set(project.sequences.map((sequence) => sequence.id));
   const branchIds = new Set(project.branches.map((branch) => branch.id));
   const eventIds = new Set(project.events.map((event) => event.id));
   const scriptIds = new Set(project.scripts.map((script) => script.id));
+  const scriptDocumentIds = new Set((project.scriptDocuments ?? []).map((script) => script.id));
+  const scriptBlocks = new Map<string, ScriptBlock>(
+    (project.scriptDocuments ?? []).flatMap((script) =>
+      script.blocks.map((block) => [`${script.id}:${block.id}`, block] as const),
+    ),
+  );
+  const referencedScriptBlocks = new Set<string>();
+  const scriptBlockUseCounts = new Map<string, number>();
   const canonIds = new Set(project.canonRefs.map((ref) => ref.id));
   const dataClassIds = new Set((project.dataClasses ?? []).map((dataClass) => dataClass.id));
   const dataObjectIds = new Set((project.projectDataObjects ?? []).map((dataObject) => dataObject.id));
@@ -204,6 +261,7 @@ export function validateProject(project: BranchingProject): ValidationFinding[] 
     });
   });
   const projectRefs: ProjectReferenceSets = {
+    project,
     sequenceIds,
     branchIds,
     eventIds,
@@ -211,6 +269,15 @@ export function validateProject(project: BranchingProject): ValidationFinding[] 
     outcomeIds,
     dataObjectIds,
   };
+  const libraryRules = new Set((project.ruleLibrary?.rules ?? []).map((rule) => rule.id));
+  (project.ruleLibrary?.rules ?? []).forEach((rule) => {
+    if (!rule.when) {
+      findings.push(finding("invalid_rule_set", "error", `Rule set "${rule.id}" is missing a when condition.`, { id: rule.id }));
+    }
+    validateConditionRefs(findings, projectRefs, canonIds, rule.id, `Rule set "${rule.id}"`, rule.when);
+    validateConsequenceCanonRefs(findings, projectRefs, canonIds, rule.id, `Rule set "${rule.id}" then`, rule.then);
+    validateConsequenceCanonRefs(findings, projectRefs, canonIds, rule.id, `Rule set "${rule.id}" else`, rule.else);
+  });
 
   [
     ...findDuplicates(project.sequences.map((sequence) => sequence.id)),
@@ -218,6 +285,8 @@ export function validateProject(project: BranchingProject): ValidationFinding[] 
     ...findDuplicates(project.events.map((event) => event.id)),
     ...findDuplicates(project.events.flatMap((event) => (event.dialogues ?? []).map((dialogue) => dialogue.id))),
     ...findDuplicates(project.scripts.map((script) => script.id)),
+    ...findDuplicates((project.scriptDocuments ?? []).map((script) => script.id)),
+    ...findDuplicates((project.scriptDocuments ?? []).flatMap((script) => script.blocks.map((block) => `${script.id}:${block.id}`))),
     ...findDuplicates(project.canonRefs.map((ref) => ref.id)),
     ...findDuplicates((project.dataClasses ?? []).map((dataClass) => dataClass.id)),
     ...findDuplicates((project.projectDataObjects ?? []).map((dataObject) => dataObject.id)),
@@ -419,7 +488,7 @@ export function validateProject(project: BranchingProject): ValidationFinding[] 
           canonIds,
           outcome.id,
           `Outcome "${outcome.id}" in decision "${decision.id}" condition`,
-          outcome.conditions,
+          outcome.availability ?? outcome.conditions,
         );
         validateConsequenceCanonRefs(
           findings,
@@ -446,6 +515,34 @@ export function validateProject(project: BranchingProject): ValidationFinding[] 
         dialogue.availability,
       );
       validateRuleSets(findings, projectRefs, canonIds, dialogue.id, `Dialogue "${dialogue.id}"`, dialogue.ruleSets);
+      (dialogue.beats ?? []).forEach((beat) => {
+        const blockKey = `${beat.blockRef.scriptId}:${beat.blockRef.blockId}`;
+        referencedScriptBlocks.add(blockKey);
+        scriptBlockUseCounts.set(blockKey, (scriptBlockUseCounts.get(blockKey) ?? 0) + 1);
+        const block = scriptBlocks.get(blockKey);
+        if (!scriptDocumentIds.has(beat.blockRef.scriptId) || !block) {
+          findings.push(
+            finding("missing_script_block", "error", `Dialogue beat "${beat.id}" references missing script block "${blockKey}".`, {
+              id: beat.id,
+              ref: blockKey,
+            }),
+          );
+        }
+        const speakerRef = block?.speakerRef;
+        if (speakerRef) {
+          const canonRef = project.canonRefs.find((ref) => ref.id === speakerRef);
+          if (!canonRef || !canonRefHasRole(project, canonRef, "speaker")) {
+            findings.push(
+              finding("invalid_speaker_role", "error", `Dialogue beat "${beat.id}" uses "${speakerRef}" as speaker, but its WorldNotion type is not mapped to the speaker role.`, {
+                id: beat.id,
+                ref: speakerRef,
+              }),
+            );
+          }
+        }
+        validateConditionRefs(findings, projectRefs, canonIds, beat.id, `Dialogue beat "${beat.id}" display condition`, beat.displayCondition);
+        validateRuleSets(findings, projectRefs, canonIds, beat.id, `Dialogue beat "${beat.id}"`, beat.ruleSets);
+      });
     });
 
     const boundaryNodeIds = new Set([
@@ -473,10 +570,36 @@ export function validateProject(project: BranchingProject): ValidationFinding[] 
       }
     });
 
+    const internalNodeIds = new Set([
+      event.id,
+      ...(event.childEventIds ?? []),
+      ...(event.decisions ?? []).flatMap((decision) => [
+        `decision:${event.id}:${decision.id}`,
+        ...decision.outcomes.map((outcome) => `outcome:${event.id}:${decision.id}:${outcome.id}`),
+      ]),
+      ...(event.dialogues ?? []).flatMap((dialogue) => [
+        `dialogue:${event.id}:${dialogue.id}`,
+        ...(dialogue.beats ?? []).map((beat) => `beat:${event.id}:${dialogue.id}:${beat.id}`),
+      ]),
+    ]);
+    const parentInternalNodeIds = event.parentEventId
+      ? new Set([
+          ...(project.events.find((candidate) => candidate.id === event.parentEventId)?.childEventIds ?? []),
+        ])
+      : new Set<string>();
+    const transitionGroups = new Map<string, NonNullable<typeof event.transitions>>();
     event.transitions?.forEach((transition) => {
-      if (!eventIds.has(transition.to) && !scriptIds.has(transition.to)) {
+      transitionGroups.set(transition.from, [...(transitionGroups.get(transition.from) ?? []), transition]);
+      const validTarget =
+        eventIds.has(transition.to) ||
+        scriptIds.has(transition.to) ||
+        internalNodeIds.has(transition.to) ||
+        parentInternalNodeIds.has(transition.to) ||
+        transition.to.startsWith(`boundary:${event.id}:`) ||
+        transition.to.startsWith(`dialogue-boundary:${event.id}:`);
+      if (!validTarget) {
         findings.push(
-          finding("broken_transition", "error", `Transition "${transition.id}" targets missing node "${transition.to}".`, {
+          finding("invalid_scope_transition", "error", `Transition "${transition.id}" targets missing or out-of-scope node "${transition.to}".`, {
             id: transition.id,
             ref: transition.to,
           }),
@@ -499,6 +622,39 @@ export function validateProject(project: BranchingProject): ValidationFinding[] 
         transition.consequences,
       );
     });
+    transitionGroups.forEach((transitions, sourceId) => {
+      const ordered = [...transitions].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+      const fallbacks = transitions.filter((transition) => transition.mode === "fallback");
+      if (fallbacks.length > 1) {
+        findings.push(finding("duplicate_fallback", "error", `Node "${sourceId}" has more than one fallback transition.`, { id: sourceId }));
+      }
+      const orders = transitions.map((transition) => transition.order ?? 0);
+      if (new Set(orders).size !== orders.length || orders.some((order) => order < 0)) {
+        findings.push(finding("invalid_transition_order", "error", `Node "${sourceId}" has duplicate or invalid transition order values.`, { id: sourceId }));
+      }
+      const unconditionalIndex = ordered.findIndex(
+        (transition) => transition.mode !== "fallback" && !transition.conditions,
+      );
+      if (unconditionalIndex >= 0 && unconditionalIndex < ordered.length - 1) {
+        findings.push(finding("invalid_transition_order", "warning", `Node "${sourceId}" has an unconditional route before later transitions; those routes are unreachable.`, { id: sourceId }));
+      }
+      if (
+        transitions.some((transition) => transition.conditions) &&
+        !fallbacks.length &&
+        !transitions.some((transition) => transition.mode !== "fallback" && !transition.conditions)
+      ) {
+        findings.push(finding("no_valid_transition", "error", `Non-terminal node "${sourceId}" can stop when no conditional transition matches. Add an Else fallback.`, { id: sourceId }));
+      }
+    });
+  });
+
+  scriptBlocks.forEach((_block, blockKey) => {
+    if (!referencedScriptBlocks.has(blockKey)) {
+      findings.push(finding("orphan_script_block", "warning", `Script block "${blockKey}" is not used by any dialogue beat.`, { ref: blockKey }));
+    }
+    if ((scriptBlockUseCounts.get(blockKey) ?? 0) > 1) {
+      findings.push(finding("duplicate_script_binding", "warning", `Script block "${blockKey}" is bound to multiple dialogue beats; edits will intentionally update every use.`, { ref: blockKey }));
+    }
   });
 
   project.branches.forEach((branch) => {
@@ -617,6 +773,21 @@ export function validateProject(project: BranchingProject): ValidationFinding[] 
       );
     }
   });
+
+  project.sequences.forEach((item) => validateRuleSetBindings(findings, libraryRules, item.id, `Sequence "${item.id}"`, "sequence", item.ruleSetBindings));
+  project.branches.forEach((item) => validateRuleSetBindings(findings, libraryRules, item.id, `Branch "${item.id}"`, "branch", item.ruleSetBindings));
+  project.events.forEach((event) => {
+    validateRuleSetBindings(findings, libraryRules, event.id, `Event "${event.id}"`, "event", event.ruleSetBindings);
+    event.decisions?.forEach((decision) => {
+      validateRuleSetBindings(findings, libraryRules, decision.id, `Decision "${decision.id}"`, "decision", decision.ruleSetBindings);
+      decision.outcomes.forEach((outcome) => validateRuleSetBindings(findings, libraryRules, outcome.id, `Outcome "${outcome.id}"`, "outcome", outcome.ruleSetBindings));
+    });
+    event.dialogues?.forEach((dialogue) => {
+      validateRuleSetBindings(findings, libraryRules, dialogue.id, `Dialogue "${dialogue.id}"`, "dialogue", dialogue.ruleSetBindings);
+      dialogue.beats?.forEach((beat) => validateRuleSetBindings(findings, libraryRules, beat.id, `Dialogue beat "${beat.id}"`, "beat", beat.ruleSetBindings));
+    });
+  });
+  (project.projectDataObjects ?? []).forEach((item) => validateRuleSetBindings(findings, libraryRules, item.id, `Data object "${item.id}"`, "dataObject", item.ruleSetBindings));
 
   return findings;
 }

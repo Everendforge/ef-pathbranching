@@ -249,7 +249,7 @@ function buildEventPathNode(project: BranchingProject, event: EventNode, scope: 
 
   const children: PathTreeNode[] = [
     ...childEvents.map((child) => buildEventPathNode(project, child, nestedScope, nextVisited)),
-    ...(event.decisions ?? []).map((decision): PathTreeNode => ({
+    ...(event.decisions ?? []).filter((decision) => !decision.dialogueId).map((decision): PathTreeNode => ({
       id: `decision:${event.id}:${decision.id}`,
       kind: "decision",
       label: decision.name,
@@ -259,16 +259,29 @@ function buildEventPathNode(project: BranchingProject, event: EventNode, scope: 
       selectId: `decision:${event.id}:${decision.id}`,
       children: [],
     })),
-    ...(event.dialogues ?? []).map((dialogue): PathTreeNode => ({
-      id: `dialogue:${event.id}:${dialogue.id}`,
-      kind: "dialogue",
-      label: dialogue.title,
-      subtitle: dialogue.speakerRef,
-      badges: [],
-      scope: nestedScope,
-      selectId: `dialogue:${event.id}:${dialogue.id}`,
-      children: [],
-    })),
+    ...(event.dialogues ?? []).map((dialogue): PathTreeNode => {
+      const dialogueScope: CanvasScope = { kind: "dialogue", id: dialogue.id, eventId: event.id };
+      const dialogueDecisions = (event.decisions ?? []).filter((decision) => decision.dialogueId === dialogue.id);
+      return {
+        id: `dialogue:${event.id}:${dialogue.id}`,
+        kind: "dialogue",
+        label: dialogue.title,
+        subtitle: `${dialogue.beats?.length ?? 0} beats`,
+        badges: dialogueDecisions.length ? [`${dialogueDecisions.length} decisions`] : [],
+        scope: dialogueScope,
+        selectId: `dialogue-boundary:${event.id}:${dialogue.id}:input`,
+        children: dialogueDecisions.map((decision) => ({
+          id: `decision:${event.id}:${decision.id}`,
+          kind: "decision" as const,
+          label: decision.name,
+          subtitle: `${decision.outcomes.length} outcomes`,
+          badges: [decision.type],
+          scope: dialogueScope,
+          selectId: `decision:${event.id}:${decision.id}`,
+          children: [],
+        })),
+      };
+    }),
   ];
 
   return {

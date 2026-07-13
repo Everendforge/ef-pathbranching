@@ -23,6 +23,10 @@ function StoryNode({ data, selected }: NodeProps<StoryCanvasNode>) {
         ? "output"
         : undefined;
   const focusClass = typeof nodeData.focusState === "string" ? ` focus-${nodeData.focusState}` : "";
+  const inspectorFocusClass =
+    typeof nodeData.inspectorState === "string"
+      ? ` inspector-${nodeData.inspectorState}`
+      : "";
   const canReceive = boundaryDirection
     ? boundaryDirection === "output"
     : nodeData.kind !== "start" && nodeData.kind !== "sequence" && nodeData.kind !== "missingRef";
@@ -43,7 +47,7 @@ function StoryNode({ data, selected }: NodeProps<StoryCanvasNode>) {
 
   if (nodeData.isContainer) {
     return (
-      <div className={`story-node branch-container${focusClass} ${selected ? "selected" : ""}`} style={colorStyle}>
+      <div className={`story-node branch-container${focusClass}${inspectorFocusClass} ${selected ? "selected" : ""}`} style={colorStyle}>
         {canReceive ? <Handle type="target" position={Position.Left} /> : null}
         <div className="node-kind">{nodeData.kind}</div>
         <div className="node-title">{nodeData.title}</div>
@@ -62,7 +66,7 @@ function StoryNode({ data, selected }: NodeProps<StoryCanvasNode>) {
 
   if (nodeData.kind === "start") {
     return (
-      <div className={`story-node start${focusClass}${selected ? " selected" : ""}`} style={colorStyle}>
+      <div className={`story-node start${focusClass}${inspectorFocusClass}${selected ? " selected" : ""}`} style={colorStyle}>
         <span className="node-start-icon" aria-hidden="true" />
         <div className="node-start-title">{nodeData.title}</div>
         {canSource ? <Handle type="source" position={Position.Right} /> : null}
@@ -72,7 +76,7 @@ function StoryNode({ data, selected }: NodeProps<StoryCanvasNode>) {
 
   return (
     <div
-      className={`story-node ${nodeData.kind}${focusClass}${isFinalEvent ? " terminal" : ""}${selected ? " selected" : ""}`}
+      className={`story-node ${nodeData.kind}${focusClass}${inspectorFocusClass}${isFinalEvent ? " terminal" : ""}${selected ? " selected" : ""}`}
       style={colorStyle}
     >
       {canReceive ? <Handle type="target" position={boundaryDirection === "output" ? Position.Left : Position.Left} /> : null}

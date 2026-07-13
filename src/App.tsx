@@ -5,6 +5,7 @@ import {
   MiniMap,
   ReactFlow,
   ReactFlowProvider,
+  SelectionMode,
   applyEdgeChanges,
   applyNodeChanges,
   type Connection,
@@ -22,13 +23,14 @@ import {
 import { changeSetPath, createCanonChangeSet } from "./canonChanges.js";
 import { CanonWorkingCopyEditor } from "./components/CanonWorkingCopyEditor.js";
 import { DataDrawer } from "./components/DataDrawer.js";
-import { ExplorerPanel } from "./components/ExplorerPanel.js";
 import { ReferencePicker } from "./components/ReferencePicker.js";
 import { AssetsPanel } from "./components/AssetsPanel.js";
 import { LogicPanel } from "./components/LogicPanel.js";
+import { PlayerPanel } from "./components/PlayerPanel.js";
 import { ExportPanel } from "./components/ExportPanel.js";
 import { ConnectPanel } from "./components/ConnectPanel.js";
 import { MarkdownEditorDock } from "./components/MarkdownEditorDock.js";
+import { editableCanvasEdgeTypes } from "./components/EditableCanvasEdge.js";
 import { nodeTypes } from "./components/StoryNode.js";
 import { Topbar } from "./components/Topbar.js";
 import { UniverseIconFrame } from "./components/UniverseIconFrame.js";
@@ -45,14 +47,14 @@ import {
 } from "./explorerSchema.js";
 import {
   AlertTriangle,
-  Bold,
+  BookOpen,
   Boxes,
   CheckCircle2,
   ChevronDown,
   ChevronRight,
   ChevronUp,
+  Castle,
   CircleDot,
-  Code,
   Database,
   Download,
   Eye,
@@ -60,23 +62,21 @@ import {
   FilePlus2,
   FolderOpen,
   Focus,
+  Globe2,
   GitBranch,
-  Heading1,
   Home,
-  Italic,
   Link,
-  List,
-  ListOrdered,
   Maximize2,
   MessageSquare,
   Minimize2,
   Moon,
   OctagonAlert,
-  Quote,
   SearchCheck,
   Settings,
   Split,
   Sun,
+  Sparkles,
+  Upload,
   Pencil,
   Power,
   Trash2,
@@ -109,6 +109,7 @@ import type {
   Consequence,
   DataFieldDefinition,
   Decision,
+  DialogueBeat,
   DialogueNode,
   EventCategoryDefinition,
   EventNode,
@@ -116,13 +117,19 @@ import type {
   LocalExplorerEntity,
   LocalExplorerProperty,
   LocalExplorerType,
+  LogicPropertyOverride,
   Outcome,
   ProjectDataObject,
+  RuleLibraryRule,
+  RuleSetBinding,
+  RuleSetPhase,
   RuleSet,
+  ScriptBlock,
   Sequence,
   Transition,
   ValidationFinding,
 } from "./domain.js";
+import { defaultRuleSetPhase, ruleSetPhasesByOwner, type RuleBindingOwnerKind } from "./ruleLibrary.js";
 import type {
   AppView,
   CanvasMode,
@@ -140,10 +147,8 @@ import {
 import {
   applyEventDraftToProject,
   createEventDraftFromSelection,
-  setEventDraftMode,
   updateEventDraft,
   type EventDraft,
-  type EventDraftMode,
 } from "./eventDraft.js";
 import {
   DEFAULT_EVENT_INSPECTOR_STATE,
@@ -169,6 +174,7 @@ import {
   consequenceLabel,
   isConditionSet,
 } from "./logic.js";
+import { canonRefHasRole } from "./integrationConfig.js";
 import * as mutations from "./projectMutations.js";
 import {
   exportRuntimeDialog,
@@ -295,10 +301,10 @@ function viewportBounds(): FloatingBounds {
 }
 
 const WORKSPACE_PANEL_LABELS: Record<WorkspacePanelId, string> = {
-  explorer: "Explorer",
-  outline: "Story Outline",
+  outline: "Stories",
   assets: "Assets",
   logic: "Logic",
+  player: "Player",
   export: "Export",
   connect: "Connect",
 };
@@ -883,12 +889,12 @@ function canvasBreadcrumb(
   const crumbs: Array<{ scope: CanvasScope; label: string }> = sequenceScope
     ? [{ scope: sequenceScope, label: sequence?.name ?? "Sequence" }]
     : [];
-  if (scope?.kind !== "event") {
+  if (scope?.kind !== "event" && scope?.kind !== "dialogue") {
     return crumbs;
   }
 
   const eventChain: EventNode[] = [];
-  let cursor = findEvent(project, scope.id);
+  let cursor = findEvent(project, scope.kind === "dialogue" ? scope.eventId : scope.id);
   const seen = new Set<string>();
   while (cursor && !seen.has(cursor.id)) {
     seen.add(cursor.id);
@@ -904,6 +910,11 @@ function canvasBreadcrumb(
       label: eventNode.name,
     });
   });
+  if (scope.kind === "dialogue") {
+    const owner = findEvent(project, scope.eventId);
+    const dialogue = owner?.dialogues?.find((item) => item.id === scope.id);
+    crumbs.push({ scope, label: dialogue?.title ?? "Dialogue" });
+  }
   return crumbs;
 }
 
@@ -958,11 +969,13 @@ function LogicSection({
   availability,
   consequences,
   ruleSets,
+  ruleSetBindings,
 }: {
   title?: string;
   availability?: ConditionInput;
   consequences?: Consequence[];
   ruleSets?: RuleSet[];
+  ruleSetBindings?: RuleSetBinding[];
 }) {
   const availabilityCount = conditionCount(availability);
 
@@ -975,7 +988,7 @@ function LogicSection({
           <span>
             {availabilityCount > 0
               ? conditionSummary(availability)
-              : "Always available."}
+              : "No conditions (always valid)."}
           </span>
         </div>
         <div className="mini-card">
@@ -985,8 +998,8 @@ function LogicSection({
         <div className="mini-card">
           <strong>RuleSets</strong>
           <span>
-            {ruleSets?.length
-              ? `${ruleSets.length} if/then/else rule(s)`
+            {ruleSetBindings?.length || ruleSets?.length
+              ? `${ruleSetBindings?.length ?? ruleSets?.length} shared rule(s)`
               : "No advanced rules."}
           </span>
         </div>
@@ -1066,7 +1079,7 @@ function defaultCanonCondition(canonRefs: string[]) {
 }
 
 function BasicConditionEditor({
-  label = "Availability",
+  label = "Conditions",
   value,
   canonRefs,
   dataObjects,
@@ -1101,6 +1114,22 @@ function BasicConditionEditor({
                 operator: "==",
                 value: true,
               });
+            } else if (nextType === "canonProperty") {
+              onChange({
+                type: "canonProperty",
+                ref: canonRefs[0] ?? "",
+                property: "affiliation",
+                operator: "==",
+                value: "",
+              });
+            } else if (nextType === "canonState") {
+              onChange({
+                type: "canonState",
+                ref: canonRefs[0] ?? "",
+                state: "known",
+                operator: "==",
+                value: true,
+              });
             } else if (nextType === "dataObjectExists") {
               onChange({
                 type: "dataObjectExists",
@@ -1119,6 +1148,8 @@ function BasicConditionEditor({
         >
           <option value="none">always available</option>
           <option value="canonEntryUnlocked">canon unlocked</option>
+          <option value="canonProperty">canon property</option>
+          <option value="canonState">canon runtime state</option>
           <option value="variable">variable check</option>
           <option value="dataObjectExists">data object exists</option>
           <option value="visited">visited target</option>
@@ -1194,6 +1225,112 @@ function BasicConditionEditor({
             ))}
           </select>
         </label>
+      ) : null}
+
+      {type === "canonProperty" ? (
+        <div className="logic-grid">
+          <label className="field-label">
+            Canon Ref
+            <select
+              value={String(condition?.ref ?? "")}
+              onChange={(event) =>
+                onChange({
+                  type: "canonProperty",
+                  ref: event.target.value,
+                  property: String(condition?.property ?? "affiliation"),
+                  operator: "==",
+                  value: condition?.value ?? "",
+                })
+              }
+            >
+              <option value="">missing ref</option>
+              {canonRefs.map((ref) => <option key={ref} value={ref}>{ref}</option>)}
+            </select>
+          </label>
+          <label className="field-label">
+            Property
+            <input
+              value={String(condition?.property ?? "")}
+              onChange={(event) =>
+                onChange({
+                  type: "canonProperty",
+                  ref: String(condition?.ref ?? ""),
+                  property: event.target.value,
+                  operator: "==",
+                  value: condition?.value ?? "",
+                })
+              }
+            />
+          </label>
+          <label className="field-label">
+            Value
+            <input
+              value={String(condition?.value ?? "")}
+              onChange={(event) =>
+                onChange({
+                  type: "canonProperty",
+                  ref: String(condition?.ref ?? ""),
+                  property: String(condition?.property ?? "affiliation"),
+                  operator: "==",
+                  value: event.target.value,
+                })
+              }
+            />
+          </label>
+        </div>
+      ) : null}
+
+      {type === "canonState" ? (
+        <div className="logic-grid">
+          <label className="field-label">
+            Canon Ref
+            <select
+              value={String(condition?.ref ?? "")}
+              onChange={(event) =>
+                onChange({
+                  type: "canonState",
+                  ref: event.target.value,
+                  state: String(condition?.state ?? "known"),
+                  operator: "==",
+                  value: condition?.value ?? true,
+                })
+              }
+            >
+              <option value="">missing ref</option>
+              {canonRefs.map((ref) => <option key={ref} value={ref}>{ref}</option>)}
+            </select>
+          </label>
+          <label className="field-label">
+            State
+            <input
+              value={String(condition?.state ?? "")}
+              onChange={(event) =>
+                onChange({
+                  type: "canonState",
+                  ref: String(condition?.ref ?? ""),
+                  state: event.target.value,
+                  operator: "==",
+                  value: condition?.value ?? true,
+                })
+              }
+            />
+          </label>
+          <label className="field-label">
+            Value
+            <input
+              value={String(condition?.value ?? "")}
+              onChange={(event) =>
+                onChange({
+                  type: "canonState",
+                  ref: String(condition?.ref ?? ""),
+                  state: String(condition?.state ?? "known"),
+                  operator: "==",
+                  value: event.target.value,
+                })
+              }
+            />
+          </label>
+        </div>
       ) : null}
 
       {type === "variable" ? (
@@ -1468,101 +1605,47 @@ function ConsequenceEditor({
   );
 }
 
-function RuleSetEditor({
-  value,
-  canonRefs,
-  dataObjects,
-  onChange,
-}: {
-  value?: RuleSet[];
-  canonRefs: string[];
-  dataObjects: ProjectDataObject[];
-  onChange: (value: RuleSet[] | undefined) => void;
+function RuleSetBindingEditor({ project, value, ownerKind, onChange, onOpenRule }: {
+  project: BranchingProject; value?: RuleSetBinding[]; ownerKind: RuleBindingOwnerKind;
+  onChange: (value: RuleSetBinding[] | undefined) => void; onOpenRule: (id: string) => void;
 }) {
-  const ruleSets = value ?? [];
-  const update = (index: number, ruleSet: RuleSet) => {
-    onChange(
-      ruleSets.map((item, itemIndex) => (itemIndex === index ? ruleSet : item)),
-    );
-  };
+  const bindings = [...(value ?? [])].sort((left, right) => left.order - right.order);
+  const rules = project.ruleLibrary?.rules ?? [];
+  const phases = ruleSetPhasesByOwner[ownerKind];
+  const update = (index: number, changes: Partial<RuleSetBinding>) => onChange(bindings.map((binding, position) => position === index ? { ...binding, ...changes } : binding).map((binding, order) => ({ ...binding, order })));
+  return <section className="inspector-section"><h2>Rulesets</h2><p className="inspector-connection-hint">Shared actions from Logic. They never select a route; Route Gate owns navigation.</p>
+    <div className="stack-list">{bindings.map((binding, index) => <div className="mini-card" key={binding.id}>
+      <label className="field-label">Rule<select value={binding.ruleId} onChange={(event) => update(index, { ruleId: event.target.value })}><option value="">Select rule…</option>{rules.map((rule) => <option value={rule.id} key={rule.id}>{rule.label ?? rule.id}</option>)}</select></label>
+      <label className="field-label">Phase<select value={binding.phase} onChange={(event) => update(index, { phase: event.target.value as RuleSetPhase })}>{phases.map((phase) => <option key={phase} value={phase}>{phase}</option>)}</select></label>
+      <div className="inspector-actions"><button type="button" disabled={index === 0} onClick={() => onChange(bindings.map((item, position) => position === index ? { ...item, order: index - 1 } : position === index - 1 ? { ...item, order: index } : item))}>Move up</button><button type="button" disabled={index === bindings.length - 1} onClick={() => onChange(bindings.map((item, position) => position === index ? { ...item, order: index + 1 } : position === index + 1 ? { ...item, order: index } : item))}>Move down</button><button type="button" onClick={() => onOpenRule(binding.ruleId)}>Open in Logic</button><button type="button" className="danger" onClick={() => onChange(bindings.filter((_, position) => position !== index).map((item, order) => ({ ...item, order })))}>Remove</button></div>
+    </div>)}</div>
+    <div className="inspector-actions"><button type="button" disabled={!rules.length} onClick={() => onChange([...bindings, { id: `rule-binding:${crypto.randomUUID()}`, ruleId: rules[0]?.id ?? "", phase: defaultRuleSetPhase[ownerKind], order: bindings.length }])}>Add shared rule</button></div>
+  </section>;
+}
 
-  return (
-    <section className="inspector-section">
-      <h2>RuleSets</h2>
-      <div className="stack-list">
-        {ruleSets.map((ruleSet, index) => (
-          <div className="mini-card" key={ruleSet.id}>
-            <label className="field-label">
-              Label
-              <input
-                value={ruleSet.label ?? ruleSet.id}
-                onChange={(event) =>
-                  update(index, { ...ruleSet, label: event.target.value })
-                }
-              />
-            </label>
-            <BasicConditionEditor
-              label="When"
-              value={ruleSet.when}
-              canonRefs={canonRefs}
-              dataObjects={dataObjects}
-              onChange={(when) =>
-                update(index, { ...ruleSet, when: when ?? { all: [] } })
-              }
-            />
-            <ConsequenceEditor
-              title="Then"
-              value={ruleSet.then}
-              canonRefs={canonRefs}
-              dataObjects={dataObjects}
-              onChange={(then) =>
-                update(index, { ...ruleSet, then: then ?? [] })
-              }
-            />
-            <ConsequenceEditor
-              title="Else"
-              value={ruleSet.else}
-              canonRefs={canonRefs}
-              dataObjects={dataObjects}
-              onChange={(elseConsequences) =>
-                update(index, { ...ruleSet, else: elseConsequences })
-              }
-            />
-            <button
-              type="button"
-              className="danger"
-              onClick={() =>
-                onChange(ruleSets.filter((_, itemIndex) => itemIndex !== index))
-              }
-            >
-              Remove RuleSet
-            </button>
-          </div>
-        ))}
-        {ruleSets.length === 0 ? (
-          <span className="empty-line">No rule sets yet.</span>
-        ) : null}
-      </div>
-      <div className="inspector-actions">
-        <button
-          type="button"
-          onClick={() =>
-            onChange([
-              ...ruleSets,
-              {
-                id: `rule:${ruleSets.length + 1}`,
-                label: "New Rule",
-                when: { type: "canonEntryUnlocked", ref: canonRefs[0] ?? "" },
-                then: [],
-              },
-            ])
-          }
-        >
-          Add RuleSet
-        </button>
-      </div>
-    </section>
-  );
+function LocalRuleSetEditor({ value, canonRefs, dataObjects, onChange }: { value?: RuleSet[]; canonRefs: string[]; dataObjects: ProjectDataObject[]; onChange: (value: RuleSet[] | undefined) => void }) {
+  const rules = value ?? [];
+  return <section className="inspector-section"><h2>Rulesets</h2><p className="inspector-connection-hint">Local if/then/else actions for this item. Route Gate remains responsible for navigation.</p>
+    <div className="stack-list">{rules.map((rule, index) => <div className="mini-card" key={rule.id}>
+      <label className="field-label">Name<input value={rule.label ?? rule.id} onChange={(event) => onChange(rules.map((item, position) => position === index ? { ...item, label: event.target.value } : item))} /></label>
+      <BasicConditionEditor label="If" value={rule.when} canonRefs={canonRefs} dataObjects={dataObjects} onChange={(when) => onChange(rules.map((item, position) => position === index ? { ...item, when: when ?? { all: [] } } : item))} />
+      <ConsequenceEditor title="Then" value={rule.then} canonRefs={canonRefs} dataObjects={dataObjects} onChange={(then) => onChange(rules.map((item, position) => position === index ? { ...item, then: then ?? [] } : item))} />
+      <ConsequenceEditor title="Else" value={rule.else} canonRefs={canonRefs} dataObjects={dataObjects} onChange={(elseConsequences) => onChange(rules.map((item, position) => position === index ? { ...item, else: elseConsequences } : item))} />
+      <button type="button" className="danger" onClick={() => onChange(rules.filter((_, position) => position !== index))}>Remove Rule</button>
+    </div>)}</div>
+    <div className="inspector-actions"><button type="button" onClick={() => onChange([...rules, { id: `rule:${crypto.randomUUID()}`, label: "New local rule", when: { all: [] }, then: [] }])}>Add local rule</button></div>
+  </section>;
+}
+
+function RuleLibraryEditor({ rule, canonRefs, dataObjects, onChange }: { rule?: RuleLibraryRule; canonRefs: string[]; dataObjects: ProjectDataObject[]; onChange: (rule: RuleLibraryRule) => void }) {
+  if (!rule) return null;
+  return <section className="inspector-section"><h2>Rule editor</h2>
+    <label className="field-label">Name<input value={rule.label ?? ""} onChange={(event) => onChange({ ...rule, label: event.target.value })} /></label>
+    <label className="field-label">Tags<input value={(rule.tags ?? []).join(", ")} placeholder="combat, quest" onChange={(event) => onChange({ ...rule, tags: event.target.value.split(",").map((tag) => tag.trim()).filter(Boolean) })} /></label>
+    <BasicConditionEditor label="When" value={rule.when} canonRefs={canonRefs} dataObjects={dataObjects} onChange={(when) => onChange({ ...rule, when: when ?? { all: [] } })} />
+    <ConsequenceEditor title="Then" value={rule.then} canonRefs={canonRefs} dataObjects={dataObjects} onChange={(then) => onChange({ ...rule, then: then ?? [] })} />
+    <ConsequenceEditor title="Else" value={rule.else} canonRefs={canonRefs} dataObjects={dataObjects} onChange={(elseConsequences) => onChange({ ...rule, else: elseConsequences })} />
+  </section>;
 }
 
 function CanonRefsPicker({
@@ -1827,9 +1910,7 @@ function HomeDashboard({
               className="active-project-card"
               onClick={onEnterWorkspace}
             >
-              <span className="recent-icon">
-                <GitBranch size={17} />
-              </span>
+              <UniverseIconFrame profile={fileState.universeProfile} size={34} />
               <span>
                 <strong>
                   {fileState.universeProfile?.name ??
@@ -2313,6 +2394,7 @@ function PathBranchingSettingsModal({
   onOpenUniverse,
   onOpenRecentUniverse,
   onRemoveRecentUniverse,
+  onSaveUniverseProfile,
   onClose,
   suiteSettings,
 }: {
@@ -2337,6 +2419,7 @@ function PathBranchingSettingsModal({
   onOpenUniverse: () => void;
   onOpenRecentUniverse: (path: string) => void;
   onRemoveRecentUniverse: (path: string) => void;
+  onSaveUniverseProfile: (profile: UniverseProfile) => Promise<void>;
   onClose: () => void;
   suiteSettings?: {
     primaryFont: string;
@@ -2355,6 +2438,18 @@ function PathBranchingSettingsModal({
   ).length;
   const universeName = universeDisplayName(project, fileState);
   const universePath = universeDisplayPath(fileState);
+  const [profileDraft, setProfileDraft] = useState<UniverseProfile>(() => ({
+    name: fileState.universeProfile?.name ?? universeName,
+    icon: fileState.universeProfile?.icon ?? { type: "preset", value: "book" },
+  }));
+  const [profileSaving, setProfileSaving] = useState(false);
+
+  useEffect(() => {
+    setProfileDraft({
+      name: fileState.universeProfile?.name ?? universeName,
+      icon: fileState.universeProfile?.icon ?? { type: "preset", value: "book" },
+    });
+  }, [fileState.universeProfile, universeName]);
 
   return (
     <div
@@ -2500,37 +2595,21 @@ function PathBranchingSettingsModal({
                     </p>
                   </div>
                 </div>
-                <div className="settings-grid">
-                  <label>
-                    <span>Universe metadata</span>
-                    <input
-                      value={
-                        fileState.universeProfile
-                          ? ".everend/universe.json"
-                          : "No WorldNotion metadata found"
-                      }
-                      readOnly
-                    />
-                  </label>
-                  <label>
-                    <span>Universe profile</span>
-                    <input
-                      value={
-                        fileState.universeProfile?.name ?? "Unnamed universe"
-                      }
-                      readOnly
-                    />
-                  </label>
-                  <label>
-                    <span>Taxonomy version</span>
-                    <input
-                      value={
-                        fileState.universeProfile?.taxonomyVersion ??
-                        "Not specified"
-                      }
-                      readOnly
-                    />
-                  </label>
+                <div className="universe-profile-editor">
+                  <UniverseIconFrame profile={profileDraft} size={48} />
+                  <div className="universe-profile-fields">
+                    <label>
+                      <span>Universe name</span>
+                      <input value={profileDraft.name ?? ""} onChange={(event) => setProfileDraft((current) => ({ ...current, name: event.target.value }))} placeholder={universeName} />
+                    </label>
+                    <div className="icon-preset-row">
+                      {[["book", BookOpen], ["globe", Globe2], ["castle", Castle], ["sparkles", Sparkles]].map(([value, Icon]) => (
+                        <button key={value as string} type="button" className={profileDraft.icon?.type === "preset" && profileDraft.icon.value === value ? "active" : ""} onClick={() => setProfileDraft((current) => ({ ...current, icon: { type: "preset", value: value as string } }))} title={`Use ${value} icon`}><Icon size={16} /></button>
+                      ))}
+                      <label className="image-upload-button" title="Use PNG or JPG"><Upload size={16} /><input type="file" accept="image/png,image/jpeg" onChange={async (event) => { const file = event.target.files?.[0]; if (!file) return; const reader = new FileReader(); reader.onload = () => setProfileDraft((current) => ({ ...current, icon: { type: "image", value: String(reader.result ?? "") } })); reader.readAsDataURL(file); }} /></label>
+                    </div>
+                    <button type="button" onClick={async () => { setProfileSaving(true); try { await onSaveUniverseProfile(profileDraft); } finally { setProfileSaving(false); } }} disabled={profileSaving}>Save customization</button>
+                  </div>
                 </div>
                 <div className="universe-stats">
                   <div>
@@ -3922,59 +4001,6 @@ function FilesPanel({
   );
 }
 
-type MarkdownTextAction =
-  | "bold"
-  | "italic"
-  | "heading"
-  | "quote"
-  | "unorderedList"
-  | "orderedList"
-  | "code"
-  | "link";
-
-function prefixMarkdownLines(
-  value: string,
-  prefixForLine: (index: number) => string,
-) {
-  return value
-    .split("\n")
-    .map((line, index) => {
-      const prefix = prefixForLine(index);
-      return line.startsWith(prefix.trimEnd()) ? line : `${prefix}${line}`;
-    })
-    .join("\n");
-}
-
-function formatMarkdownText(
-  content: string,
-  action: MarkdownTextAction,
-  selectionStart: number,
-  selectionEnd: number,
-): { content: string; selectionStart: number; selectionEnd: number } {
-  const selected = content.slice(selectionStart, selectionEnd);
-  const fallback = selected || (action === "link" ? "link text" : "text");
-  let replacement = fallback;
-
-  if (action === "bold") replacement = `**${fallback}**`;
-  if (action === "italic") replacement = `_${fallback}_`;
-  if (action === "code") replacement = `\`${fallback}\``;
-  if (action === "link") replacement = `[${fallback}](url)`;
-  if (action === "heading")
-    replacement = prefixMarkdownLines(fallback, () => "## ");
-  if (action === "quote")
-    replacement = prefixMarkdownLines(fallback, () => "> ");
-  if (action === "unorderedList")
-    replacement = prefixMarkdownLines(fallback, () => "- ");
-  if (action === "orderedList")
-    replacement = prefixMarkdownLines(fallback, (index) => `${index + 1}. `);
-
-  return {
-    content: `${content.slice(0, selectionStart)}${replacement}${content.slice(selectionEnd)}`,
-    selectionStart,
-    selectionEnd: selectionStart + replacement.length,
-  };
-}
-
 function explorerInspectorTab(
   selection: Selection,
   project: BranchingProject,
@@ -3985,6 +4011,7 @@ function explorerInspectorTab(
     const node = nodes.find((candidate) => candidate.id === selection.id);
     if (!node) return undefined;
     const kind = node.data.kind;
+    if (kind === "start" || kind === "boundary") return undefined;
     const details = node.data.details as
       | {
           decision?: { name?: string };
@@ -3999,6 +4026,8 @@ function explorerInspectorTab(
           "Dialogue"
         : kind === "decision"
           ? details?.decision?.name || "Decision"
+          : kind === "routeGate"
+            ? "Route Gate"
           : kind === "outcome"
             ? details?.outcome?.name || "Outcome"
             : kind === "branch"
@@ -4009,7 +4038,7 @@ function explorerInspectorTab(
     return { id: `${kind}:${selection.id}`, selection, title };
   }
   if (selection.type === "edge") {
-    return { id: `edge:${selection.id}`, selection, title: "Transition" };
+    return undefined;
   }
   const title =
     selection.type === "canon"
@@ -4029,10 +4058,14 @@ function explorerInspectorTab(
 
 function inspectorTabIcon(tab: InspectorTab) {
   if (tab.id.startsWith("dialogue:")) return MessageSquare;
+  if (tab.id.startsWith("routeGate:")) return GitBranch;
   if (tab.id.startsWith("decision:") || tab.id.startsWith("outcome:"))
     return Split;
   if (tab.id.startsWith("edge:")) return GitBranch;
   if (tab.selection.type === "dataObject") return Database;
+  if (tab.selection.type === "canon") return BookOpen;
+  if (tab.selection.type === "canonSuggestion") return AlertTriangle;
+  if (tab.selection.type === "explorerEntity") return Globe2;
   if (
     tab.selection.type === "explorerType" ||
     tab.selection.type === "explorerProperty"
@@ -4083,14 +4116,13 @@ function EventAuthoringDock({
   onLoadGroup,
   onDeleteGroup,
   onSelect,
-  onEventDraftModeChange,
-  onUpdateEventDraft,
   onSaveEventDraft,
   inspectorTabs,
   expandedInspectorTabId,
   inspectorMaximized,
   onOpenInspectorTab,
   onCloseInspectorTab,
+  onCloseAllInspectorTabs,
   onDisableInspectorDebug,
   onToggleInspectorMaximized,
   children,
@@ -4113,28 +4145,26 @@ function EventAuthoringDock({
   onLoadGroup: (groupId: string) => void;
   onDeleteGroup: (groupId: string) => void;
   onSelect: (selection?: Selection) => void;
-  onEventDraftModeChange: (mode: EventDraftMode) => void;
-  onUpdateEventDraft: (updates: Partial<EventNode>) => void;
   onSaveEventDraft: () => void;
   inspectorTabs: InspectorTab[];
   expandedInspectorTabId?: string;
   inspectorMaximized: boolean;
   onOpenInspectorTab: (id: string) => void;
   onCloseInspectorTab: (id: string) => void;
+  onCloseAllInspectorTabs: () => void;
   onDisableInspectorDebug: () => void;
   onToggleInspectorMaximized: () => void;
   children: ReactNode;
 }) {
-  const markdownTextAreaRef = useRef<HTMLTextAreaElement | null>(null);
   const tabContextMenuRef = useRef<HTMLDivElement | null>(null);
   const manuallyCollapsedEventIdRef = useRef<string | undefined>(undefined);
   const manuallyClosedEventIdRef = useRef<string | undefined>(undefined);
   const [selectedTabGroupId, setSelectedTabGroupId] = useState("");
-  const [tabContextMenu, setTabContextMenu] = useState<{
-    eventId: string;
-    x: number;
-    y: number;
-  }>();
+  const [groupMenuOpen, setGroupMenuOpen] = useState(false);
+  const [tabContextMenu, setTabContextMenu] = useState<
+    | { kind: "event"; eventId: string; x: number; y: number }
+    | { kind: "inspector"; x: number; y: number }
+  >();
   const currentSequence = project.sequences.find(
     (sequence) => sequence.id === activeSequenceId(project),
   );
@@ -4144,25 +4174,17 @@ function EventAuthoringDock({
   );
   const eventIds = useMemo(() => new Set(validEventIds), [validEventIds]);
   const selectedEventId = eventIdFromSelection(project, nodes, selection);
+  const selectedDirectEventId =
+    selection?.type === "node" &&
+    project.events.some((event) => event.id === selection.id)
+      ? selection.id
+      : undefined;
   const selectedEvent = selectedEventId
     ? project.events.find((event) => event.id === selectedEventId)
     : undefined;
   const openEvents = eventInspector.openEventIds
     .map((eventId) => project.events.find((event) => event.id === eventId))
     .filter((event): event is EventNode => Boolean(event));
-  const activeEvent =
-    (eventInspector.expandedEventId
-      ? project.events.find(
-          (event) => event.id === eventInspector.expandedEventId,
-        )
-      : undefined) ?? openEvents[openEvents.length - 1];
-  const draftMatchesActiveEvent = Boolean(
-    eventDraft && activeEvent?.id === eventDraft.eventId,
-  );
-  const editableEvent = draftMatchesActiveEvent
-    ? eventDraft?.draftEvent
-    : activeEvent;
-  const mode = eventDraft?.mode ?? "components";
   const selectedTabGroup = tabGroups.find(
     (group) => group.id === selectedTabGroupId,
   );
@@ -4170,7 +4192,7 @@ function EventAuthoringDock({
   const renderGroupMenu = useCallback(
     (variant: "stack" | "collapsed") => (
       <div
-        className={`event-inspector-group-menu ${variant}`}
+        className={`event-inspector-group-menu ${variant} ${groupMenuOpen ? "open" : ""}`}
         aria-label="Inspector tab groups"
       >
         <button
@@ -4178,10 +4200,15 @@ function EventAuthoringDock({
           className="event-inspector-group-trigger"
           title="Inspector tab groups"
           aria-label="Inspector tab groups"
+          aria-expanded={groupMenuOpen}
+          onClick={(event) => {
+            event.stopPropagation();
+            setGroupMenuOpen((open) => !open);
+          }}
         >
           <FolderOpen size={15} />
         </button>
-        <div className="event-inspector-group-popover">
+        {groupMenuOpen ? <div className="event-inspector-group-popover">
           <div className="event-inspector-group-popover-header">
             <strong>Tab groups</strong>
             <span>{tabGroups.length}</span>
@@ -4232,7 +4259,7 @@ function EventAuthoringDock({
               </button>
             ) : null}
           </div>
-        </div>
+        </div> : null}
       </div>
     ),
     [
@@ -4240,6 +4267,7 @@ function EventAuthoringDock({
       onLoadGroup,
       onSaveGroup,
       hasInspectorTabs,
+      groupMenuOpen,
       selectedTabGroup,
       selectedTabGroupId,
       tabGroups,
@@ -4264,31 +4292,31 @@ function EventAuthoringDock({
     if (!eventInspector.open) {
       return;
     }
-    if (selectedEventId && eventIds.has(selectedEventId)) {
+    if (selectedDirectEventId && eventIds.has(selectedDirectEventId)) {
       if (
         manuallyClosedEventIdRef.current &&
-        manuallyClosedEventIdRef.current !== selectedEventId
+        manuallyClosedEventIdRef.current !== selectedDirectEventId
       ) {
         manuallyClosedEventIdRef.current = undefined;
       }
-      if (manuallyClosedEventIdRef.current === selectedEventId) {
+      if (manuallyClosedEventIdRef.current === selectedDirectEventId) {
         return;
       }
       if (
         manuallyCollapsedEventIdRef.current &&
-        manuallyCollapsedEventIdRef.current !== selectedEventId
+        manuallyCollapsedEventIdRef.current !== selectedDirectEventId
       ) {
         manuallyCollapsedEventIdRef.current = undefined;
       }
-      if (!eventInspector.openEventIds.includes(selectedEventId)) {
-        onOpenEvent(selectedEventId);
+      if (!eventInspector.openEventIds.includes(selectedDirectEventId)) {
+        onOpenEvent(selectedDirectEventId);
         manuallyCollapsedEventIdRef.current = undefined;
       }
-      if (manuallyCollapsedEventIdRef.current === selectedEventId) {
+      if (manuallyCollapsedEventIdRef.current === selectedDirectEventId) {
         return;
       }
-      if (eventInspector.expandedEventId !== selectedEventId) {
-        onOpenEvent(selectedEventId);
+      if (eventInspector.expandedEventId !== selectedDirectEventId) {
+        onOpenEvent(selectedDirectEventId);
       }
       return;
     }
@@ -4297,7 +4325,7 @@ function EventAuthoringDock({
     eventInspector.open,
     eventInspector.openEventIds,
     onOpenEvent,
-    selectedEventId,
+    selectedDirectEventId,
     eventIds,
   ]);
 
@@ -4334,7 +4362,24 @@ function EventAuthoringDock({
       contextEvent.preventDefault();
       contextEvent.stopPropagation();
       setTabContextMenu({
+        kind: "event",
         eventId,
+        ...clampFloatingMenuPosition(
+          contextEvent.clientX,
+          contextEvent.clientY,
+          viewportBounds(),
+        ),
+      });
+    },
+    [],
+  );
+
+  const openInspectorTabCloseMenu = useCallback(
+    (contextEvent: ReactMouseEvent<HTMLButtonElement>) => {
+      contextEvent.preventDefault();
+      contextEvent.stopPropagation();
+      setTabContextMenu({
+        kind: "inspector",
         ...clampFloatingMenuPosition(
           contextEvent.clientX,
           contextEvent.clientY,
@@ -4362,37 +4407,6 @@ function EventAuthoringDock({
     };
   }, [tabContextMenu]);
 
-  const applyMarkdownAction = useCallback(
-    (action: MarkdownTextAction) => {
-      if (!draftMatchesActiveEvent || !editableEvent) return;
-      const textarea = markdownTextAreaRef.current;
-      const content = editableEvent.text?.content ?? "";
-      const selectionStart = textarea?.selectionStart ?? content.length;
-      const selectionEnd = textarea?.selectionEnd ?? selectionStart;
-      const formatted = formatMarkdownText(
-        content,
-        action,
-        selectionStart,
-        selectionEnd,
-      );
-      // Keep text.format intact for now; editor format controls and export mapping will be integrated later.
-      onUpdateEventDraft({
-        text: {
-          format: editableEvent.text?.format ?? "plain",
-          content: formatted.content,
-        },
-      });
-      window.requestAnimationFrame(() => {
-        markdownTextAreaRef.current?.focus();
-        markdownTextAreaRef.current?.setSelectionRange(
-          formatted.selectionStart,
-          formatted.selectionEnd,
-        );
-      });
-    },
-    [draftMatchesActiveEvent, editableEvent, onUpdateEventDraft],
-  );
-
   if (!eventInspector.open || openEvents.length === 0) {
     if (inspectorTabs.length > 0) {
       return (
@@ -4400,7 +4414,8 @@ function EventAuthoringDock({
           className={`event-authoring-dock explorer-inspector-dock ${inspectorMaximized ? "maximized" : ""}`}
           aria-label="Inspector dock"
         >
-          <div className="event-inspector-tab-cluster">
+          <div className="event-inspector-stack">
+            <div className="event-inspector-tab-cluster">
             <div className="inspector-stack-tools">
               {renderGroupMenu("stack")}
               <button
@@ -4412,6 +4427,7 @@ function EventAuthoringDock({
                 {inspectorMaximized ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
               </button>
             </div>
+            <div className="event-inspector-cards" role="list">
             {inspectorTabs.map((tab, index) => {
               const expanded = expandedInspectorTabId === tab.id;
               const TabIcon = inspectorTabIcon(tab);
@@ -4419,6 +4435,9 @@ function EventAuthoringDock({
                 <section
                   className={`event-editor-panel event-inspector-card ${expanded ? "expanded" : "minimized"}`}
                   key={tab.id}
+                  role="listitem"
+                  data-inspector-kind={tab.selection.type}
+                  data-active={expanded || undefined}
                   style={{ "--stack-index": index + 1 } as CSSProperties}
                 >
                   <div className="event-editor-header">
@@ -4428,7 +4447,7 @@ function EventAuthoringDock({
                       title={tab.title}
                       onClick={() => onOpenInspectorTab(tab.id)}
                     >
-                      <strong><TabIcon className="event-header-icon" size={14} />{tab.title}</strong>
+                      <strong><TabIcon className="event-header-icon" size={14} /><span className="event-header-copy"><span className="event-header-name">{tab.title}</span></span></strong>
                     </button>
                     <div className="event-editor-actions">
                       <button type="button" title={expanded ? "Minimize inspector" : "Expand inspector"} onClick={() => onOpenInspectorTab(tab.id)}>
@@ -4436,13 +4455,15 @@ function EventAuthoringDock({
                       </button>
                       {tab.mode === "debug" ? (
                         <button type="button" title="Disable Inspector Debug" onClick={onDisableInspectorDebug}><Power size={14} /></button>
-                      ) : <button type="button" title="Close inspector" onClick={() => onCloseInspectorTab(tab.id)}><X size={14} /></button>}
+                      ) : <button type="button" title="Close inspector" onClick={() => onCloseInspectorTab(tab.id)} onContextMenu={openInspectorTabCloseMenu}><X size={14} /></button>}
                     </div>
                   </div>
                   {expanded ? <div className="event-inspector-body"><div className="event-inspector-body-scroll">{tab.mode === "debug" ? <DebugInspector project={project} nodes={nodes} selection={tab.selection} /> : isValidElement(children) ? cloneElement(children as ReactElement<{ selection?: Selection }>, { selection: tab.selection }) : children}</div></div> : null}
                 </section>
               );
             })}
+            </div>
+            </div>
           </div>
         </aside>
       );
@@ -4498,6 +4519,7 @@ function EventAuthoringDock({
               </button>
             </div>
           ) : null}
+          <div className="event-inspector-cards" role="list">
           {inspectorTabs.map((tab, index) => {
             const expanded = expandedInspectorTabId === tab.id;
             const TabIcon = inspectorTabIcon(tab);
@@ -4505,17 +4527,20 @@ function EventAuthoringDock({
               <section
                 className={`event-editor-panel event-inspector-card ${expanded ? "expanded" : "minimized"}`}
                 key={tab.id}
+                role="listitem"
+                data-inspector-kind={tab.selection.type}
+                data-active={expanded || undefined}
                 style={{ "--stack-index": index + openEvents.length + 1 } as CSSProperties}
               >
                 <div className="event-editor-header">
                   <button type="button" className="event-minimized-title" title={tab.title} onClick={() => onOpenInspectorTab(tab.id)}>
-                    <strong><TabIcon className="event-header-icon" size={14} />{tab.title}</strong>
+                    <strong><TabIcon className="event-header-icon" size={14} /><span className="event-header-copy"><span className="event-header-name">{tab.title}</span></span></strong>
                   </button>
                   <div className="event-editor-actions">
                     <button type="button" title={expanded ? "Minimize inspector" : "Expand inspector"} onClick={() => onOpenInspectorTab(tab.id)}>{expanded ? <ChevronDown size={14} /> : <ChevronUp size={14} />}</button>
                     {tab.mode === "debug" ? (
                       <button type="button" title="Disable Inspector Debug" onClick={onDisableInspectorDebug}><Power size={14} /></button>
-                    ) : <button type="button" title="Close inspector" onClick={() => onCloseInspectorTab(tab.id)}><X size={14} /></button>}
+                    ) : <button type="button" title="Close inspector" onClick={() => onCloseInspectorTab(tab.id)} onContextMenu={openInspectorTabCloseMenu}><X size={14} /></button>}
                   </div>
                 </div>
                 {expanded ? <div className="event-inspector-body"><div className="event-inspector-body-scroll">{tab.mode === "debug" ? <DebugInspector project={project} nodes={nodes} selection={tab.selection} /> : isValidElement(children) ? cloneElement(children as ReactElement<{ selection?: Selection }>, { selection: tab.selection }) : children}</div></div> : null}
@@ -4534,6 +4559,9 @@ function EventAuthoringDock({
                 className={`event-editor-panel event-inspector-card ${isExpanded ? "expanded" : "minimized"}`}
                 aria-label={`${event.name} inspector`}
                 key={event.id}
+                role="listitem"
+                data-inspector-kind="event"
+                data-active={isExpanded || undefined}
                 style={{ "--stack-index": index + 1 } as CSSProperties}
               >
                 <div className="event-editor-header">
@@ -4545,7 +4573,11 @@ function EventAuthoringDock({
                           size={15}
                           aria-hidden="true"
                         />
-                        {cardEvent.name ?? "No event selected"}
+                        <span className="event-header-copy">
+                          <span className="event-header-name">
+                            {cardEvent.name ?? "No event selected"}
+                          </span>
+                        </span>
                         {isDraftEvent && eventDraft?.dirty ? (
                           <span
                             className="event-dirty-star"
@@ -4569,7 +4601,9 @@ function EventAuthoringDock({
                           size={14}
                           aria-hidden="true"
                         />
-                        {event.name}
+                        <span className="event-header-copy">
+                          <span className="event-header-name">{event.name}</span>
+                        </span>
                         {isDraftEvent && eventDraft?.dirty ? (
                           <span
                             className="event-dirty-star"
@@ -4582,28 +4616,6 @@ function EventAuthoringDock({
                     </button>
                   )}
                   <div className="event-editor-actions">
-                    {isExpanded ? (
-                      <div
-                        className="segmented-toggle"
-                        role="tablist"
-                        aria-label="Event inspector mode"
-                      >
-                        <button
-                          type="button"
-                          className={mode === "components" ? "active" : ""}
-                          onClick={() => onEventDraftModeChange("components")}
-                        >
-                          Components
-                        </button>
-                        <button
-                          type="button"
-                          className={mode === "text" ? "active" : ""}
-                          onClick={() => onEventDraftModeChange("text")}
-                        >
-                          Text
-                        </button>
-                      </div>
-                    ) : null}
                     {isExpanded ? (
                       <button
                         type="button"
@@ -4660,99 +4672,7 @@ function EventAuthoringDock({
                 <div className="event-inspector-body" aria-hidden={!isExpanded}>
                   {isExpanded ? (
                     <div className="event-inspector-body-scroll">
-                      {mode === "text" ? (
-                        <>
-                          <div
-                            className="event-markdown-toolbar"
-                            aria-label="Markdown editing tools"
-                          >
-                            <button
-                              type="button"
-                              title="Bold"
-                              disabled={!draftMatchesActiveEvent}
-                              onClick={() => applyMarkdownAction("bold")}
-                            >
-                              <Bold size={13} />
-                            </button>
-                            <button
-                              type="button"
-                              title="Italic"
-                              disabled={!draftMatchesActiveEvent}
-                              onClick={() => applyMarkdownAction("italic")}
-                            >
-                              <Italic size={13} />
-                            </button>
-                            <button
-                              type="button"
-                              title="Heading"
-                              disabled={!draftMatchesActiveEvent}
-                              onClick={() => applyMarkdownAction("heading")}
-                            >
-                              <Heading1 size={13} />
-                            </button>
-                            <button
-                              type="button"
-                              title="Quote"
-                              disabled={!draftMatchesActiveEvent}
-                              onClick={() => applyMarkdownAction("quote")}
-                            >
-                              <Quote size={13} />
-                            </button>
-                            <button
-                              type="button"
-                              title="Bulleted list"
-                              disabled={!draftMatchesActiveEvent}
-                              onClick={() =>
-                                applyMarkdownAction("unorderedList")
-                              }
-                            >
-                              <List size={13} />
-                            </button>
-                            <button
-                              type="button"
-                              title="Numbered list"
-                              disabled={!draftMatchesActiveEvent}
-                              onClick={() => applyMarkdownAction("orderedList")}
-                            >
-                              <ListOrdered size={13} />
-                            </button>
-                            <button
-                              type="button"
-                              title="Inline code"
-                              disabled={!draftMatchesActiveEvent}
-                              onClick={() => applyMarkdownAction("code")}
-                            >
-                              <Code size={13} />
-                            </button>
-                            <button
-                              type="button"
-                              title="Link"
-                              disabled={!draftMatchesActiveEvent}
-                              onClick={() => applyMarkdownAction("link")}
-                            >
-                              <Link size={13} />
-                            </button>
-                          </div>
-                          <textarea
-                            ref={markdownTextAreaRef}
-                            spellCheck
-                            disabled={!draftMatchesActiveEvent}
-                            value={editableEvent?.text?.content ?? ""}
-                            placeholder="Write the playable event text here."
-                            onChange={(event) =>
-                              onUpdateEventDraft({
-                                text: {
-                                  format:
-                                    editableEvent?.text?.format ?? "plain",
-                                  content: event.target.value,
-                                },
-                              })
-                            }
-                          />
-                        </>
-                      ) : (
-                        <div className="event-dock-inspector">{children}</div>
-                      )}
+                      <div className="event-dock-inspector">{children}</div>
                     </div>
                   ) : null}
                 </div>
@@ -4761,12 +4681,14 @@ function EventAuthoringDock({
           })}
         </div>
       </div>
+      </div>
       {tabContextMenu ? (
         <div
           ref={tabContextMenuRef}
           className="canvas-menu tab-context-menu"
           style={{ left: tabContextMenu.x, top: tabContextMenu.y }}
         >
+          {tabContextMenu.kind === "event" ? <>
           <button
             type="button"
             onClick={() => {
@@ -4803,6 +4725,12 @@ function EventAuthoringDock({
           >
             Close all tabs
           </button>
+          </> : <button type="button" onClick={() => {
+            onCloseAllInspectorTabs();
+            setTabContextMenu(undefined);
+          }}>
+            Close all inspector tabs
+          </button>}
         </div>
       ) : null}
     </aside>
@@ -4811,6 +4739,7 @@ function EventAuthoringDock({
 
 function Inspector({
   project,
+  scope,
   propertiesConfig,
   nodes,
   edges,
@@ -4829,6 +4758,9 @@ function Inspector({
   onCreateDecision,
   onUpdateDecision,
   onUpdateDialogue,
+  onUpdateDialogueBeat,
+  onUpdateScriptBlock,
+  onDeleteDialogueBeat,
   onDeleteDecision,
   onDeleteDialogue,
   onCreateOutcome,
@@ -4852,10 +4784,13 @@ function Inspector({
   onPublishLocalExplorerEntity,
   onUpdateLocalExplorerType,
   onUpdateLocalExplorerProperty,
+  onUpdateLogicPropertyOverride,
   onUpdateEdgeLabel,
   onDeleteSelection,
+  onOpenRule,
 }: {
   project: BranchingProject;
+  scope?: CanvasScope;
   propertiesConfig?: Record<string, unknown>;
   nodes: StoryCanvasNode[];
   edges: StoryCanvasEdge[];
@@ -4882,6 +4817,18 @@ function Inspector({
     dialogueId: string,
     updates: Partial<DialogueNode>,
   ) => void;
+  onUpdateDialogueBeat: (
+    eventId: string,
+    dialogueId: string,
+    beatId: string,
+    updates: Partial<DialogueBeat>,
+  ) => void;
+  onUpdateScriptBlock: (
+    scriptId: string,
+    blockId: string,
+    updates: { content?: string; speakerRef?: string },
+  ) => void;
+  onDeleteDialogueBeat: (eventId: string, dialogueId: string, beatId: string) => void;
   onDeleteDecision: (eventId: string, decisionId: string) => void;
   onDeleteDialogue: (eventId: string, dialogueId: string) => void;
   onCreateOutcome: (eventId: string, decisionId: string) => void;
@@ -4932,8 +4879,10 @@ function Inspector({
     id: string,
     updates: Partial<LocalExplorerProperty>,
   ) => void;
+  onUpdateLogicPropertyOverride: (propertyId: string, source: "canon" | "local", changes: Partial<LogicPropertyOverride>) => void;
   onUpdateEdgeLabel: (edgeId: string, label: string) => void;
   onDeleteSelection: (selection: Selection) => void;
+  onOpenRule: (id: string) => void;
 }) {
   const selectedNode =
     selection?.type === "node"
@@ -5064,12 +5013,89 @@ function Inspector({
         .flatMap((eventNode) => eventNode.transitions ?? [])
         .find((transition) => transition.id === selectedTransitionId)
     : undefined;
+  const selectedTransitionOwner = selectedTransition
+    ? project.events.find((eventNode) =>
+        eventNode.transitions?.some(
+          (transition) => transition.id === selectedTransition.id,
+        ),
+      )
+    : undefined;
+  const selectedRouteGateContext =
+    selectedNode?.data.kind === "routeGate" &&
+    typeof selectedNode.data.details?.routeSourceId === "string"
+      ? (() => {
+          const sourceId = selectedNode.data.details.routeSourceId as string;
+          const owner = project.events.find((eventNode) =>
+            eventNode.transitions?.some((transition) => transition.from === sourceId),
+          );
+          const routes = (owner?.transitions ?? [])
+            .filter((transition) => transition.from === sourceId)
+            .sort((left, right) => (left.order ?? 0) - (right.order ?? 0));
+          return owner && routes.length
+            ? { sourceId, owner, routes }
+            : undefined;
+        })()
+      : undefined;
+  const selectedTransitionIsGateManaged = Boolean(
+    selectedTransition &&
+      selectedTransitionOwner &&
+      (selectedTransitionOwner.transitions ?? []).filter(
+        (transition) => transition.from === selectedTransition.from,
+      ).length > 1,
+  );
+  const selectedTransitionTarget = selectedTransition
+    ? findEvent(project, selectedTransition.to)
+    : undefined;
+  const selectedTransitionOutput =
+    selectedTransitionOwner && selectedTransition
+      ? selectedTransition.from === selectedTransitionOwner.id
+        ? "Event output"
+        : selectedTransitionOwner.decisions
+            ?.flatMap((decision) =>
+              decision.outcomes.map((outcome) => ({
+                id: `outcome:${selectedTransitionOwner.id}:${decision.id}:${outcome.id}`,
+                label: `${decision.name} → ${outcome.name}`,
+              })),
+            )
+            .find((outcome) => outcome.id === selectedTransition.from)?.label ??
+          "Nested output"
+      : undefined;
+  const selectedDialogueBeatContext =
+    (selectedNode?.data.kind === "speechBeat" || selectedNode?.data.kind === "directionBeat") &&
+    typeof selectedNode.data.details?.eventId === "string" &&
+    typeof selectedNode.data.details?.dialogueId === "string"
+      ? (() => {
+          const eventId = selectedNode.data.details!.eventId as string;
+          const dialogueId = selectedNode.data.details!.dialogueId as string;
+          const beatId = (selectedNode.data.details?.beat as { id?: string } | undefined)?.id;
+          const dialogue = findEvent(project, eventId)?.dialogues?.find((item) => item.id === dialogueId);
+          const beat = dialogue?.beats?.find((item) => item.id === beatId);
+          const block = beat
+            ? project.scriptDocuments
+                ?.find((script) => script.id === beat.blockRef.scriptId)
+                ?.blocks.find((item) => item.id === beat.blockRef.blockId)
+            : undefined;
+          return beat && block ? { eventId, dialogueId, beat, block } : undefined;
+        })()
+      : undefined;
+  const selectedDialogueFirstBeat = selectedDialogueContext?.dialogue?.beats?.[0];
+  const selectedDialogueFirstBlock = selectedDialogueFirstBeat
+    ? project.scriptDocuments
+        ?.find((script) => script.id === selectedDialogueFirstBeat.blockRef.scriptId)
+        ?.blocks.find((block) => block.id === selectedDialogueFirstBeat.blockRef.blockId)
+    : undefined;
+  const isParentCanvas = scope?.kind !== "event";
   const selectedDataClass = selectedDataObject
     ? project.dataClasses?.find(
         (dataClass) => dataClass.id === selectedDataObject.classId,
       )
     : undefined;
-  const canonRefIds = project.canonRefs.map((canonRef) => canonRef.id);
+  const canonRefIds = project.canonRefs
+    .filter((canonRef) => canonRefHasRole(project, canonRef, "condition"))
+    .map((canonRef) => canonRef.id);
+  const speakerCanonRefs = project.canonRefs.filter((canonRef) =>
+    canonRefHasRole(project, canonRef, "speaker"),
+  );
   const eventCategories = project.eventCategories ?? [];
   const dataObjects = project.projectDataObjects ?? [];
   const eventSequence = event ? findSequence(project, event.id) : undefined;
@@ -5090,6 +5116,12 @@ function Inspector({
         kind: "Decision",
         Icon: Split,
       };
+    if (selectedDialogueBeatContext)
+      return {
+        label: selectedDialogueBeatContext.block.content || (selectedDialogueBeatContext.beat.kind === "speech" ? "Speech beat" : "Direction beat"),
+        kind: selectedDialogueBeatContext.beat.kind === "speech" ? "Speech Beat" : "Direction Beat",
+        Icon: MessageSquare,
+      };
     if (selectedDialogueContext?.dialogue)
       return {
         label:
@@ -5105,10 +5137,18 @@ function Inspector({
         kind: "Outcome",
         Icon: Split,
       };
+    if (selectedRouteGateContext)
+      return {
+        label: "Route Gate",
+        kind: `${selectedRouteGateContext.routes.length} routes`,
+        Icon: GitBranch,
+      };
     if (selectedTransition)
       return {
-        label: selectedTransition.label ?? "Untitled transition",
-        kind: "Transition",
+        label: isParentCanvas
+          ? "Connection"
+          : selectedTransition.label ?? "Untitled transition",
+        kind: isParentCanvas ? "Canvas connector" : "Transition",
         Icon: GitBranch,
       };
     if (selectedCanon)
@@ -5245,14 +5285,7 @@ function Inspector({
                 onUpdateSequence(sequence.id, { availability })
               }
             />
-            <RuleSetEditor
-              value={sequence.ruleSets}
-              canonRefs={canonRefIds}
-              dataObjects={dataObjects}
-              onChange={(ruleSets) =>
-                onUpdateSequence(sequence.id, { ruleSets })
-              }
-            />
+            <LocalRuleSetEditor value={sequence.ruleSets} canonRefs={canonRefIds} dataObjects={dataObjects} onChange={(ruleSets) => onUpdateSequence(sequence.id, { ruleSets })} />
             <LogicSection
               availability={sequence.availability}
               ruleSets={sequence.ruleSets}
@@ -5327,12 +5360,7 @@ function Inspector({
                 onUpdateBranch(branch.id, { availability })
               }
             />
-            <RuleSetEditor
-              value={branch.ruleSets}
-              canonRefs={canonRefIds}
-              dataObjects={dataObjects}
-              onChange={(ruleSets) => onUpdateBranch(branch.id, { ruleSets })}
-            />
+            <LocalRuleSetEditor value={branch.ruleSets} canonRefs={canonRefIds} dataObjects={dataObjects} onChange={(ruleSets) => onUpdateBranch(branch.id, { ruleSets })} />
             <LogicSection
               availability={branch.availability}
               ruleSets={branch.ruleSets}
@@ -5501,12 +5529,7 @@ function Inspector({
               dataObjects={dataObjects}
               onChange={(unlocks) => onUpdateEvent(event.id, { unlocks })}
             />
-            <RuleSetEditor
-              value={event.ruleSets}
-              canonRefs={canonRefIds}
-              dataObjects={dataObjects}
-              onChange={(ruleSets) => onUpdateEvent(event.id, { ruleSets })}
-            />
+            <LocalRuleSetEditor value={event.ruleSets} canonRefs={canonRefIds} dataObjects={dataObjects} onChange={(ruleSets) => onUpdateEvent(event.id, { ruleSets })} />
             <section className="inspector-section">
               <h2>Decisions</h2>
               <div className="stack-list">
@@ -5617,6 +5640,21 @@ function Inspector({
                   }
                 />
               </label>
+              <div className="stack-list" aria-label="Decision option conditions">
+                {selectedDecisionContext.decision.outcomes.map((outcome) => (
+                  <div className="mini-card" key={outcome.id}>
+                    <strong>{outcome.name}</strong>
+                    <span>
+                      {outcome.availability
+                        ? outcome.unavailableBehavior === "hidden"
+                          ? "Conditional · hidden when unavailable"
+                          : "Conditional · shown locked"
+                        : "Always available"}
+                    </span>
+                    {outcome.lockText?.content ? <small>Lock text: {outcome.lockText.content}</small> : null}
+                  </div>
+                ))}
+              </div>
               <div className="inspector-actions">
                 <button
                   type="button"
@@ -5655,11 +5693,7 @@ function Inspector({
                 )
               }
             />
-            <RuleSetEditor
-              value={selectedDecisionContext.decision!.ruleSets}
-              canonRefs={canonRefIds}
-              dataObjects={dataObjects}
-              onChange={(ruleSets) =>
+            <LocalRuleSetEditor value={selectedDecisionContext.decision!.ruleSets} canonRefs={canonRefIds} dataObjects={dataObjects} onChange={(ruleSets) =>
                 onUpdateDecision(
                   selectedDecisionContext.eventId,
                   selectedDecisionContext.decision!.id,
@@ -5667,6 +5701,87 @@ function Inspector({
                 )
               }
             />
+          </>
+        ) : null}
+
+        {selectedDialogueBeatContext ? (
+          <>
+            <section className="inspector-section">
+              <h2>{selectedDialogueBeatContext.beat.kind === "speech" ? "Speech Beat" : "Direction Beat"}</h2>
+              {selectedDialogueBeatContext.beat.kind === "speech" ? (
+                <label className="field-label">
+                  Speaker
+                  <select
+                    value={selectedDialogueBeatContext.block.speakerRef ?? ""}
+                    onChange={(event) =>
+                      onUpdateScriptBlock(
+                        selectedDialogueBeatContext.beat.blockRef.scriptId,
+                        selectedDialogueBeatContext.beat.blockRef.blockId,
+                        { speakerRef: event.target.value || undefined },
+                      )
+                    }
+                  >
+                    <option value="">No speaker</option>
+                    {speakerCanonRefs.map((canonRef) => (
+                      <option key={canonRef.id} value={canonRef.id}>
+                        {canonRef.label ?? canonRef.id}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              ) : null}
+              <label className="field-label">
+                {selectedDialogueBeatContext.beat.kind === "speech" ? "Dialogue text" : "Stage direction"}
+                <textarea
+                  rows={7}
+                  value={selectedDialogueBeatContext.block.content}
+                  onChange={(event) =>
+                    onUpdateScriptBlock(
+                      selectedDialogueBeatContext.beat.blockRef.scriptId,
+                      selectedDialogueBeatContext.beat.blockRef.blockId,
+                      { content: event.target.value },
+                    )
+                  }
+                />
+              </label>
+              <dl>
+                <div><dt>Script</dt><dd>{selectedDialogueBeatContext.beat.blockRef.scriptId}</dd></div>
+                <div><dt>Block</dt><dd>{selectedDialogueBeatContext.beat.blockRef.blockId}</dd></div>
+              </dl>
+              <button
+                type="button"
+                className="danger"
+                onClick={() => onDeleteDialogueBeat(
+                  selectedDialogueBeatContext.eventId,
+                  selectedDialogueBeatContext.dialogueId,
+                  selectedDialogueBeatContext.beat.id,
+                )}
+              >
+                Delete beat
+              </button>
+            </section>
+            <BasicConditionEditor
+              label="Display condition"
+              value={selectedDialogueBeatContext.beat.displayCondition}
+              canonRefs={canonRefIds}
+              dataObjects={dataObjects}
+              onChange={(displayCondition) =>
+                onUpdateDialogueBeat(
+                  selectedDialogueBeatContext.eventId,
+                  selectedDialogueBeatContext.dialogueId,
+                  selectedDialogueBeatContext.beat.id,
+                  { displayCondition },
+                )
+              }
+            />
+            <LocalRuleSetEditor value={selectedDialogueBeatContext.beat.ruleSets} canonRefs={canonRefIds} dataObjects={dataObjects} onChange={(ruleSets) =>
+                onUpdateDialogueBeat(
+                  selectedDialogueBeatContext.eventId,
+                  selectedDialogueBeatContext.dialogueId,
+                  selectedDialogueBeatContext.beat.id,
+                  { ruleSets },
+                )
+              } />
           </>
         ) : null}
 
@@ -5691,38 +5806,41 @@ function Inspector({
               </label>
               <label className="field-label">
                 Speaker Ref
-                <input
-                  value={selectedDialogueContext.dialogue.speakerRef ?? ""}
+                <select
+                  value={selectedDialogueFirstBlock?.speakerRef ?? ""}
                   onChange={(inputEvent) =>
-                    onUpdateDialogue(
-                      selectedDialogueContext.eventId,
-                      selectedDialogueContext.dialogue!.id,
-                      {
-                        speakerRef: inputEvent.target.value || undefined,
-                      },
+                    selectedDialogueFirstBeat &&
+                    onUpdateScriptBlock(
+                      selectedDialogueFirstBeat.blockRef.scriptId,
+                      selectedDialogueFirstBeat.blockRef.blockId,
+                      { speakerRef: inputEvent.target.value || undefined },
                     )
                   }
-                />
+                >
+                  <option value="">No speaker</option>
+                  {speakerCanonRefs.map((canonRef) => (
+                    <option key={canonRef.id} value={canonRef.id}>{canonRef.label ?? canonRef.id}</option>
+                  ))}
+                </select>
               </label>
               <label className="field-label">
                 Text
                 <textarea
-                  value={selectedDialogueContext.dialogue.text.content}
+                  value={selectedDialogueFirstBlock?.content ?? ""}
                   rows={5}
                   onChange={(inputEvent) =>
-                    onUpdateDialogue(
-                      selectedDialogueContext.eventId,
-                      selectedDialogueContext.dialogue!.id,
-                      {
-                        text: {
-                          format: selectedDialogueContext.dialogue!.text.format,
-                          content: inputEvent.target.value,
-                        },
-                      },
+                    selectedDialogueFirstBeat &&
+                    onUpdateScriptBlock(
+                      selectedDialogueFirstBeat.blockRef.scriptId,
+                      selectedDialogueFirstBeat.blockRef.blockId,
+                      { content: inputEvent.target.value },
                     )
                   }
                 />
               </label>
+              <p className="inspector-connection-hint">
+                Quick edit for the first beat. Double-click this node to open the full dialogue canvas.
+              </p>
               <CanonRefsPicker
                 value={selectedDialogueContext.dialogue.canonRefs}
                 canonRefs={project.canonRefs}
@@ -5761,18 +5879,13 @@ function Inspector({
                 )
               }
             />
-            <RuleSetEditor
-              value={selectedDialogueContext.dialogue.ruleSets}
-              canonRefs={canonRefIds}
-              dataObjects={dataObjects}
-              onChange={(ruleSets) =>
+            <LocalRuleSetEditor value={selectedDialogueContext.dialogue.ruleSets} canonRefs={canonRefIds} dataObjects={dataObjects} onChange={(ruleSets) =>
                 onUpdateDialogue(
                   selectedDialogueContext.eventId,
                   selectedDialogueContext.dialogue!.id,
                   { ruleSets },
                 )
-              }
-            />
+              } />
           </>
         ) : null}
 
@@ -5839,6 +5952,51 @@ function Inspector({
                   }
                 />
               </label>
+              <label className="field-label">
+                When unavailable
+                <select
+                  value={selectedOutcomeContext.outcome.unavailableBehavior ?? "locked"}
+                  onChange={(inputEvent) =>
+                    onUpdateOutcome(
+                      selectedOutcomeContext.eventId,
+                      selectedOutcomeContext.decisionId,
+                      selectedOutcomeContext.outcome!.id,
+                      { unavailableBehavior: inputEvent.target.value as "locked" | "hidden" },
+                    )
+                  }
+                >
+                  <option value="locked">Show locked</option>
+                  <option value="hidden">Hide choice</option>
+                </select>
+              </label>
+              {selectedOutcomeContext.outcome.unavailableBehavior !== "hidden" ? (
+                <label className="field-label">
+                  Public lock text
+                  <input
+                    value={selectedOutcomeContext.outcome!.lockText?.content ?? ""}
+                    placeholder="Optional — avoids revealing the real requirement"
+                    onChange={(inputEvent) =>
+                      onUpdateOutcome(
+                        selectedOutcomeContext.eventId,
+                        selectedOutcomeContext.decisionId,
+                        selectedOutcomeContext.outcome!.id,
+                        {
+                          lockText: inputEvent.target.value
+                            ? { format: "plain", content: inputEvent.target.value }
+                            : undefined,
+                        },
+                      )
+                    }
+                  />
+                </label>
+              ) : null}
+              <p className="inspector-connection-hint">
+                Preview: {selectedOutcomeContext.outcome.availability
+                  ? selectedOutcomeContext.outcome.unavailableBehavior === "hidden"
+                    ? "conditionally hidden"
+                    : "conditionally locked"
+                  : "available"}
+              </p>
               <CanonRefsPicker
                 title="Required Canon Refs"
                 value={selectedOutcomeContext.outcome!.requiredCanonRefs}
@@ -5869,17 +6027,16 @@ function Inspector({
               </button>
             </section>
             <BasicConditionEditor
-              value={selectedOutcomeContext.outcome!.conditions}
+              label="Choice conditions"
+              value={selectedOutcomeContext.outcome!.availability}
               canonRefs={canonRefIds}
               dataObjects={dataObjects}
-              onChange={(conditions) =>
+              onChange={(availability) =>
                 onUpdateOutcome(
                   selectedOutcomeContext.eventId,
                   selectedOutcomeContext.decisionId,
                   selectedOutcomeContext.outcome!.id,
-                  {
-                    conditions,
-                  },
+                  { availability, conditions: availability },
                 )
               }
             />
@@ -5898,11 +6055,7 @@ function Inspector({
                 )
               }
             />
-            <RuleSetEditor
-              value={selectedOutcomeContext.outcome!.ruleSets}
-              canonRefs={canonRefIds}
-              dataObjects={dataObjects}
-              onChange={(ruleSets) =>
+            <LocalRuleSetEditor value={selectedOutcomeContext.outcome!.ruleSets} canonRefs={canonRefIds} dataObjects={dataObjects} onChange={(ruleSets) =>
                 onUpdateOutcome(
                   selectedOutcomeContext.eventId,
                   selectedOutcomeContext.decisionId,
@@ -5911,8 +6064,7 @@ function Inspector({
                     ruleSets,
                   },
                 )
-              }
-            />
+              } />
           </>
         ) : null}
 
@@ -5923,6 +6075,7 @@ function Inspector({
         !selectedDecisionContext?.decision &&
         !selectedDialogueContext?.dialogue &&
         !selectedOutcomeContext?.outcome &&
+        !selectedRouteGateContext &&
         !selectedMissingRefContext ? (
           <section className="inspector-section">
             <h2>{selectedNode.data.title}</h2>
@@ -5942,17 +6095,118 @@ function Inspector({
           </section>
         ) : null}
 
+        {selectedRouteGateContext ? (
+          <section className="inspector-section route-gate-inspector">
+            <h2>Route rules</h2>
+            <p className="inspector-connection-hint">
+              Configure the ordered routes leaving this source. Draw a new edge from the Gate to add another route.
+            </p>
+            <div className="stack-list">
+              {selectedRouteGateContext.routes.map((route, index) => (
+                <div className="mini-card route-gate-route" key={route.id}>
+                  <div className="logic-grid">
+                    <label className="field-label">
+                      Route
+                      <select
+                        value={route.mode ?? "conditional"}
+                        onChange={(event) =>
+                          onUpdateTransition(route.id, {
+                            mode: event.target.value as "conditional" | "fallback",
+                          })
+                        }
+                      >
+                        <option value="conditional">If / else-if</option>
+                        <option value="fallback">Else fallback</option>
+                      </select>
+                    </label>
+                    <label className="field-label">
+                      Order
+                      <input
+                        type="number"
+                        min={1}
+                        value={(route.order ?? index) + 1}
+                        disabled={route.mode === "fallback"}
+                        onChange={(event) =>
+                          onUpdateTransition(route.id, {
+                            order: Math.max(0, Number(event.target.value) - 1),
+                          })
+                        }
+                      />
+                    </label>
+                  </div>
+                  <label className="field-label">
+                    Destination
+                    <select
+                      value={route.to}
+                      onChange={(event) =>
+                        onUpdateTransition(route.id, { to: event.target.value })
+                      }
+                    >
+                      {nodes
+                        .filter(
+                          (node) =>
+                            node.id !== selectedRouteGateContext.sourceId &&
+                            node.data.kind !== "routeGate",
+                        )
+                        .map((node) => (
+                          <option key={node.id} value={node.id}>
+                            {node.data.title}
+                          </option>
+                        ))}
+                    </select>
+                  </label>
+                  {route.mode !== "fallback" ? (
+                    <BasicConditionEditor
+                      value={route.conditions}
+                      canonRefs={canonRefIds}
+                      dataObjects={dataObjects}
+                      onChange={(conditions) =>
+                        onUpdateTransition(route.id, { conditions })
+                      }
+                    />
+                  ) : (
+                    <p className="inspector-connection-hint">
+                      This route runs when none of the previous conditions match.
+                    </p>
+                  )}
+                  <ConsequenceEditor
+                    value={route.consequences}
+                    canonRefs={canonRefIds}
+                    dataObjects={dataObjects}
+                    onChange={(consequences) =>
+                      onUpdateTransition(route.id, { consequences })
+                    }
+                  />
+                  <div className="inspector-actions">
+                    <button
+                      type="button"
+                      className="danger"
+                      onClick={() => onDeleteTransition(route.id)}
+                    >
+                      Delete route
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </section>
+        ) : null}
+
         {selectedEdge ? (
           <>
             <section className="inspector-section">
               <h2>
-                {selectedEdge.data?.label ?? selectedEdge.label ?? "Edge"}
+                {selectedTransition && isParentCanvas
+                  ? "Connection"
+                  : selectedEdge.data?.label ?? selectedEdge.label ?? "Edge"}
               </h2>
               <label className="field-label">
                 Label
                 <input
                   value={String(
-                    selectedEdge.data?.label ?? selectedEdge.label ?? "",
+                    selectedEdge.data?.customLabel ??
+                      (selectedTransition ? selectedTransition.label : selectedEdge.data?.label ?? selectedEdge.label) ??
+                      "",
                   )}
                   onChange={(event) =>
                     onUpdateEdgeLabel(selectedEdge.id, event.target.value)
@@ -5966,15 +6220,51 @@ function Inspector({
                 </div>
                 <div>
                   <dt>Source</dt>
-                  <dd>{selectedEdge.source}</dd>
+                  <dd>{selectedTransitionOwner?.name ?? selectedEdge.source}</dd>
                 </div>
                 <div>
                   <dt>Target</dt>
-                  <dd>{selectedEdge.target}</dd>
+                  <dd>{selectedTransitionTarget?.name ?? selectedEdge.target}</dd>
                 </div>
+                {selectedTransition && isParentCanvas ? (
+                  <div>
+                    <dt>Output</dt>
+                    <dd>{selectedTransitionOutput ?? "Event output"}</dd>
+                  </div>
+                ) : null}
               </dl>
-              {selectedTransition ? (
+              {selectedTransition && !isParentCanvas && !selectedTransitionIsGateManaged ? (
                 <>
+                  <div className="logic-grid">
+                    <label className="field-label">
+                      Resolution
+                      <select
+                        value={selectedTransition.mode ?? "conditional"}
+                        onChange={(event) =>
+                          onUpdateTransition(selectedTransition.id, {
+                            mode: event.target.value as "conditional" | "fallback",
+                          })
+                        }
+                      >
+                        <option value="conditional">If / else-if</option>
+                        <option value="fallback">Else fallback</option>
+                      </select>
+                    </label>
+                    <label className="field-label">
+                      Evaluation order
+                      <input
+                        type="number"
+                        min={1}
+                        value={(selectedTransition.order ?? 0) + 1}
+                        disabled={selectedTransition.mode === "fallback"}
+                        onChange={(event) =>
+                          onUpdateTransition(selectedTransition.id, {
+                            order: Math.max(0, Number(event.target.value) - 1),
+                          })
+                        }
+                      />
+                    </label>
+                  </div>
                   <label className="field-label">
                     Target Event
                     <select
@@ -5992,28 +6282,50 @@ function Inspector({
                       ))}
                     </select>
                   </label>
-                  <div className="inspector-actions">
-                    <button
-                      type="button"
-                      className="danger"
-                      onClick={() => onDeleteTransition(selectedTransition.id)}
-                    >
-                      Delete Transition
-                    </button>
-                  </div>
                 </>
               ) : null}
+              {selectedTransition && isParentCanvas ? (
+                <p className="inspector-connection-hint">
+                  This is a canvas connector. Configure its output, conditions,
+                  and effects inside the source event subcanvas.
+                </p>
+              ) : null}
+              {selectedTransitionIsGateManaged ? (
+                <p className="inspector-connection-hint">
+                  This route is managed by its Route Gate. Select the Gate to edit its conditions, order, fallback, and effects.
+                </p>
+              ) : null}
+              {selectedTransition ? (
+                <div className="inspector-actions">
+                  <button
+                    type="button"
+                    className="danger"
+                    onClick={() => onDeleteTransition(selectedTransition.id)}
+                  >
+                    Delete Connection
+                  </button>
+                </div>
+              ) : null}
             </section>
-            {selectedTransition ? (
+            {selectedTransition && !isParentCanvas && !selectedTransitionIsGateManaged ? (
               <>
-                <BasicConditionEditor
-                  value={selectedTransition.conditions}
-                  canonRefs={canonRefIds}
-                  dataObjects={dataObjects}
-                  onChange={(conditions) =>
-                    onUpdateTransition(selectedTransition.id, { conditions })
-                  }
-                />
+                {selectedTransition.mode !== "fallback" ? (
+                  <BasicConditionEditor
+                    value={selectedTransition.conditions}
+                    canonRefs={canonRefIds}
+                    dataObjects={dataObjects}
+                    onChange={(conditions) =>
+                      onUpdateTransition(selectedTransition.id, { conditions })
+                    }
+                  />
+                ) : (
+                  <section className="inspector-section">
+                    <h2>Fallback</h2>
+                    <p className="inspector-connection-hint">
+                      This route is evaluated last when no conditional transition matches.
+                    </p>
+                  </section>
+                )}
                 <ConsequenceEditor
                   value={selectedTransition.consequences}
                   canonRefs={canonRefIds}
@@ -6024,10 +6336,12 @@ function Inspector({
                 />
               </>
             ) : null}
-            <LogicSection
-              availability={selectedEdge.data?.conditions}
-              consequences={selectedEdge.data?.consequences}
-            />
+            {!selectedTransition || !isParentCanvas ? (
+              <LogicSection
+                availability={selectedEdge.data?.conditions}
+                consequences={selectedEdge.data?.consequences}
+              />
+            ) : null}
           </>
         ) : null}
 
@@ -6345,6 +6659,11 @@ function Inspector({
         {selectedExplorerProperty ? (
           <section className="inspector-section">
             <h2>{selectedExplorerSchemaSource === "canon" ? "Canon property" : "Local property"}</h2>
+            <p className="inspector-connection-hint">
+              {selectedExplorerSchemaSource === "canon"
+                ? "WorldNotion remains the source of truth. These capabilities are stored as Pathbranching overrides."
+                : "Configure how this local property participates in Pathbranching."}
+            </p>
             {selectedExplorerSchemaSource === "local" ? (
               <>
                 <label className="field-label">
@@ -6410,6 +6729,18 @@ function Inspector({
                 <div><dt>Applies to</dt><dd>{selectedExplorerProperty.appliesToTypes?.join(", ") || "all types"}</dd></div>
               </dl>
             )}
+            {(() => {
+              const source = selectedExplorerSchemaSource ?? "local";
+              const override = (project.logicPropertyOverrides ?? []).find(
+                (item) => item.propertyId === selectedExplorerProperty.id && item.source === source,
+              );
+              return <>
+                <label><input type="checkbox" checked={override?.conditionReadable ?? true} onChange={(event) => onUpdateLogicPropertyOverride(selectedExplorerProperty.id, source, { conditionReadable: event.target.checked })} /> Conditions</label>
+                <label><input type="checkbox" checked={override?.actionWritable ?? source === "local"} onChange={(event) => onUpdateLogicPropertyOverride(selectedExplorerProperty.id, source, { actionWritable: event.target.checked })} /> Actions</label>
+                <label><input type="checkbox" checked={override?.grantable ?? false} onChange={(event) => onUpdateLogicPropertyOverride(selectedExplorerProperty.id, source, { grantable: event.target.checked })} /> Grantable</label>
+                <label className="field-label">Can relate to<input value={(override?.relationTargetTypes ?? []).join(", ")} placeholder="character, worldbuilding" onChange={(event) => onUpdateLogicPropertyOverride(selectedExplorerProperty.id, source, { relationTargetTypes: event.target.value.split(",").map((item) => item.trim()).filter(Boolean) })} /></label>
+              </>;
+            })()}
           </section>
         ) : null}
 
@@ -6688,14 +7019,7 @@ function Inspector({
                 onUpdateDataObject(selectedDataObject.id, { availability })
               }
             />
-            <RuleSetEditor
-              value={selectedDataObject.ruleSets}
-              canonRefs={canonRefIds}
-              dataObjects={dataObjects}
-              onChange={(ruleSets) =>
-                onUpdateDataObject(selectedDataObject.id, { ruleSets })
-              }
-            />
+            <LocalRuleSetEditor value={selectedDataObject.ruleSets} canonRefs={canonRefIds} dataObjects={dataObjects} onChange={(ruleSets) => onUpdateDataObject(selectedDataObject.id, { ruleSets })} />
             <LogicSection
               availability={selectedDataObject.availability}
               ruleSets={selectedDataObject.ruleSets}
@@ -6708,12 +7032,13 @@ function Inspector({
 }
 
 type CanvasContextMenu = {
-  kind: "create" | "connect-create";
+  kind: "create" | "connect-create" | "selection";
   x: number;
   y: number;
   flowX: number;
   flowY: number;
   sourceNodeId?: string;
+  nodeIds?: string[];
 };
 
 function EventTypeMenuButton({
@@ -6923,7 +7248,6 @@ function StoryCanvas({
   exportOpen,
   exportPreviewMode,
   dataOpen,
-  canvasLayout,
   markdownTabs,
   activeMarkdownTabId,
   eventDraft,
@@ -6941,7 +7265,6 @@ function StoryCanvas({
   onNavigateScope,
   onExportPreviewModeChange,
   onToggleData,
-  onApplyCanvasLayout,
   onCreateEvent,
   onCreateNestedEvent,
   onCreateConnectedEvent,
@@ -6951,8 +7274,12 @@ function StoryCanvas({
   onUpdateEvent,
   onCreateDecision,
   onCreateDialogue,
+  onCreateDialogueBeat,
   onUpdateDecision,
   onUpdateDialogue,
+  onUpdateDialogueBeat,
+  onUpdateScriptBlock,
+  onDeleteDialogueBeat,
   onDeleteDecision,
   onDeleteDialogue,
   onCreateOutcome,
@@ -6978,8 +7305,10 @@ function StoryCanvas({
   onPublishLocalExplorerEntity,
   onUpdateLocalExplorerType,
   onUpdateLocalExplorerProperty,
+  onUpdateLogicPropertyOverride,
   onUpdateEdgeLabel,
   onDeleteSelection,
+  onDeleteNodeSelections,
   onActivateMarkdownTab,
   onCloseMarkdownTab,
   onChangeMarkdownContent,
@@ -6997,13 +7326,13 @@ function StoryCanvas({
   onSaveEventInspectorTabGroup,
   onLoadEventInspectorTabGroup,
   onDeleteEventInspectorTabGroup,
-  onEventDraftModeChange,
-  onUpdateEventDraft,
   onSaveEventDraft,
   onOpenInspectorTab,
   onCloseInspectorTab,
+  onCloseAllInspectorTabs,
   onDisableInspectorDebug,
   onToggleInspectorMaximized,
+  onOpenRule,
 }: {
   project: BranchingProject;
   propertiesConfig?: Record<string, unknown>;
@@ -7017,7 +7346,6 @@ function StoryCanvas({
   exportOpen: boolean;
   exportPreviewMode: ExportPreviewMode;
   dataOpen: boolean;
-  canvasLayout: CanvasLayoutMode;
   markdownTabs: MarkdownEditorTab[];
   activeMarkdownTabId?: string;
   eventDraft?: EventDraft;
@@ -7038,7 +7366,6 @@ function StoryCanvas({
   onNavigateScope: (scope: CanvasScope, selection?: Selection) => void;
   onExportPreviewModeChange: (mode: ExportPreviewMode) => void;
   onToggleData: () => void;
-  onApplyCanvasLayout: (mode: CanvasLayoutMode) => void;
   onCreateEvent: (
     type?: EventType,
     position?: { x: number; y: number },
@@ -7058,8 +7385,9 @@ function StoryCanvas({
   onUpdateBranch: (id: string, updates: Partial<Branch>) => void;
   onCreateEventInBranch: (branchId: string, type?: EventType) => void;
   onUpdateEvent: (id: string, updates: Partial<EventNode>) => void;
-  onCreateDecision: (eventId: string) => void;
+  onCreateDecision: (eventId: string, dialogueId?: string) => void;
   onCreateDialogue: (eventId: string) => void;
+  onCreateDialogueBeat: (eventId: string, dialogueId: string, kind: DialogueBeat["kind"]) => void;
   onUpdateDecision: (
     eventId: string,
     decisionId: string,
@@ -7070,6 +7398,9 @@ function StoryCanvas({
     dialogueId: string,
     updates: Partial<DialogueNode>,
   ) => void;
+  onUpdateDialogueBeat: (eventId: string, dialogueId: string, beatId: string, updates: Partial<DialogueBeat>) => void;
+  onUpdateScriptBlock: (scriptId: string, blockId: string, updates: { content?: string; speakerRef?: string }) => void;
+  onDeleteDialogueBeat: (eventId: string, dialogueId: string, beatId: string) => void;
   onDeleteDecision: (eventId: string, decisionId: string) => void;
   onDeleteDialogue: (eventId: string, dialogueId: string) => void;
   onCreateOutcome: (eventId: string, decisionId: string) => void;
@@ -7125,8 +7456,10 @@ function StoryCanvas({
     id: string,
     updates: Partial<LocalExplorerProperty>,
   ) => void;
+  onUpdateLogicPropertyOverride: (propertyId: string, source: "canon" | "local", changes: Partial<LogicPropertyOverride>) => void;
   onUpdateEdgeLabel: (edgeId: string, label: string) => void;
   onDeleteSelection: (selection: Selection) => void;
+  onDeleteNodeSelections: (nodeIds: string[]) => void;
   onActivateMarkdownTab: (id: string) => void;
   onCloseMarkdownTab: (id: string) => void;
   onChangeMarkdownContent: (id: string, content: string) => void;
@@ -7144,25 +7477,99 @@ function StoryCanvas({
   onSaveEventInspectorTabGroup: () => void;
   onLoadEventInspectorTabGroup: (groupId: string) => void;
   onDeleteEventInspectorTabGroup: (groupId: string) => void;
-  onEventDraftModeChange: (mode: EventDraftMode) => void;
-  onUpdateEventDraft: (updates: Partial<EventNode>) => void;
   onSaveEventDraft: () => void;
   onOpenInspectorTab: (id: string) => void;
   onCloseInspectorTab: (id: string) => void;
+  onCloseAllInspectorTabs: () => void;
   onDisableInspectorDebug: () => void;
   onToggleInspectorMaximized: () => void;
+  onOpenRule: (id: string) => void;
 }) {
   const shellRef = useRef<HTMLElement | null>(null);
+  const nodeClickTimeoutRef = useRef<number | undefined>(undefined);
+  const draggedNodeRef = useRef(false);
   const [reactFlowInstance, setReactFlowInstance] =
     useState<ReactFlowInstance<StoryCanvasNode, StoryCanvasEdge>>();
   const [contextMenu, setContextMenu] = useState<CanvasContextMenu>();
+  const [editingEdgeId, setEditingEdgeId] = useState<string>();
   const [draggingEvent, setDraggingEvent] = useState(false);
   const [minimapOpen, setMinimapOpen] = useState(true);
-  const graph = useMemo(() => ({ nodes, edges }), [edges, nodes]);
+
+  useEffect(() => {
+    return () => {
+      if (nodeClickTimeoutRef.current !== undefined) {
+        window.clearTimeout(nodeClickTimeoutRef.current);
+      }
+    };
+  }, []);
+  const inspectorNodeStates = useMemo(() => {
+    const states = new Map<string, "open" | "expanded">();
+    eventInspector.openEventIds.forEach((id) => states.set(id, "open"));
+    if (eventInspector.expandedEventId) states.set(eventInspector.expandedEventId, "expanded");
+    inspectorTabs.forEach((tab) => {
+      if (tab.selection.type !== "node") return;
+      states.set(tab.selection.id, expandedInspectorTabId === tab.id ? "expanded" : "open");
+    });
+    return states;
+  }, [eventInspector.expandedEventId, eventInspector.openEventIds, expandedInspectorTabId, inspectorTabs]);
+  const inspectorEdgeStates = useMemo(() => {
+    const states = new Map<string, "open" | "expanded">();
+    inspectorTabs.forEach((tab) => {
+      if (tab.selection.type === "edge") {
+        states.set(tab.selection.id, expandedInspectorTabId === tab.id ? "expanded" : "open");
+      }
+    });
+    return states;
+  }, [expandedInspectorTabId, inspectorTabs]);
+  const commitEdgeLabel = useCallback(
+    (edgeId: string, label: string) => {
+      onUpdateEdgeLabel(edgeId, label);
+      setEditingEdgeId(undefined);
+    },
+    [onUpdateEdgeLabel],
+  );
+  const graph = useMemo(
+    () => ({
+      nodes: nodes.map((node) => ({
+        ...node,
+        data: {
+          ...node.data,
+          inspectorState: inspectorNodeStates.get(node.id),
+        },
+      })),
+      edges: edges.map((edgeItem): StoryCanvasEdge => {
+        const edgeData = edgeItem.data ?? { kind: "contains" as const, label: "" };
+        const customLabel =
+          typeof edgeData.customLabel === "string" ? edgeData.customLabel : undefined;
+        const editable =
+          edgeData.kind === "transition" || edgeData.kind === "entry";
+        return {
+          ...edgeItem,
+          type: editable ? "editable" : edgeItem.type,
+          data: {
+            ...edgeData,
+            customLabel:
+              edgeData.kind === "entry" ? customLabel ?? "" : customLabel,
+            inspectorState: inspectorEdgeStates.get(edgeItem.id),
+            editing: editingEdgeId === edgeItem.id,
+            onCommitLabel: editable
+              ? (label: string) => commitEdgeLabel(edgeItem.id, label)
+              : undefined,
+            onCancelLabel: editable ? () => setEditingEdgeId(undefined) : undefined,
+          },
+        };
+      }),
+    }),
+    [commitEdgeLabel, editingEdgeId, edges, inspectorEdgeStates, inspectorNodeStates, nodes],
+  );
   const activeEventScope =
     activeScope?.kind === "event"
       ? project.events.find((event) => event.id === activeScope.id)
-      : undefined;
+      : activeScope?.kind === "dialogue"
+        ? project.events.find((event) => event.id === activeScope.eventId)
+        : undefined;
+  const activeDialogueScope = activeScope?.kind === "dialogue" ? activeScope : undefined;
+
   const breadcrumbs = useMemo(
     () => canvasBreadcrumb(project, activeScope),
     [activeScope, project],
@@ -7231,14 +7638,10 @@ function StoryCanvas({
     [eventDraft, project],
   );
   const inspectorEventId =
-    eventInspector.expandedEventId ??
-    eventInspector.openEventIds[0] ??
-    eventIdFromSelection(inspectorProject, nodes, selection);
-  const inspectorSelection =
-    selection ??
-    (inspectorEventId
-      ? { type: "node" as const, id: inspectorEventId }
-      : undefined);
+    eventInspector.expandedEventId ?? eventInspector.openEventIds[0];
+  const inspectorSelection = inspectorEventId
+    ? { type: "node" as const, id: inspectorEventId }
+    : selection;
 
   useEffect(() => {
     if (!reactFlowInstance) {
@@ -7281,6 +7684,43 @@ function StoryCanvas({
       });
     },
     [reactFlowInstance],
+  );
+
+  const openSelectionContextMenu = useCallback(
+    (event: ReactMouseEvent, node: StoryCanvasNode) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const selectedNodeIds = node.selected
+        ? nodes.filter((candidate) => candidate.selected).map((candidate) => candidate.id)
+        : [node.id];
+      if (!node.selected) {
+        onNodesChange([
+          ...nodes
+            .filter((candidate) => candidate.selected)
+            .map((candidate) => ({ type: "select" as const, id: candidate.id, selected: false })),
+          { type: "select", id: node.id, selected: true },
+        ]);
+      }
+      const shellRect = shellRef.current?.getBoundingClientRect();
+      setContextMenu({
+        kind: "selection",
+        ...clampFloatingMenuPosition(
+          event.clientX - (shellRect?.left ?? 0),
+          event.clientY - (shellRect?.top ?? 0),
+          {
+            left: 0,
+            top: 0,
+            right: shellRect?.width ?? window.innerWidth,
+            bottom: shellRect?.height ?? window.innerHeight,
+          },
+          250,
+        ),
+        flowX: 0,
+        flowY: 0,
+        nodeIds: selectedNodeIds,
+      });
+    },
+    [nodes, onNodesChange],
   );
 
   const openConnectionCreateMenu = useCallback<OnConnectEnd>(
@@ -7403,34 +7843,79 @@ function StoryCanvas({
           nodes={graph.nodes}
           edges={graph.edges}
           nodeTypes={nodeTypes}
+          edgeTypes={editableCanvasEdgeTypes}
           onNodesChange={onNodesChange}
           onEdgesChange={onEdgesChange}
           onConnect={onConnect}
+          selectionOnDrag
+          selectionMode={SelectionMode.Partial}
+          panOnDrag={[1]}
           onConnectEnd={openConnectionCreateMenu}
           onInit={setReactFlowInstance}
-          onNodeDrag={(_, node) => setDraggingEvent(node.data.kind === "event")}
+          onNodeDrag={(_, node) => {
+            draggedNodeRef.current = true;
+            setDraggingEvent(node.data.kind === "event");
+          }}
           onNodeDragStop={(event, node) => {
             setDraggingEvent(false);
             onNodeDragStop(event, node);
+            window.setTimeout(() => {
+              draggedNodeRef.current = false;
+            }, 0);
           }}
-          onNodeClick={(_, node) => {
+          onNodeClick={(event, node) => {
             setContextMenu(undefined);
-            onSelect({ type: "node", id: node.id });
+            setEditingEdgeId(undefined);
+            if (draggedNodeRef.current || event.shiftKey) return;
+            if (nodeClickTimeoutRef.current !== undefined) {
+              window.clearTimeout(nodeClickTimeoutRef.current);
+            }
+            nodeClickTimeoutRef.current = window.setTimeout(() => {
+              onSelect({ type: "node", id: node.id });
+              nodeClickTimeoutRef.current = undefined;
+            }, 220);
           }}
+          onNodeContextMenu={openSelectionContextMenu}
           onNodeDoubleClick={(_, node) => {
+            if (nodeClickTimeoutRef.current !== undefined) {
+              window.clearTimeout(nodeClickTimeoutRef.current);
+              nodeClickTimeoutRef.current = undefined;
+            }
             if (node.data.kind === "event") {
               onNavigateScope(
                 { kind: "event", id: node.id },
                 { type: "node", id: node.id },
               );
+            } else if (
+              node.data.kind === "dialogue" &&
+              typeof node.data.details?.eventId === "string" &&
+              typeof (node.data.details?.dialogue as { id?: string } | undefined)?.id === "string"
+            ) {
+              const dialogueId = (node.data.details!.dialogue as { id: string }).id;
+              onNavigateScope(
+                { kind: "dialogue", id: dialogueId, eventId: node.data.details.eventId as string },
+                undefined,
+              );
             }
           }}
           onEdgeClick={(_, edgeItem) => {
             setContextMenu(undefined);
+            setEditingEdgeId(undefined);
             onSelect({ type: "edge", id: edgeItem.id });
+          }}
+          onEdgeDoubleClick={(_, edgeItem) => {
+            setContextMenu(undefined);
+            onSelect({ type: "edge", id: edgeItem.id });
+            if (
+              edgeItem.data?.kind === "transition" ||
+              edgeItem.data?.kind === "entry"
+            ) {
+              setEditingEdgeId(edgeItem.id);
+            }
           }}
           onPaneClick={() => {
             setContextMenu(undefined);
+            setEditingEdgeId(undefined);
             if (
               collapseInspectorTabOnCanvasClick &&
               eventInspector.expandedEventId
@@ -7499,7 +7984,65 @@ function StoryCanvas({
           className="canvas-menu"
           style={{ left: contextMenu.x, top: contextMenu.y }}
         >
-          {contextMenu.kind === "connect-create" ? (
+          {contextMenu.kind === "selection" ? (
+            <>
+              <span className="canvas-menu-label">
+                {contextMenu.nodeIds?.length ?? 0} selected node{(contextMenu.nodeIds?.length ?? 0) === 1 ? "" : "s"}
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  contextMenu.nodeIds?.forEach((id) =>
+                    onSelect({ type: "node", id }),
+                  );
+                  setContextMenu(undefined);
+                }}
+              >
+                Open inspectors
+              </button>
+              <button
+                type="button"
+                className="danger"
+                onClick={() => {
+                  onDeleteNodeSelections(contextMenu.nodeIds ?? []);
+                  setContextMenu(undefined);
+                }}
+              >
+                Delete selected
+              </button>
+            </>
+          ) : activeDialogueScope ? (
+            <>
+              <span className="canvas-menu-label">Create inside dialogue</span>
+              <button
+                type="button"
+                onClick={() => {
+                  onCreateDialogueBeat(activeDialogueScope.eventId, activeDialogueScope.id, "speech");
+                  setContextMenu(undefined);
+                }}
+              >
+                Speech Beat
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  onCreateDialogueBeat(activeDialogueScope.eventId, activeDialogueScope.id, "direction");
+                  setContextMenu(undefined);
+                }}
+              >
+                Direction Beat
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  onCreateDecision(activeDialogueScope.eventId, activeDialogueScope.id);
+                  setContextMenu(undefined);
+                }}
+              >
+                Player Decision
+              </button>
+            </>
+          ) : contextMenu.kind === "connect-create" ? (
             <>
               <span className="canvas-menu-label">Create connected event</span>
               <EventTypeMenuButton
@@ -7570,26 +8113,6 @@ function StoryCanvas({
                 </>
               ) : (
                 <>
-                  <span className="canvas-menu-label">Layout</span>
-                  {(
-                    [
-                      ["branching", "Branching depth"],
-                      ["timeline", "Timeline"],
-                      ["branches", "Branches"],
-                    ] as const
-                  ).map(([mode, label]) => (
-                    <button
-                      key={mode}
-                      type="button"
-                      className={canvasLayout === mode ? "active" : ""}
-                      onClick={() => {
-                        onApplyCanvasLayout(mode);
-                        setContextMenu(undefined);
-                      }}
-                    >
-                      {label}
-                    </button>
-                  ))}
                 </>
               )}
             </>
@@ -7629,19 +8152,19 @@ function StoryCanvas({
         onLoadGroup={onLoadEventInspectorTabGroup}
         onDeleteGroup={onDeleteEventInspectorTabGroup}
         onSelect={onSelect}
-        onEventDraftModeChange={onEventDraftModeChange}
-        onUpdateEventDraft={onUpdateEventDraft}
         onSaveEventDraft={onSaveEventDraft}
         inspectorTabs={inspectorTabs}
         expandedInspectorTabId={expandedInspectorTabId}
         inspectorMaximized={inspectorMaximized}
         onOpenInspectorTab={onOpenInspectorTab}
         onCloseInspectorTab={onCloseInspectorTab}
+        onCloseAllInspectorTabs={onCloseAllInspectorTabs}
         onDisableInspectorDebug={onDisableInspectorDebug}
         onToggleInspectorMaximized={onToggleInspectorMaximized}
       >
         <Inspector
           project={inspectorProject}
+          scope={activeScope}
           propertiesConfig={propertiesConfig}
           nodes={nodes}
           edges={edges}
@@ -7660,6 +8183,9 @@ function StoryCanvas({
           onCreateDecision={onCreateDecision}
           onUpdateDecision={onUpdateDecision}
           onUpdateDialogue={onUpdateDialogue}
+          onUpdateDialogueBeat={onUpdateDialogueBeat}
+          onUpdateScriptBlock={onUpdateScriptBlock}
+          onDeleteDialogueBeat={onDeleteDialogueBeat}
           onDeleteDecision={onDeleteDecision}
           onDeleteDialogue={onDeleteDialogue}
           onCreateOutcome={onCreateOutcome}
@@ -7683,8 +8209,10 @@ function StoryCanvas({
           onPublishLocalExplorerEntity={onPublishLocalExplorerEntity}
           onUpdateLocalExplorerType={onUpdateLocalExplorerType}
           onUpdateLocalExplorerProperty={onUpdateLocalExplorerProperty}
+          onUpdateLogicPropertyOverride={onUpdateLogicPropertyOverride}
           onUpdateEdgeLabel={onUpdateEdgeLabel}
           onDeleteSelection={onDeleteSelection}
+          onOpenRule={onOpenRule}
         />
       </EventAuthoringDock>
     </main>
@@ -7694,6 +8222,7 @@ function StoryCanvas({
 export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
   const desktopRuntime = isTauriRuntime();
   const [settings, setSettings] = useState<AppSettings>(() => loadSettings());
+  const activeTheme = (suiteChrome?.suiteSettings?.style ?? settings.theme) as ThemeId;
   const [view, setView] = useState<AppView>(
     () => loadSettings().lastView ?? "home",
   );
@@ -7718,6 +8247,7 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
   const [panelCollapsed, setPanelCollapsed] = useState<WorkspacePanelState>(
     DEFAULT_WORKSPACE_PANEL_COLLAPSED,
   );
+  const [selectedLogicRuleId, setSelectedLogicRuleId] = useState<string>();
   const [canonWidth, setCanonWidth] = useState(DEFAULT_EXPLORER_WIDTH);
   const [storiesWidth, setStoriesWidth] = useState(DEFAULT_PANEL_WIDTH);
   const [panelResizing, setPanelResizing] = useState(false);
@@ -7797,6 +8327,7 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
     x: number;
     y: number;
   }>();
+  const panelContextMenuRef = useRef<HTMLDivElement | null>(null);
   const projectRef = useRef<BranchingProject | undefined>(undefined);
   const workspaceRef = useRef<PathBranchingWorkspace | undefined>(undefined);
   const fileStateRef = useRef<ProjectFileState>({ dirty: false });
@@ -7964,7 +8495,7 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
       });
       setPanelCollapsed({
         ...DEFAULT_WORKSPACE_PANEL_COLLAPSED,
-        explorer: !(savedSession.canonOpen ?? activeProject.panels?.canonOpen ?? true),
+        assets: savedSession.panelCollapsed?.assets ?? !(savedSession.canonOpen ?? activeProject.panels?.canonOpen ?? true),
         outline: !(savedSession.filesOpen ?? activeProject.panels?.filesOpen ?? true),
         ...savedSession.panelCollapsed,
       });
@@ -8519,6 +9050,32 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
                 }
               : property,
           ),
+        },
+      });
+    },
+    [commitStructuralAction],
+  );
+
+  const updateLogicPropertyOverride = useCallback(
+    (
+      propertyId: string,
+      source: "canon" | "local",
+      changes: Partial<LogicPropertyOverride>,
+    ) => {
+      const currentProject = projectRef.current;
+      if (!currentProject) return;
+      const current = (currentProject.logicPropertyOverrides ?? []).find(
+        (item) => item.propertyId === propertyId && item.source === source,
+      ) ?? { propertyId, source };
+      void commitStructuralAction("Updated property capabilities", {
+        project: {
+          ...currentProject,
+          logicPropertyOverrides: [
+            ...(currentProject.logicPropertyOverrides ?? []).filter(
+              (item) => item.propertyId !== propertyId || item.source !== source,
+            ),
+            { ...current, ...changes },
+          ],
         },
       });
     },
@@ -9149,6 +9706,38 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
     }
   }, []);
 
+  const saveUniverseProfile = useCallback(async (profile: UniverseProfile) => {
+    const universePath = fileStateRef.current.universePath;
+    if (!universePath) {
+      throw new Error("Open a universe before saving its customization.");
+    }
+    const normalizedProfile: UniverseProfile = {
+      ...fileStateRef.current.universeProfile,
+      name: profile.name?.trim() || undefined,
+      icon: profile.icon,
+    };
+    const result = await saveUniverseTextFile(
+      universePath,
+      ".everend/universe.json",
+      `${JSON.stringify(normalizedProfile, null, 2)}\n`,
+    );
+    if (!result.ok) {
+      throw new Error(result.message ?? "Could not save universe profile.");
+    }
+    setFileState((current) => {
+      const next = { ...current, universeProfile: normalizedProfile };
+      fileStateRef.current = next;
+      return next;
+    });
+    setWorkspace((current) => {
+      if (!current) return current;
+      const next = { ...current, universeProfile: normalizedProfile };
+      workspaceRef.current = next;
+      return next;
+    });
+    setMessage("Universe customization saved.");
+  }, []);
+
   const persistProject = useCallback((options: { manual?: boolean } = {}) => {
     const run = async () => {
       const currentProject = projectRef.current;
@@ -9293,6 +9882,7 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
   ]);
 
   const openEventInspectorForEvent = useCallback((eventId: string) => {
+    setExpandedInspectorTabId(undefined);
     setEventInspector((current) => openEventInspectorTab(current, eventId));
   }, []);
 
@@ -9324,8 +9914,23 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
           selectNextOnClose: settings.inspectorTabCloseSelectsNext,
         }),
       );
+      if (
+        settings.inspectorTabCloseSelectsNext &&
+        eventInspector.expandedEventId === eventId &&
+        eventInspector.openEventIds.length === 1 &&
+        inspectorTabs.length > 0
+      ) {
+        setExpandedInspectorTabId(inspectorTabs[0].id);
+        setSelection(inspectorTabs[0].selection);
+      }
     },
-    [eventDraft, settings.inspectorTabCloseSelectsNext],
+    [
+      eventDraft,
+      eventInspector.expandedEventId,
+      eventInspector.openEventIds.length,
+      inspectorTabs,
+      settings.inspectorTabCloseSelectsNext,
+    ],
   );
 
   const closeAllInspectorTabs = useCallback(() => {
@@ -9396,11 +10001,29 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
         return;
       }
       const nextInspector = loadEventInspectorTabGroup(group);
-      setEventInspector(nextInspector);
-      setInspectorTabs(group.inspectorTabs ?? []);
-      setExpandedInspectorTabId(undefined);
+      const nextInspectorTabs = group.inspectorTabs ?? [];
+      const nextExpandedInspectorTabId =
+        group.inspectorExpandedTabId &&
+        nextInspectorTabs.some(
+          (tab) => tab.id === group.inspectorExpandedTabId,
+        )
+          ? group.inspectorExpandedTabId
+          : nextInspector.expandedEventId
+            ? undefined
+            : nextInspectorTabs[0]?.id;
+      setEventInspector(
+        nextExpandedInspectorTabId
+          ? { ...nextInspector, expandedEventId: undefined }
+          : nextInspector,
+      );
+      setInspectorTabs(nextInspectorTabs);
+      setExpandedInspectorTabId(nextExpandedInspectorTabId);
       setSelection(
-        nextInspector.expandedEventId
+        nextExpandedInspectorTabId
+          ? nextInspectorTabs.find(
+              (tab) => tab.id === nextExpandedInspectorTabId,
+            )?.selection
+          : nextInspector.expandedEventId
           ? { type: "node", id: nextInspector.expandedEventId }
           : undefined,
       );
@@ -9479,14 +10102,77 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
     [eventDraft, nodes, openEventInspectorForEvent],
   );
 
-  const openInspectorTab = useCallback((id: string) => {
-    setExpandedInspectorTabId((current) => (current === id ? undefined : id));
-  }, []);
+  const openInspectorTab = useCallback(
+    (id: string) => {
+      const expanding = expandedInspectorTabId !== id;
+      setExpandedInspectorTabId(expanding ? id : undefined);
+      if (expanding) {
+        setEventInspector((current) => ({
+          ...current,
+          expandedEventId: undefined,
+        }));
+        const target = inspectorTabs.find((tab) => tab.id === id);
+        if (target) setSelection(target.selection);
+      }
+    },
+    [expandedInspectorTabId, inspectorTabs],
+  );
 
-  const closeInspectorTab = useCallback((id: string) => {
-    setInspectorTabs((current) => current.filter((tab) => tab.id !== id));
-    setExpandedInspectorTabId((current) => (current === id ? undefined : current));
-  }, []);
+  const closeInspectorTab = useCallback(
+    (id: string) => {
+      const closedIndex = inspectorTabs.findIndex((tab) => tab.id === id);
+      const nextTabs = inspectorTabs.filter((tab) => tab.id !== id);
+      setInspectorTabs(nextTabs);
+      if (expandedInspectorTabId !== id) return;
+      const nextTab = settings.inspectorTabCloseSelectsNext
+        ? nextTabs[closedIndex] ?? nextTabs[closedIndex - 1]
+        : undefined;
+      setExpandedInspectorTabId(nextTab?.id);
+      if (nextTab) {
+        setSelection(nextTab.selection);
+      } else if (
+        settings.inspectorTabCloseSelectsNext &&
+        eventInspector.openEventIds.length > 0
+      ) {
+        setEventInspector((current) => ({
+          ...current,
+          open: true,
+          expandedEventId: current.openEventIds[0],
+        }));
+        setSelection({ type: "node", id: eventInspector.openEventIds[0] });
+      }
+    },
+    [
+      eventInspector.openEventIds,
+      expandedInspectorTabId,
+      inspectorTabs,
+      settings.inspectorTabCloseSelectsNext,
+    ],
+  );
+
+  const closeDeletedNodeInspector = useCallback(
+    (nodeId: string) => {
+      const removedTabIds = new Set(
+        inspectorTabs
+          .filter(
+            (tab) => tab.selection.type === "node" && tab.selection.id === nodeId,
+          )
+          .map((tab) => tab.id),
+      );
+      setInspectorTabs((current) =>
+        current.filter(
+          (tab) => tab.selection.type !== "node" || tab.selection.id !== nodeId,
+        ),
+      );
+      setExpandedInspectorTabId((current) =>
+        current && removedTabIds.has(current) ? undefined : current,
+      );
+      setSelection((current) =>
+        current?.type === "node" && current.id === nodeId ? undefined : current,
+      );
+    },
+    [inspectorTabs],
+  );
 
   const resolveEventDraftDialog = useCallback(
     async (action: "save" | "discard" | "cancel") => {
@@ -10146,7 +10832,14 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
         const groups = result.groupId
           ? result.groups.map((group) =>
               group.id === result.groupId
-                ? { ...group, inspectorTabs: [...inspectorTabs] }
+                ? {
+                    ...group,
+                    inspectorTabs: [...inspectorTabs],
+                    inspectorExpandedTabId: expandedInspectorTabId,
+                    expandedEventId: expandedInspectorTabId
+                      ? undefined
+                      : group.expandedEventId,
+                  }
                 : group,
             )
           : [
@@ -10156,6 +10849,7 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
                 name: value,
                 eventIds: [],
                 inspectorTabs: [...inspectorTabs],
+                inspectorExpandedTabId: expandedInspectorTabId,
                 createdAt: Date.now(),
                 updatedAt: Date.now(),
               },
@@ -10174,6 +10868,7 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
       createStory,
       eventInspector,
       eventInspectorTabGroups,
+      expandedInspectorTabId,
       inspectorTabs,
       nameDialog,
       runMutation,
@@ -10509,10 +11204,6 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
         from:
           sourceNode.data.kind === "outcome" ? sourceNode.id : sourceEventId,
         to: targetEventId,
-        label:
-          sourceNode.data.kind === "outcome"
-            ? "outcome transition"
-            : "transition",
         source: "graph",
       };
 
@@ -10595,19 +11286,22 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
   );
 
   const createDecision = useCallback(
-    (eventId: string) => {
+    (eventId: string, dialogueId?: string) => {
       if (!project) {
         return;
       }
       if (eventDraft?.eventId === eventId) {
-        mutateEventDraft((draftProject) =>
-          mutations.createDecision(draftProject, eventId),
+        const draftProject = applyEventDraftToProject(project, eventDraft);
+        setEventDraft(undefined);
+        runMutation(
+          mutations.createDecision(draftProject, eventId, dialogueId),
+          "Created decision",
         );
         return;
       }
-      runMutation(mutations.createDecision(project, eventId));
+      runMutation(mutations.createDecision(project, eventId, dialogueId));
     },
-    [eventDraft?.eventId, mutateEventDraft, project, runMutation],
+    [eventDraft, project, runMutation],
   );
 
   const createDialogue = useCallback(
@@ -10616,8 +11310,11 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
         return;
       }
       if (eventDraft?.eventId === eventId) {
-        mutateEventDraft((draftProject) =>
+        const draftProject = applyEventDraftToProject(project, eventDraft);
+        setEventDraft(undefined);
+        runMutation(
           mutations.createDialogue(draftProject, eventId),
+          "Created dialogue",
         );
         return;
       }
@@ -10626,7 +11323,7 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
         "Created dialogue",
       );
     },
-    [eventDraft?.eventId, mutateEventDraft, project, runMutation],
+    [eventDraft, project, runMutation],
   );
 
   const updateDecision = useCallback(
@@ -10665,20 +11362,83 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
     [eventDraft?.eventId, mutateEventDraft, project, runMutation],
   );
 
+  const createDialogueBeat = useCallback(
+    (eventId: string, dialogueId: string, kind: DialogueBeat["kind"]) => {
+      if (!project) return;
+      const sourceProject =
+        eventDraft?.eventId === eventId
+          ? applyEventDraftToProject(project, eventDraft)
+          : project;
+      if (eventDraft?.eventId === eventId) setEventDraft(undefined);
+      runMutation(
+        mutations.createDialogueBeat(sourceProject, eventId, dialogueId, kind),
+        "Created dialogue beat",
+      );
+    },
+    [eventDraft, project, runMutation],
+  );
+
+  const updateDialogueBeat = useCallback(
+    (eventId: string, dialogueId: string, beatId: string, updates: Partial<DialogueBeat>) => {
+      if (!project) return;
+      runMutation(mutations.updateDialogueBeat(project, eventId, dialogueId, beatId, updates));
+    },
+    [project, runMutation],
+  );
+
+  const updateScriptBlock = useCallback(
+    (scriptId: string, blockId: string, updates: Partial<ScriptBlock>) => {
+      if (!project) return;
+      runMutation(mutations.updateScriptBlock(project, scriptId, blockId, updates));
+    },
+    [project, runMutation],
+  );
+
+  const createScriptDocument = useCallback(() => {
+    if (!project) return;
+    runMutation(mutations.createScriptDocument(project));
+  }, [project, runMutation]);
+
+  const updateScriptDocument = useCallback((scriptId: string, updates: { name?: string }) => {
+    if (!project) return;
+    runMutation(mutations.updateScriptDocument(project, scriptId, updates));
+  }, [project, runMutation]);
+
+  const createScriptBlock = useCallback((scriptId: string, kind: ScriptBlock["kind"]) => {
+    if (!project) return;
+    runMutation(mutations.createScriptBlock(project, scriptId, kind));
+  }, [project, runMutation]);
+
+  const insertScriptBlock = useCallback((scriptId: string, blockId: string, eventId: string, dialogueId: string) => {
+    if (!project) return;
+    runMutation(mutations.linkScriptBlockToDialogue(project, scriptId, blockId, eventId, dialogueId));
+  }, [project, runMutation]);
+
+  const deleteDialogueBeat = useCallback(
+    (eventId: string, dialogueId: string, beatId: string) => {
+      if (!project) return;
+      closeDeletedNodeInspector(`beat:${eventId}:${dialogueId}:${beatId}`);
+      runMutation(mutations.deleteDialogueBeat(project, eventId, dialogueId, beatId));
+    },
+    [closeDeletedNodeInspector, project, runMutation],
+  );
+
   const deleteDecision = useCallback(
     (eventId: string, decisionId: string) => {
       if (!project) {
         return;
       }
       if (eventDraft?.eventId === eventId) {
+        closeDeletedNodeInspector(`decision:${eventId}:${decisionId}`);
         mutateEventDraft((draftProject) =>
           mutations.deleteDecision(draftProject, eventId, decisionId),
         );
         return;
       }
+      closeDeletedNodeInspector(`decision:${eventId}:${decisionId}`);
       runMutation(mutations.deleteDecision(project, eventId, decisionId));
     },
-    [eventDraft?.eventId, mutateEventDraft, project, runMutation],
+    [closeDeletedNodeInspector, eventDraft?.eventId, mutateEventDraft, project, runMutation],
   );
 
   const deleteDialogue = useCallback(
@@ -10687,14 +11447,16 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
         return;
       }
       if (eventDraft?.eventId === eventId) {
+        closeDeletedNodeInspector(`dialogue:${eventId}:${dialogueId}`);
         mutateEventDraft((draftProject) =>
           mutations.deleteDialogue(draftProject, eventId, dialogueId),
         );
         return;
       }
+      closeDeletedNodeInspector(`dialogue:${eventId}:${dialogueId}`);
       runMutation(mutations.deleteDialogue(project, eventId, dialogueId));
     },
-    [eventDraft?.eventId, mutateEventDraft, project, runMutation],
+    [closeDeletedNodeInspector, eventDraft?.eventId, mutateEventDraft, project, runMutation],
   );
 
   const createOutcome = useCallback(
@@ -10838,6 +11600,21 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
     [project, runMutation],
   );
 
+  const deleteBoundaryEdge = useCallback(
+    (edgeId: string) => {
+      if (edgeId.startsWith("edge:boundary:")) {
+        removeBoundaryBinding(edgeId.replace("edge:boundary:", ""));
+        return;
+      }
+      if (!edgeId.startsWith("edge:dialogue-entry:") || activeScope?.kind !== "dialogue") {
+        return;
+      }
+      const dialogueId = edgeId.replace("edge:dialogue-entry:", "");
+      updateDialogue(activeScope.eventId, dialogueId, { entryBeatId: undefined });
+    },
+    [activeScope, removeBoundaryBinding, updateDialogue],
+  );
+
   const createCanonSuggestion = useCallback(
     (
       canonRefId: string,
@@ -10939,6 +11716,11 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
         setMessage("Connection source or target could not be resolved.");
         return;
       }
+      const routeSourceId =
+        sourceNode.data.kind === "routeGate" &&
+        typeof sourceNode.data.details?.routeSourceId === "string"
+          ? sourceNode.data.details.routeSourceId
+          : sourceNode.id;
 
       const boundaryNode =
         sourceNode.data.kind === "boundary"
@@ -10946,6 +11728,27 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
           : targetNode.data.kind === "boundary"
             ? targetNode
             : undefined;
+      if (activeScope?.kind === "dialogue" && boundaryNode) {
+        const dialogue = project.events
+          .find((event) => event.id === activeScope.eventId)
+          ?.dialogues?.find((item) => item.id === activeScope.id);
+        if (!dialogue) return;
+        const direction = boundaryNode.data.details?.direction === "output" ? "output" : "input";
+        const internalNode = boundaryNode.id === sourceNode.id ? targetNode : sourceNode;
+        if (direction === "input") {
+          const beat = internalNode.data.details?.beat as { id?: string } | undefined;
+          if (boundaryNode.id !== sourceNode.id || !beat?.id) {
+            setMessage("Dialogue entry must connect from Entry into a speech or direction beat.");
+            return;
+          }
+          updateDialogue(activeScope.eventId, activeScope.id, { entryBeatId: beat.id });
+          return;
+        }
+        if (boundaryNode.id !== targetNode.id) {
+          setMessage("Dialogue exits connect from an internal node into Exit.");
+          return;
+        }
+      }
       if (activeScope?.kind === "event" && boundaryNode) {
         const internalNode =
           boundaryNode.id === sourceNode.id ? targetNode : sourceNode;
@@ -10965,18 +11768,47 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
           );
           return;
         }
+        const route = mutations.createInternalTransition(
+          project,
+          activeScope.id,
+          sourceNode.id,
+          targetNode.id,
+        );
+        updateProject(route.project, route.selection);
+        return;
+      }
+
+      if (activeScope?.kind === "event" || activeScope?.kind === "dialogue") {
+        if (sourceNode.data.kind === "decision") {
+          setMessage("Connect a Decision through one of its Outcome nodes.");
+          return;
+        }
+        const ownerEventId =
+          activeScope.kind === "dialogue"
+            ? activeScope.eventId
+            : activeScope.id;
+        const ownerEvent = findEvent(project, ownerEventId);
+        if (!ownerEvent) return;
+        const transitionId = transitionFrom(routeSourceId, targetNode.id, ownerEvent.transitions);
+        const siblingCount = (ownerEvent.transitions ?? []).filter((item) => item.from === routeSourceId).length;
+        const transition: Transition = {
+          id: transitionId,
+          from: routeSourceId,
+          to: targetNode.id,
+          order: siblingCount,
+          mode: "conditional",
+          source: "graph",
+        };
         updateProject(
-          mutations.bindBoundaryPort(
-            project,
-            activeScope.id,
-            boundaryNode.id,
-            internalNode.id,
-            direction,
-          ).project,
           {
-            type: "edge",
-            id: `edge:boundary:${boundaryNode.id}:${internalNode.id}`,
+            ...project,
+            events: project.events.map((event) =>
+              event.id === ownerEventId
+                ? { ...event, transitions: [...(event.transitions ?? []), transition] }
+                : event,
+            ),
           },
+          { type: "edge", id: `edge:transition:${transitionId}` },
         );
         return;
       }
@@ -11077,10 +11909,6 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
         from:
           sourceNode.data.kind === "outcome" ? sourceNode.id : sourceEventId,
         to: targetEventId,
-        label:
-          sourceNode.data.kind === "outcome"
-            ? "outcome transition"
-            : "transition",
         source: "graph",
       };
 
@@ -11109,7 +11937,7 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
         { type: "edge", id: `edge:transition:${transitionId}` },
       );
     },
-    [activeScope, nodes, project, updateProject],
+    [activeScope, nodes, project, updateDialogue, updateProject],
   );
 
   const handleNodeDragStop = useCallback(
@@ -11151,6 +11979,23 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
     (edgeId: string, label: string) => {
       if (!project) {
         return;
+      }
+      const entryEdge = edges.find(
+        (edgeItem) => edgeItem.id === edgeId && edgeItem.data?.kind === "entry",
+      );
+      if (entryEdge) {
+        const sequenceId = entryEdge.source.startsWith("start:")
+          ? entryEdge.source.slice("start:".length)
+          : undefined;
+        if (sequenceId && project.sequences.some((sequence) => sequence.id === sequenceId)) {
+          updateProject({
+            ...project,
+            sequences: project.sequences.map((sequence) =>
+              sequence.id === sequenceId ? { ...sequence, entryLabel: label } : sequence,
+            ),
+          });
+          return;
+        }
       }
       const transitionId = edgeId.startsWith("edge:transition:")
         ? edgeId.replace("edge:transition:", "")
@@ -11194,6 +12039,7 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
       });
     },
     [
+      edges,
       eventDraft?.draftEvent.transitions,
       mutateEventDraft,
       project,
@@ -11262,12 +12108,35 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
       const id = targetSelection.id;
       const selectedNode = nodes.find((node) => node.id === id);
       if (
+        (selectedNode?.data.kind === "speechBeat" || selectedNode?.data.kind === "directionBeat") &&
+        typeof selectedNode.data.details?.eventId === "string" &&
+        typeof selectedNode.data.details?.dialogueId === "string"
+      ) {
+        const beat = selectedNode.data.details.beat as { id?: string } | undefined;
+        if (beat?.id) {
+          closeDeletedNodeInspector(
+            `beat:${selectedNode.data.details.eventId}:${selectedNode.data.details.dialogueId}:${beat.id}`,
+          );
+          runMutation(
+            mutations.deleteDialogueBeat(
+              project,
+              selectedNode.data.details.eventId,
+              selectedNode.data.details.dialogueId,
+              beat.id,
+            ),
+          );
+          setSelection(undefined);
+        }
+        return;
+      }
+      if (
         selectedNode?.data.kind === "dialogue" &&
         typeof selectedNode.data.details?.eventId === "string"
       ) {
         const dialogue = selectedNode.data.details.dialogue as
           { id?: string } | undefined;
         if (dialogue?.id) {
+          closeDeletedNodeInspector(`dialogue:${selectedNode.data.details.eventId}:${dialogue.id}`);
           runMutation(
             mutations.deleteDialogue(
               project,
@@ -11286,6 +12155,7 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
         const decision = selectedNode.data.details.decision as
           { id?: string } | undefined;
         if (decision?.id) {
+          closeDeletedNodeInspector(`decision:${selectedNode.data.details.eventId}:${decision.id}`);
           runMutation(
             mutations.deleteDecision(
               project,
@@ -11446,7 +12316,113 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
         setSelection(undefined);
       }
     },
-    [nodes, project, runMutation, updateProject],
+    [closeDeletedNodeInspector, nodes, project, runMutation, updateProject],
+  );
+
+  const deleteNodeSelections = useCallback(
+    (nodeIds: string[]) => {
+      if (!project) return;
+
+      const selectedIds = new Set(nodeIds);
+      const selectedNodes = nodes.filter((node) => selectedIds.has(node.id));
+      let nextProject = project;
+      let deletedCount = 0;
+
+      for (const node of selectedNodes) {
+        const eventId = node.data.details?.eventId;
+        const dialogueId = node.data.details?.dialogueId;
+        if (
+          (node.data.kind === "speechBeat" || node.data.kind === "directionBeat") &&
+          typeof eventId === "string" &&
+          typeof dialogueId === "string"
+        ) {
+          const beat = node.data.details?.beat as { id?: string } | undefined;
+          if (beat?.id) {
+            closeDeletedNodeInspector(`beat:${eventId}:${dialogueId}:${beat.id}`);
+            nextProject = mutations.deleteDialogueBeat(nextProject, eventId, dialogueId, beat.id).project;
+            deletedCount += 1;
+          }
+        } else if (node.data.kind === "dialogue" && typeof eventId === "string") {
+          const dialogue = node.data.details?.dialogue as { id?: string } | undefined;
+          if (dialogue?.id) {
+            closeDeletedNodeInspector(`dialogue:${eventId}:${dialogue.id}`);
+            nextProject = mutations.deleteDialogue(nextProject, eventId, dialogue.id).project;
+            deletedCount += 1;
+          }
+        } else if (node.data.kind === "decision" && typeof eventId === "string") {
+          const decision = node.data.details?.decision as { id?: string } | undefined;
+          if (decision?.id) {
+            closeDeletedNodeInspector(`decision:${eventId}:${decision.id}`);
+            nextProject = mutations.deleteDecision(nextProject, eventId, decision.id).project;
+            deletedCount += 1;
+          }
+        } else if (node.data.kind === "missingRef") {
+          const ownerId = node.data.details?.ownerId;
+          const missingEventId = node.data.details?.missingEventId;
+          if (typeof ownerId === "string" && typeof missingEventId === "string") {
+            nextProject = mutations.removeMissingEventReference(nextProject, ownerId, missingEventId).project;
+            deletedCount += 1;
+          }
+        }
+      }
+
+      const eventIds = selectedNodes
+        .filter((node) => node.data.kind === "event")
+        .map((node) => node.id)
+        .filter((id) => {
+          const event = findEvent(nextProject, id);
+          return Boolean(event) &&
+            (event?.childEventIds?.length ?? 0) === 0 &&
+            !nextProject.sequences.some((sequence) => sequence.entryEventId === id);
+        });
+      if (eventIds.length > 0) {
+        const removedEventIds = new Set(eventIds);
+        const removedTransitionIds = new Set(
+          nextProject.events.flatMap((event) =>
+            (event.transitions ?? [])
+              .filter((transition) => removedEventIds.has(transition.from) || removedEventIds.has(transition.to))
+              .map((transition) => transition.id),
+          ),
+        );
+        nextProject = {
+          ...nextProject,
+          sequences: nextProject.sequences.map((sequence) => ({
+            ...sequence,
+            eventIds: sequence.eventIds.filter((id) => !removedEventIds.has(id)),
+          })),
+          branches: nextProject.branches.map((branch) => ({
+            ...branch,
+            eventIds: branch.eventIds.filter((id) => !removedEventIds.has(id)),
+          })),
+          events: nextProject.events
+            .filter((event) => !removedEventIds.has(event.id))
+            .map((event) => ({
+              ...event,
+              childEventIds: event.childEventIds?.filter((id) => !removedEventIds.has(id)),
+              transitions: (event.transitions ?? []).filter(
+                (transition) => !removedEventIds.has(transition.from) && !removedEventIds.has(transition.to),
+              ),
+              boundaryBindings: (event.boundaryBindings ?? []).filter(
+                (binding) => !removedEventIds.has(binding.nodeId) &&
+                  !removedTransitionIds.has(binding.portId.split(":").at(-1) ?? ""),
+              ),
+            })),
+        };
+        eventIds.forEach((id) => closeDeletedNodeInspector(id));
+        deletedCount += eventIds.length;
+      }
+
+      if (deletedCount === 0) {
+        setMessage("The selected nodes cannot be deleted in their current state.");
+        return;
+      }
+      setSelection(undefined);
+      void commitStructuralAction(
+        `Deleted ${deletedCount} selected node${deletedCount === 1 ? "" : "s"}`,
+        nextProject,
+      );
+    },
+    [closeDeletedNodeInspector, commitStructuralAction, nodes, project],
   );
 
   useEffect(() => {
@@ -11483,12 +12459,23 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
         event.preventDefault();
         deleteTransition(currentSelection.id.replace("edge:transition:", ""));
         setSelection(undefined);
+        return;
+      }
+
+      if (
+        currentSelection.type === "edge" &&
+        (currentSelection.id.startsWith("edge:boundary:") ||
+          currentSelection.id.startsWith("edge:dialogue-entry:"))
+      ) {
+        event.preventDefault();
+        deleteBoundaryEdge(currentSelection.id);
+        setSelection(undefined);
       }
     };
 
     window.addEventListener("keydown", handleDeleteKey, true);
     return () => window.removeEventListener("keydown", handleDeleteKey, true);
-  }, [deleteSelection, deleteTransition]);
+  }, [deleteBoundaryEdge, deleteSelection, deleteTransition]);
 
   const createKnowledgeObject = useCallback(() => {
     if (!project) {
@@ -11517,7 +12504,7 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
 
   const toggleCanon = useCallback(() => {
     setCanonOpen((open) => !open);
-    setPanelCollapsed((current) => ({ ...current, explorer: !current.explorer }));
+    setPanelCollapsed((current) => ({ ...current, assets: !current.assets }));
   }, []);
 
   const toggleFiles = useCallback(() => {
@@ -11528,7 +12515,6 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
   const setPanelCollapsedState = useCallback(
     (panel: WorkspacePanelId, collapsed: boolean) => {
       setPanelCollapsed((current) => ({ ...current, [panel]: collapsed }));
-      if (panel === "explorer") setCanonOpen(!collapsed);
       if (panel === "outline") setFilesOpen(!collapsed);
     },
     [],
@@ -11549,6 +12535,32 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
       clampFloatingMenuPosition(event.clientX, event.clientY, bounds, 205, 250),
     );
   }, []);
+
+  const openLogicRule = useCallback((id: string) => {
+    setSelectedLogicRuleId(id);
+    setPanelVisibility((current) => ({ ...current, logic: true }));
+    setPanelCollapsed((current) => ({ ...current, logic: false }));
+  }, []);
+
+  useEffect(() => {
+    if (!panelContextMenu) return;
+
+    const handlePointerDown = (event: PointerEvent) => {
+      if (panelContextMenuRef.current?.contains(event.target as Node)) return;
+      setPanelContextMenu(undefined);
+    };
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setPanelContextMenu(undefined);
+    };
+
+    document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [panelContextMenu]);
 
   useEffect(() => {
     if (!settings.worldnotionBridge.connected || !isTauriRuntime()) {
@@ -11592,7 +12604,7 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
           break;
         case "pb:view:toggle-canon":
         case "pb:view:toggle-explorer":
-          togglePanelVisibility("explorer");
+          togglePanelVisibility("assets");
           break;
         case "pb:view:toggle-files":
         case "pb:view:toggle-outline":
@@ -11755,7 +12767,7 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
       fileState={fileState}
       settings={settings}
       findings={findings}
-      theme={settings.theme}
+      theme={activeTheme}
       onUpdateEventCategories={updateEventCategories}
       onCanvasBackgroundChange={changeCanvasBackground}
       onNodeColorChange={changeNodeColors}
@@ -11772,6 +12784,7 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
       onOpenUniverse={openProject}
       onOpenRecentUniverse={openRecentProject}
       onRemoveRecentUniverse={removeRecentProject}
+      onSaveUniverseProfile={saveUniverseProfile}
       onClose={() => setShowSettings(false)}
       suiteSettings={suiteChrome?.suiteSettings}
     />
@@ -11829,7 +12842,7 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
           <Topbar
             fileState={fileState}
             exportOpen={exportOpen}
-            theme={settings.theme}
+            theme={activeTheme}
             onOpenSettings={() => setShowSettings(true)}
             onRevealUniverse={revealUniverse}
             onToggleTheme={toggleTheme}
@@ -11857,7 +12870,7 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
           <Topbar
             fileState={fileState}
             exportOpen={exportOpen}
-            theme={settings.theme}
+            theme={activeTheme}
             onOpenSettings={() => setShowSettings(true)}
             onRevealUniverse={revealUniverse}
             onToggleTheme={toggleTheme}
@@ -11892,7 +12905,7 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
           settings={settings}
           missingRecentProjects={missingRecentProjects}
           findings={findings}
-          theme={settings.theme}
+          theme={activeTheme}
           onOpenSettings={() => setShowSettings(true)}
           onToggleTheme={toggleTheme}
           onEnterWorkspace={() => setView("workspace")}
@@ -11915,7 +12928,7 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
           project={project}
           fileState={fileState}
           exportOpen={exportOpen}
-          theme={settings.theme}
+          theme={activeTheme}
           onOpenSettings={() => setShowSettings(true)}
           onRevealUniverse={revealUniverse}
           onToggleTheme={toggleTheme}
@@ -11935,31 +12948,43 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
           className={`workspace ${panelResizing ? "resizing" : ""}`}
           style={{
             gridTemplateColumns: [
-              panelVisibility.explorer ? `${panelCollapsed.explorer ? COLLAPSED_RAIL_WIDTH : canonWidth}px` : "",
-              panelVisibility.outline ? `${panelCollapsed.outline ? COLLAPSED_RAIL_WIDTH : storiesWidth}px` : "",
               panelVisibility.assets ? `${panelCollapsed.assets ? COLLAPSED_RAIL_WIDTH : DEFAULT_PANEL_WIDTH}px` : "",
               panelVisibility.logic ? `${panelCollapsed.logic ? COLLAPSED_RAIL_WIDTH : DEFAULT_PANEL_WIDTH}px` : "",
+              panelVisibility.outline ? `${panelCollapsed.outline ? COLLAPSED_RAIL_WIDTH : storiesWidth}px` : "",
               "minmax(0, 1fr)",
               panelVisibility.export ? `${panelCollapsed.export ? COLLAPSED_RAIL_WIDTH : DEFAULT_PANEL_WIDTH}px` : "",
+              panelVisibility.player ? `${panelCollapsed.player ? COLLAPSED_RAIL_WIDTH : DEFAULT_PANEL_WIDTH}px` : "",
               panelVisibility.connect ? `${panelCollapsed.connect ? COLLAPSED_RAIL_WIDTH : DEFAULT_PANEL_WIDTH}px` : "",
             ].filter(Boolean).join(" "),
           }}
         >
-          {panelVisibility.explorer ? <ExplorerPanel
+          {panelVisibility.assets ? <AssetsPanel
             project={project}
-            propertiesConfig={workspace?.canonIndex.propertiesConfig}
-            open={!panelCollapsed.explorer}
+            collapsed={panelCollapsed.assets}
+            onCollapsedChange={(collapsed) => setPanelCollapsedState("assets", collapsed)}
+            onContextMenu={openPanelContextMenu}
+            onImport={() => void importAssets()}
+            onCreateScript={createScriptDocument}
+            onUpdateScript={updateScriptDocument}
+            onAddScriptBlock={createScriptBlock}
+            onUpdateScriptBlock={updateScriptBlock}
+            onInsertScriptBlock={insertScriptBlock}
             selected={selection}
-            onToggle={() => setPanelCollapsedState("explorer", !panelCollapsed.explorer)}
             onSelect={selectWithEventDraftGuard}
             onCreateEntity={createExplorerEntity}
             onDeleteEntity={deleteLocalExplorerEntity}
             onCreateType={createExplorerType}
-            onCreateProperty={createExplorerProperty}
-            onResize={resizeCanon}
-            onResetWidth={() => setCanonWidth(DEFAULT_EXPLORER_WIDTH)}
-            onResizeStateChange={setPanelResizing}
+          /> : null}
+          {panelVisibility.logic ? <LogicPanel
+            project={project}
+            propertiesConfig={workspace?.canonIndex.propertiesConfig}
+            collapsed={panelCollapsed.logic}
+            onCollapsedChange={(collapsed) => setPanelCollapsedState("logic", collapsed)}
             onContextMenu={openPanelContextMenu}
+            onUpdate={(nextProject) => updateProject(nextProject)}
+            selected={selection}
+            onSelect={selectWithEventDraftGuard}
+            onCreateProperty={createExplorerProperty}
           /> : null}
           {panelVisibility.outline ? <FilesPanel
             project={project}
@@ -11993,20 +13018,6 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
             onNavigatePathNode={navigatePathTreeNode}
             onContextMenu={openPanelContextMenu}
           /> : null}
-          {panelVisibility.assets ? <AssetsPanel
-            project={project}
-            collapsed={panelCollapsed.assets}
-            onCollapsedChange={(collapsed) => setPanelCollapsedState("assets", collapsed)}
-            onContextMenu={openPanelContextMenu}
-            onImport={() => void importAssets()}
-          /> : null}
-          {panelVisibility.logic ? <LogicPanel
-            project={project}
-            collapsed={panelCollapsed.logic}
-            onCollapsedChange={(collapsed) => setPanelCollapsedState("logic", collapsed)}
-            onContextMenu={openPanelContextMenu}
-            onUpdate={(nextProject) => updateProject(nextProject)}
-          /> : null}
           <StoryCanvas
             project={project}
             propertiesConfig={workspace?.canonIndex.propertiesConfig}
@@ -12020,7 +13031,6 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
             exportOpen={exportOpen}
             exportPreviewMode={exportPreviewMode}
             dataOpen={dataOpen}
-            canvasLayout={settings.canvasLayout}
             markdownTabs={markdownTabs}
             activeMarkdownTabId={activeMarkdownTabId}
             eventDraft={eventDraft}
@@ -12038,7 +13048,6 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
             onNavigateScope={navigateCanvasScope}
             onExportPreviewModeChange={setExportPreviewMode}
             onToggleData={() => setDataOpen((open) => !open)}
-            onApplyCanvasLayout={applyCanvasLayout}
             onCreateEvent={createEvent}
             onCreateNestedEvent={createNestedEvent}
             onCreateConnectedEvent={createConnectedEvent}
@@ -12048,8 +13057,12 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
             onUpdateEvent={updateEvent}
             onCreateDecision={createDecision}
             onCreateDialogue={createDialogue}
+            onCreateDialogueBeat={createDialogueBeat}
             onUpdateDecision={updateDecision}
             onUpdateDialogue={updateDialogue}
+            onUpdateDialogueBeat={updateDialogueBeat}
+            onUpdateScriptBlock={updateScriptBlock}
+            onDeleteDialogueBeat={deleteDialogueBeat}
             onDeleteDecision={deleteDecision}
             onDeleteDialogue={deleteDialogue}
             onCreateOutcome={createOutcome}
@@ -12075,8 +13088,11 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
             onPublishLocalExplorerEntity={publishLocalExplorerEntity}
             onUpdateLocalExplorerType={updateLocalExplorerType}
             onUpdateLocalExplorerProperty={updateLocalExplorerProperty}
+            onUpdateLogicPropertyOverride={updateLogicPropertyOverride}
             onUpdateEdgeLabel={updateEdgeLabel}
             onDeleteSelection={deleteSelection}
+            onDeleteNodeSelections={deleteNodeSelections}
+            onOpenRule={openLogicRule}
             onActivateMarkdownTab={setActiveMarkdownTabId}
             onCloseMarkdownTab={closeMarkdownTab}
             onChangeMarkdownContent={changeMarkdownContent}
@@ -12096,18 +13112,23 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
             onSaveEventInspectorTabGroup={requestSaveInspectorTabGroup}
             onLoadEventInspectorTabGroup={requestLoadInspectorTabGroup}
             onDeleteEventInspectorTabGroup={deleteInspectorTabGroup}
-            onEventDraftModeChange={(mode) =>
-              setEventDraft((draft) => setEventDraftMode(draft, mode))
-            }
-            onUpdateEventDraft={(updates) =>
-              setEventDraft((draft) => updateEventDraft(draft, updates))
-            }
             onSaveEventDraft={() => void saveActiveEventDraft()}
             onOpenInspectorTab={openInspectorTab}
             onCloseInspectorTab={closeInspectorTab}
+            onCloseAllInspectorTabs={() => {
+              setInspectorTabs((current) => current.filter((tab) => tab.mode === "debug"));
+              setExpandedInspectorTabId(undefined);
+            }}
             onDisableInspectorDebug={() => changeInspectorDebugEnabled(false)}
             onToggleInspectorMaximized={() => setInspectorMaximized((current) => !current)}
           />
+          {panelVisibility.player ? <PlayerPanel
+            project={project}
+            collapsed={panelCollapsed.player}
+            onCollapsedChange={(collapsed) => setPanelCollapsedState("player", collapsed)}
+            onContextMenu={openPanelContextMenu}
+            onUpdate={(nextProject) => updateProject(nextProject)}
+          /> : null}
           {panelVisibility.export ? <ExportPanel
             project={project}
             collapsed={panelCollapsed.export}
@@ -12123,10 +13144,10 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
         </div>
         {panelContextMenu ? (
           <div
+            ref={panelContextMenuRef}
             className="panel-picker panel-context-menu"
             role="menu"
             style={{ left: panelContextMenu.x, top: panelContextMenu.y }}
-            onMouseLeave={() => setPanelContextMenu(undefined)}
           >
             <strong>Panels</strong>
             {WORKSPACE_PANEL_IDS.map((panel) => (
@@ -12137,7 +13158,6 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
                 aria-checked={panelVisibility[panel]}
                 onClick={() => {
                   togglePanelVisibility(panel);
-                  setPanelContextMenu(undefined);
                 }}
               >
                 {panelVisibility[panel] ? "✓" : ""} {WORKSPACE_PANEL_LABELS[panel]}

@@ -12,6 +12,7 @@ import {
   type UniverseProfile,
 } from "./pathBranchingWorkspace.js";
 import { normalizeProject, parseProject, projectFileName, serializeProject } from "./projectSerialization.js";
+import { serializeIntegrationConfigYaml } from "./integrationConfig.js";
 import { isTauriRuntime } from "./utils/appEnvironment.js";
 
 export { normalizeProject, parseProject, projectFileName, serializeProject } from "./projectSerialization.js";
@@ -207,6 +208,17 @@ export async function saveUniverseStory(
     },
     normalizedStory,
   );
+  if (
+    project.integrationConfig &&
+    !workspace.files.some((file) => file.relativePath === pathBranchingMetadataPaths.config)
+  ) {
+    const configResult = await saveUniverseTextFile(
+      universePath,
+      pathBranchingMetadataPaths.config,
+      serializeIntegrationConfigYaml(project.integrationConfig),
+    );
+    if (!configResult.ok) return configResult;
+  }
   let storyResult: WriteResult | undefined;
   for (const file of storyFiles) {
     const result = await saveUniverseTextFile(

@@ -149,6 +149,54 @@ export type ScriptRef = {
   entrySection?: string;
 };
 
+export type LogicPropertyOverride = {
+  propertyId: string;
+  source: "canon" | "local";
+  conditionReadable?: boolean;
+  actionWritable?: boolean;
+  grantable?: boolean;
+  relationTargetTypes?: string[];
+};
+
+export type PlayerSimulationState = {
+  inventory?: string[];
+  unlockedCanonRefs?: string[];
+  variables?: Record<string, unknown>;
+  visited?: string[];
+  activeNodeId?: string;
+  activeDecisionId?: string;
+};
+
+export type PlayerProfile = {
+  id: string;
+  name: string;
+  playableCharacterRef?: string;
+  simulation: PlayerSimulationState;
+};
+
+export type ScriptBlockKind = "scene" | "direction" | "speech" | "annotation";
+
+export type ScriptBlock = {
+  id: string;
+  kind: ScriptBlockKind;
+  content: string;
+  speakerRef?: string;
+};
+
+export type ScriptDocument = {
+  id: string;
+  name: string;
+  format: "forge-script";
+  blocks: ScriptBlock[];
+  createdAt?: string;
+  updatedAt?: string;
+};
+
+export type ScriptBlockRef = {
+  scriptId: string;
+  blockId: string;
+};
+
 export type StoryTextBlock = {
   format: "plain" | "ink" | "harlowe" | "sugarcube" | string;
   content: string;
@@ -255,6 +303,11 @@ export type CanvasScope =
   | {
       kind: "event";
       id: string;
+    }
+  | {
+      kind: "dialogue";
+      id: string;
+      eventId: string;
     };
 
 export type Sequence = {
@@ -262,9 +315,11 @@ export type Sequence = {
   name: string;
   characterRef?: string;
   entryEventId: string;
+  entryLabel?: string;
   eventIds: string[];
   branchIds?: string[];
   availability?: ConditionInput;
+  ruleSetBindings?: RuleSetBinding[];
   ruleSets?: RuleSet[];
   legacyUnity?: Record<string, unknown>;
 };
@@ -276,6 +331,7 @@ export type Branch = {
   color?: string;
   eventIds: string[];
   availability?: ConditionInput;
+  ruleSetBindings?: RuleSetBinding[];
   ruleSets?: RuleSet[];
   legacyUnity?: Record<string, unknown>;
 };
@@ -300,6 +356,7 @@ export type EventNode = {
   boundaryBindings?: BoundaryPortBinding[];
   unlocks?: Consequence[];
   transitions?: Transition[];
+  ruleSetBindings?: RuleSetBinding[];
   ruleSets?: RuleSet[];
   legacyUnity?: Record<string, unknown>;
 };
@@ -311,7 +368,9 @@ export type Decision = {
   name: string;
   description?: string;
   type: DecisionType;
+  dialogueId?: string;
   availability?: ConditionInput;
+  ruleSetBindings?: RuleSetBinding[];
   ruleSets?: RuleSet[];
   outcomes: Outcome[];
 };
@@ -319,11 +378,23 @@ export type Decision = {
 export type DialogueNode = {
   id: string;
   title: string;
+  entryBeatId?: string;
+  beats?: DialogueBeat[];
   speakerRef?: string;
   text: StoryTextBlock;
   availability?: ConditionInput;
+  ruleSetBindings?: RuleSetBinding[];
   ruleSets?: RuleSet[];
   canonRefs?: string[];
+};
+
+export type DialogueBeat = {
+  id: string;
+  kind: "speech" | "direction";
+  blockRef: ScriptBlockRef;
+  displayCondition?: ConditionInput;
+  ruleSetBindings?: RuleSetBinding[];
+  ruleSets?: RuleSet[];
 };
 
 export type BoundaryPortBinding = {
@@ -338,8 +409,12 @@ export type Outcome = {
   name: string;
   description?: string;
   requiredCanonRefs?: string[];
+  availability?: ConditionInput;
+  unavailableBehavior?: "locked" | "hidden";
+  lockText?: StoryTextBlock;
   conditions?: ConditionInput;
   consequences?: Consequence[];
+  ruleSetBindings?: RuleSetBinding[];
   ruleSets?: RuleSet[];
 };
 
@@ -348,6 +423,20 @@ export type Condition =
       type: "canonEntryUnlocked";
       ref: string;
       negate?: boolean;
+    }
+  | {
+      type: "canonProperty";
+      ref: string;
+      property: string;
+      operator: "==" | "!=" | ">" | ">=" | "<" | "<=" | "contains" | "exists";
+      value?: unknown;
+    }
+  | {
+      type: "canonState";
+      ref: string;
+      state: string;
+      operator: "==" | "!=" | "contains" | "exists";
+      value?: unknown;
     }
   | {
       type: "variable";
@@ -453,11 +542,52 @@ export type Transition = {
   from: string;
   to: string;
   label?: string;
+  order?: number;
+  mode?: "conditional" | "fallback";
   conditions?: ConditionInput;
   consequences?: Consequence[];
   source?: "graph" | "inkDivert" | "inkExternalFunction" | "engine" | string;
   function?: string;
   arguments?: unknown[];
+};
+
+export type RuleSetPhase = "onEnter" | "onExit" | "onDisplay" | "onSelect" | "onCreate";
+
+export type RuleSetBinding = {
+  id: string;
+  ruleId: string;
+  phase: RuleSetPhase;
+  order: number;
+};
+
+export type RuleLibraryGroup = {
+  id: string;
+  name: string;
+  order: number;
+};
+
+export type RuleLibraryRule = RuleSet & {
+  groupId: string;
+  tags?: string[];
+};
+
+export type RuleLibrary = {
+  groups: RuleLibraryGroup[];
+  rules: RuleLibraryRule[];
+};
+
+export type CanonRoleMapping = {
+  id: string;
+  worldnotionTypes: string[];
+  classId: string;
+  roles: string[];
+  comparableProperties?: string[];
+  states?: string[];
+};
+
+export type PathBranchingIntegrationConfig = {
+  specVersion: "0.1";
+  mappings: CanonRoleMapping[];
 };
 
 export type ProjectDataObjectScope = {
@@ -476,6 +606,7 @@ export type ProjectDataObject = {
   tags?: string[];
   scope?: ProjectDataObjectScope;
   availability?: ConditionInput;
+  ruleSetBindings?: RuleSetBinding[];
   ruleSets?: RuleSet[];
 };
 
@@ -555,8 +686,16 @@ export type BranchingProject = {
   localExplorerTypes?: LocalExplorerType[];
   localExplorerProperties?: LocalExplorerProperty[];
   assets?: ProjectAsset[];
+  scriptDocuments?: ScriptDocument[];
+  integrationConfig?: PathBranchingIntegrationConfig;
+  integrationConfigOverride?: PathBranchingIntegrationConfig;
   logicVariableGroups?: LogicVariableGroup[];
   logicVariables?: LogicVariable[];
+  logicPropertyOverrides?: LogicPropertyOverride[];
+  playerSimulation?: PlayerSimulationState;
+  playerProfiles?: PlayerProfile[];
+  activePlayerProfileId?: string;
+  ruleLibrary?: RuleLibrary;
   projectionRules?: ProjectionRule[];
   graphModules?: GraphModuleDefinition[];
   canvas?: CanvasAuthoringState;
@@ -579,6 +718,8 @@ export type RuntimeChoice = {
   targetNodeId: string;
   conditions?: ConditionInput;
   consequences?: Consequence[];
+  unavailableBehavior?: "locked" | "hidden";
+  lockTextKey?: string;
 };
 
 export type RuntimeNode = {
@@ -629,7 +770,17 @@ export type ValidationFinding = {
     | "invalid_frontmatter"
     | "invalid_worldnotion_properties"
     | "invalid_condition"
-    | "invalid_rule_set";
+    | "invalid_rule_set"
+    | "missing_rule_set"
+    | "invalid_rule_set_binding"
+    | "invalid_transition_order"
+    | "duplicate_fallback"
+    | "no_valid_transition"
+    | "missing_script_block"
+    | "orphan_script_block"
+    | "duplicate_script_binding"
+    | "invalid_speaker_role"
+    | "invalid_scope_transition";
   severity: ValidationSeverity;
   message: string;
   id?: string;

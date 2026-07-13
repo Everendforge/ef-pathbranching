@@ -11,6 +11,14 @@ export function activeSequenceId(project: BranchingProject) {
 
 export function activeCanvasScope(project: BranchingProject): CanvasScope | undefined {
   const scope = project.canvas?.activeScope;
+  if (
+    scope?.kind === "dialogue" &&
+    project.events.some(
+      (event) => event.id === scope.eventId && event.dialogues?.some((dialogue) => dialogue.id === scope.id),
+    )
+  ) {
+    return scope;
+  }
   if (scope?.kind === "event" && project.events.some((event) => event.id === scope.id)) {
     return scope;
   }

@@ -1,32 +1,26 @@
 import type { BranchingProject, RuntimeChoice, RuntimeNode, RuntimePackage, EventNode } from "./domain.js";
+import { orderedTransitions } from "./logic.js";
 
 function eventChoices(event: EventNode): RuntimeChoice[] | undefined {
-  const directChoices: RuntimeChoice[] = (event.transitions ?? [])
-    .filter((transition) => transition.from === event.id)
-    .map((transition) => ({
-      id: transition.id,
-      textKey: transition.label ? `transition.${transition.id}.label` : `transition.${transition.id}`,
-      targetNodeId: transition.to,
-      conditions: transition.conditions,
-      consequences: transition.consequences,
-    }));
-
   const outcomeChoices: RuntimeChoice[] = (event.decisions ?? []).flatMap((decision) =>
     decision.outcomes.map((outcome) => {
       const outcomeNodeId = `outcome:${event.id}:${decision.id}:${outcome.id}`;
-      const transition = event.transitions?.find((candidate) => candidate.from === outcomeNodeId);
+      const transition = orderedTransitions(
+        (event.transitions ?? []).filter((candidate) => candidate.from === outcomeNodeId),
+      )[0];
       return {
         id: outcome.id,
         textKey: `outcome.${outcome.id}.name`,
         targetNodeId: transition?.to ?? event.id,
-        conditions: outcome.conditions,
+        conditions: outcome.availability ?? outcome.conditions,
         consequences: outcome.consequences,
+        unavailableBehavior: outcome.unavailableBehavior ?? "locked",
+        lockTextKey: outcome.lockText?.content ? `outcome.${outcome.id}.lock` : undefined,
       };
     }),
   );
 
-  const choices = [...directChoices, ...outcomeChoices];
-  return choices.length ? choices : undefined;
+  return outcomeChoices.length ? outcomeChoices : undefined;
 }
 
 export function exportRuntimePackage(project: BranchingProject): RuntimePackage {
@@ -48,7 +42,7 @@ export function exportRuntimePackage(project: BranchingProject): RuntimePackage 
         identityWarning: ref!.identityWarning,
       }));
 
-  const nodes: RuntimeNode[] = project.events.map((event) => ({
+  const eventNodes: RuntimeNode[] = project.events.map((event) => ({
     id: event.id,
     type: "event",
     textKey: `event.${event.id}.name`,
@@ -61,9 +55,52 @@ export function exportRuntimePackage(project: BranchingProject): RuntimePackage 
     legacyId: event.legacyId,
     decisions: event.decisions,
     transitions: event.transitions,
+    automaticTransitions: orderedTransitions(
+      (event.transitions ?? []).filter((transition) => transition.from === event.id),
+    ),
     consequences: event.unlocks,
-    ruleSets: event.ruleSets,
+    ruleSetBindings: event.ruleSetBindings,
   }));
+  const scriptBlocks = new Map(
+    (project.scriptDocuments ?? []).flatMap((script) =>
+      script.blocks.map((block) => [`${script.id}:${block.id}`, block] as const),
+    ),
+  );
+  const dialogueNodes: RuntimeNode[] = project.events.flatMap((event) =>
+    (event.dialogues ?? []).flatMap((dialogue) => {
+      const containerId = `dialogue:${event.id}:${dialogue.id}`;
+      const container: RuntimeNode = {
+        id: containerId,
+        type: "dialogue",
+        textKey: `dialogue.${dialogue.id}.title`,
+        entryNodeId: dialogue.entryBeatId
+          ? `beat:${event.id}:${dialogue.id}:${dialogue.entryBeatId}`
+          : undefined,
+        automaticTransitions: orderedTransitions(
+          (event.transitions ?? []).filter((transition) => transition.from === containerId),
+        ),
+        ruleSetBindings: dialogue.ruleSetBindings,
+      };
+      const beats = (dialogue.beats ?? []).map((beat) => {
+        const id = `beat:${event.id}:${dialogue.id}:${beat.id}`;
+        const block = scriptBlocks.get(`${beat.blockRef.scriptId}:${beat.blockRef.blockId}`);
+        return {
+          id,
+          type: beat.kind === "speech" ? "dialogueBeat" : "directionBeat",
+          textKey: `script.${beat.blockRef.scriptId}.${beat.blockRef.blockId}`,
+          speakerRef: block?.speakerRef,
+          conditions: beat.displayCondition,
+          ruleSetBindings: beat.ruleSetBindings,
+          automaticTransitions: orderedTransitions(
+            (event.transitions ?? []).filter((transition) => transition.from === id),
+          ),
+          dialogueId: dialogue.id,
+        };
+      });
+      return [container, ...beats];
+    }),
+  );
+  const nodes = [...eventNodes, ...dialogueNodes];
 
   return {
     specVersion: "0.1",
@@ -76,7 +113,21 @@ export function exportRuntimePackage(project: BranchingProject): RuntimePackage 
         [`event.${event.id}.name`, event.name],
         ...(event.text?.content ? [[`event.${event.id}.text`, event.text.content] as const] : []),
         ...(event.decisions ?? []).flatMap((decision) =>
-          decision.outcomes.map((outcome) => [`outcome.${outcome.id}.name`, outcome.name] as const),
+          decision.outcomes.flatMap((outcome) => [
+            [`outcome.${outcome.id}.name`, outcome.name] as const,
+            ...(outcome.lockText?.content
+              ? [[`outcome.${outcome.id}.lock`, outcome.lockText.content] as const]
+              : []),
+          ]),
+        ),
+        ...(event.dialogues ?? []).flatMap((dialogue) =>
+          [
+            [`dialogue.${dialogue.id}.title`, dialogue.title] as const,
+            ...(dialogue.beats ?? []).flatMap((beat) => {
+            const block = scriptBlocks.get(`${beat.blockRef.scriptId}:${beat.blockRef.blockId}`);
+            return block ? [[`script.${beat.blockRef.scriptId}.${beat.blockRef.blockId}`, block.content] as const] : [];
+            }),
+          ],
         ),
       ]),
     ),
@@ -95,6 +146,10 @@ export function exportRuntimePackage(project: BranchingProject): RuntimePackage 
       branches: project.branches,
       events: project.events,
       scripts: project.scripts,
+      scriptDocuments: project.scriptDocuments,
+      integrationConfig: project.integrationConfig,
+      integrationConfigOverride: project.integrationConfigOverride,
+      ruleLibrary: project.ruleLibrary,
       externalFunctions: project.externalFunctions,
     },
     engineTargets: project.engineTargets,

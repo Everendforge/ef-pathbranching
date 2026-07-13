@@ -3,6 +3,7 @@ import {
   Download,
   FolderOpen,
   Home,
+  History,
   Moon,
   Settings,
   Sun,
@@ -19,7 +20,7 @@ import { UniverseIconFrame } from "./UniverseIconFrame.js";
 import type { WorkspacePanelId, WorkspacePanelState } from "../workspaceSettings.js";
 
 const panelLabels: Record<WorkspacePanelId, string> = {
-  explorer: "Explorer", outline: "Story Outline", assets: "Assets", logic: "Logic", export: "Export", connect: "Connect",
+  assets: "Assets", logic: "Logic", player: "Player", outline: "Stories", export: "Export", connect: "Connect",
 };
 
 const EVEREND_FORGE_GITHUB_URL = "https://github.com/Everendforge/everend-forge";
@@ -83,8 +84,10 @@ export function Topbar({
   const universePath = universeDisplayPath(fileState);
   const [forgeMenuOpen, setForgeMenuOpen] = useState(false);
   const [viewMenuOpen, setViewMenuOpen] = useState(false);
+  const [historyMenuOpen, setHistoryMenuOpen] = useState(false);
   const forgeMenuRef = useRef<HTMLDivElement | null>(null);
   const viewMenuRef = useRef<HTMLDivElement | null>(null);
+  const historyMenuRef = useRef<HTMLDivElement | null>(null);
 
   const openExternalUrl = (url: string) => {
     window.open(url, "_blank", "noopener,noreferrer");
@@ -92,21 +95,24 @@ export function Topbar({
   };
 
   useEffect(() => {
-    if (!forgeMenuOpen && !viewMenuOpen) return;
+    if (!forgeMenuOpen && !viewMenuOpen && !historyMenuOpen) return;
 
     function handlePointerDown(event: PointerEvent) {
       if (
         forgeMenuRef.current?.contains(event.target as Node) ||
-        viewMenuRef.current?.contains(event.target as Node)
+        viewMenuRef.current?.contains(event.target as Node) ||
+        historyMenuRef.current?.contains(event.target as Node)
       ) return;
       setForgeMenuOpen(false);
       setViewMenuOpen(false);
+      setHistoryMenuOpen(false);
     }
 
     function handleKeyDown(event: KeyboardEvent) {
       if (event.key === "Escape") {
         setForgeMenuOpen(false);
         setViewMenuOpen(false);
+        setHistoryMenuOpen(false);
       }
     }
 
@@ -116,7 +122,7 @@ export function Topbar({
       document.removeEventListener("pointerdown", handlePointerDown);
       document.removeEventListener("keydown", handleKeyDown);
     };
-  }, [forgeMenuOpen, viewMenuOpen]);
+  }, [forgeMenuOpen, historyMenuOpen, viewMenuOpen]);
 
   return (
     <header className="topbar dock-top-bar pathbranching-topbar" aria-label="Workspace controls">
@@ -177,15 +183,15 @@ export function Topbar({
       </div>
 
       <div className="dock-top-right">
-        <div className="dock-command-group" aria-label="History">
-          <button type="button" title="Undo" onClick={onUndo} disabled={!canUndo}>
-            <ArrowLeft size={14} />
-            <span>Undo</span>
+        <div ref={historyMenuRef} className="topbar-view-menu">
+          <button type="button" title="History" onClick={() => setHistoryMenuOpen((open) => !open)} aria-expanded={historyMenuOpen}>
+            <History size={14} /><span>History</span>
           </button>
-          <button type="button" title="Redo" onClick={onRedo} disabled={!canRedo}>
-            <ArrowLeft size={14} style={{ transform: "scaleX(-1)" }} />
-            <span>Redo</span>
-          </button>
+          {historyMenuOpen ? <div className="panel-picker" role="menu">
+            <strong>History</strong>
+            <button type="button" onClick={() => { onUndo(); setHistoryMenuOpen(false); }} disabled={!canUndo}><ArrowLeft size={14} /> Undo</button>
+            <button type="button" onClick={() => { onRedo(); setHistoryMenuOpen(false); }} disabled={!canRedo}><ArrowLeft size={14} style={{ transform: "scaleX(-1)" }} /> Redo</button>
+          </div> : null}
         </div>
 
         <div className="dock-command-group" aria-label="Panels">

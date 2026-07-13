@@ -155,7 +155,7 @@ export function saveEventInspectorTabGroup(
 ): { groups: EventInspectorTabGroup[]; groupId?: string } {
   const trimmedName = name.trim();
   const eventIds = uniqueEventIds(state.openEventIds);
-  if (!trimmedName || eventIds.length === 0) {
+  if (!trimmedName) {
     return { groups: [...existingGroups] };
   }
   const expandedEventId = state.expandedEventId && eventIds.includes(state.expandedEventId) ? state.expandedEventId : eventIds[0];
@@ -220,6 +220,13 @@ export function pruneEventInspectorTabGroups(
         ...group,
         eventIds,
         expandedEventId,
+        inspectorExpandedTabId:
+          group.inspectorExpandedTabId &&
+          group.inspectorTabs?.some(
+            (tab) => tab.id === group.inspectorExpandedTabId,
+          )
+            ? group.inspectorExpandedTabId
+            : undefined,
       };
     })
     .filter(

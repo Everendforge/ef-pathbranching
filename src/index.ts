@@ -8,6 +8,8 @@ export * from "./exportPreview.js";
 export * from "./eventDraft.js";
 export * from "./documentController.js";
 export * from "./logic.js";
+export * from "./ruleLibrary.js";
+export * from "./integrationConfig.js";
 export * from "./projectSerialization.js";
 export * from "./pathBranchingWorkspace.js";
 export * from "./storySelection.js";

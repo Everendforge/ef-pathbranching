@@ -156,7 +156,6 @@ export function ExplorerPanel({
   onCreateEntity,
   onDeleteEntity,
   onCreateType,
-  onCreateProperty,
   onResize,
   onResetWidth,
   onResizeStateChange,
@@ -171,7 +170,6 @@ export function ExplorerPanel({
   onCreateEntity: (type: string) => void;
   onDeleteEntity: (id: string) => void;
   onCreateType: () => void;
-  onCreateProperty: () => void;
   onResize: (width: number) => void;
   onResetWidth: () => void;
   onResizeStateChange: (resizing: boolean) => void;
@@ -348,13 +346,6 @@ export function ExplorerPanel({
         <button type="button" onClick={onCreateType} title="New local type">
           <Plus size={13} /> Type
         </button>
-        <button
-          type="button"
-          onClick={onCreateProperty}
-          title="New local property"
-        >
-          <Plus size={13} /> Property
-        </button>
       </div> : null}
       <div className="explorer-tree">
         {explorerView === "items" ? groups.map(([group, groupRows]) => {
@@ -477,31 +468,6 @@ export function ExplorerPanel({
               </button>
             );
           })}
-        </section> : null}
-        {explorerView === "schema" ? <section className="explorer-schema-list">
-          <strong>Properties</strong>
-          {[...canonProperties, ...(project.localExplorerProperties ?? [])].map(
-            (property) => {
-              const source = "createdAt" in property ? "local" : "canon";
-              return (
-                <button
-                  type="button"
-                  key={`${source}:${property.id}`}
-                  onClick={() =>
-                    onSelect({
-                      type: "explorerProperty",
-                      id: property.id,
-                      source,
-                    })
-                  }
-                >
-                  <Boxes size={13} />
-                  <span>{property.label}</span>
-                  <em className={`explorer-origin ${source}`}>{source}</em>
-                </button>
-              );
-            },
-          )}
         </section> : null}
         {explorerView === "items" && groups.length === 0 ? (
           <span className="empty-line">

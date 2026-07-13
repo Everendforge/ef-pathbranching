@@ -20,10 +20,10 @@ export const COLLAPSED_RAIL_WIDTH = 36;
 export const NEW_SEQUENCE_SELECT_VALUE = "__new_sequence__";
 
 export const WORKSPACE_PANEL_IDS = [
-  "explorer",
-  "outline",
   "assets",
   "logic",
+  "player",
+  "outline",
   "export",
   "connect",
 ] as const;
@@ -32,19 +32,19 @@ export type WorkspacePanelId = (typeof WORKSPACE_PANEL_IDS)[number];
 export type WorkspacePanelState = Record<WorkspacePanelId, boolean>;
 
 export const DEFAULT_WORKSPACE_PANEL_VISIBILITY: WorkspacePanelState = {
-  explorer: true,
   outline: true,
   assets: true,
   logic: true,
+  player: true,
   export: true,
   connect: true,
 };
 
 export const DEFAULT_WORKSPACE_PANEL_COLLAPSED: WorkspacePanelState = {
-  explorer: false,
   outline: false,
-  assets: true,
+  assets: false,
   logic: true,
+  player: true,
   export: true,
   connect: true,
 };
@@ -88,6 +88,7 @@ export type EventInspectorTabGroup = {
   createdAt: number;
   updatedAt: number;
   inspectorTabs?: InspectorTab[];
+  inspectorExpandedTabId?: string;
 };
 
 export const DEFAULT_CANVAS_BACKGROUND_SETTINGS: CanvasBackgroundSettings = {
@@ -405,10 +406,12 @@ export function isSelection(value: unknown): value is Selection {
 
 function isCanvasScope(value: unknown): value is CanvasScope {
   if (!value || typeof value !== "object") return false;
-  const scope = value as { kind?: unknown; id?: unknown };
+  const scope = value as { kind?: unknown; id?: unknown; eventId?: unknown };
   return (
     typeof scope.id === "string" &&
-    (scope.kind === "sequence" || scope.kind === "event")
+    (scope.kind === "sequence" ||
+      scope.kind === "event" ||
+      (scope.kind === "dialogue" && typeof scope.eventId === "string"))
   );
 }
 
@@ -504,6 +507,12 @@ export function sessionEventInspectorTabGroups(
         typeof group.updatedAt === "number" && Number.isFinite(group.updatedAt)
           ? group.updatedAt
           : createdAt;
+      const inspectorTabs = sessionInspectorTabs(group.inspectorTabs);
+      const inspectorExpandedTabId =
+        typeof group.inspectorExpandedTabId === "string" &&
+        inspectorTabs.some((tab) => tab.id === group.inspectorExpandedTabId)
+          ? group.inspectorExpandedTabId
+          : undefined;
       return {
         id: group.id as string,
         name: group.name as string,
@@ -511,7 +520,8 @@ export function sessionEventInspectorTabGroups(
         expandedEventId,
         createdAt,
         updatedAt,
-        inspectorTabs: sessionInspectorTabs(group.inspectorTabs),
+        inspectorTabs,
+        inspectorExpandedTabId,
       };
     })
     .filter(
@@ -524,6 +534,26 @@ export function normalizeWorkspaceSession(
   session: PathBranchingWorkspaceSession | undefined,
 ): PathBranchingWorkspaceSession {
   if (!session) return {};
+  const legacyExplorerCollapsed =
+    session.panelCollapsed &&
+    typeof (session.panelCollapsed as Record<string, unknown>).explorer === "boolean"
+      ? (session.panelCollapsed as Record<string, boolean>).explorer
+      : undefined;
+  const inspectorTabs = sessionInspectorTabs(session.inspectorTabs);
+  const inspectorExpandedTabId =
+    typeof session.inspectorExpandedTabId === "string" &&
+    inspectorTabs.some((tab) => tab.id === session.inspectorExpandedTabId)
+      ? session.inspectorExpandedTabId
+      : undefined;
+  const eventInspectorOpenEventIds = uniqueSessionStringIds(
+    session.eventInspectorOpenEventIds,
+  );
+  const eventInspectorExpandedEventId =
+    !inspectorExpandedTabId &&
+    typeof session.eventInspectorExpandedEventId === "string" &&
+    eventInspectorOpenEventIds.includes(session.eventInspectorExpandedEventId)
+      ? session.eventInspectorExpandedEventId
+      : undefined;
   return {
     view:
       session.view === "home" || session.view === "workspace"
@@ -550,21 +580,13 @@ export function normalizeWorkspaceSession(
       typeof session.eventInspectorOpen === "boolean"
         ? session.eventInspectorOpen
         : undefined,
-    eventInspectorOpenEventIds: uniqueSessionStringIds(
-      session.eventInspectorOpenEventIds,
-    ),
-    eventInspectorExpandedEventId:
-      typeof session.eventInspectorExpandedEventId === "string"
-        ? session.eventInspectorExpandedEventId
-        : undefined,
+    eventInspectorOpenEventIds,
+    eventInspectorExpandedEventId,
     eventInspectorTabGroups: sessionEventInspectorTabGroups(
       session.eventInspectorTabGroups,
     ),
-    inspectorTabs: sessionInspectorTabs(session.inspectorTabs),
-    inspectorExpandedTabId:
-      typeof session.inspectorExpandedTabId === "string"
-        ? session.inspectorExpandedTabId
-        : undefined,
+    inspectorTabs,
+    inspectorExpandedTabId,
     inspectorMaximized:
       typeof session.inspectorMaximized === "boolean"
         ? session.inspectorMaximized
@@ -590,7 +612,12 @@ export function normalizeWorkspaceSession(
         ? session.storyOutlineTab
         : undefined,
     panelVisibility: normalizePanelState(session.panelVisibility),
-    panelCollapsed: normalizePanelState(session.panelCollapsed),
+    panelCollapsed: {
+      ...normalizePanelState(session.panelCollapsed),
+      ...(legacyExplorerCollapsed === undefined
+        ? {}
+        : { assets: legacyExplorerCollapsed }),
+    },
   };
 }
 
