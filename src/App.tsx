@@ -9126,6 +9126,40 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
     }
   }, [applyWorkspace, confirmDiscardChanges]);
 
+  useEffect(() => {
+    const path = suiteChrome?.sharedUniversePath;
+    if (!path || fileStateRef.current.universePath === path) return;
+
+    let disposed = false;
+    void openUniversePath(path)
+      .then((opened) => {
+        if (disposed) return;
+        applyWorkspace(opened.workspace, opened.path);
+        setSettings((current) => ({
+          ...rememberRecentProject(current, opened.path),
+          worldnotionBridge: {
+            ...current.worldnotionBridge,
+            connected: true,
+            lastCheckedAt: Date.now(),
+            lastStatus: "ok",
+            lastMessage: "Loaded shared suite universe.",
+          },
+        }));
+        setView("workspace");
+        setError(undefined);
+        setMessage(workspaceLoadWarningMessage(opened.workspace) ?? `Opened ${projectFileName(opened.path)}.`);
+      })
+      .catch((openError) => {
+        if (!disposed) {
+          setError(openError instanceof Error ? openError.message : String(openError));
+        }
+      });
+
+    return () => {
+      disposed = true;
+    };
+  }, [applyWorkspace, suiteChrome?.sharedUniversePath]);
+
   const revealUniverse = useCallback(async () => {
     const universePath = fileStateRef.current.universePath;
     if (!universePath) {
@@ -9531,6 +9565,7 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
       nodes,
       openEventInspectorForEvent,
       saveActiveEventDraft,
+    suiteChrome,
       settings.inspectorTabCloseSelectsNext,
     ],
   );
@@ -9800,6 +9835,8 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
   }, [applyProject, project, redoStack, restoreStructuralSnapshot, undoStack]);
 
   useEffect(() => {
+    if (suiteChrome && !suiteChrome.active) return;
+
     const handleKeyDown = (event: KeyboardEvent) => {
       if (shortcutMatches(event, "Mod+Z")) {
         event.preventDefault();
@@ -9820,7 +9857,8 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
     };
     window.addEventListener("keydown", handleKeyDown, true);
     return () => window.removeEventListener("keydown", handleKeyDown, true);
-  }, [openProject, redoProject, saveActiveEventDraft, undoProject]);
+  }, [openProject, redoProject, saveActiveEventDraft,
+    suiteChrome, undoProject]);
 
   const navigateCanvasScope = useCallback(
     (scope: CanvasScope, nextSelection?: Selection) => {
@@ -11450,6 +11488,8 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
   );
 
   useEffect(() => {
+    if (suiteChrome && !suiteChrome.active) return;
+
     const handleDeleteKey = (event: KeyboardEvent) => {
       if (event.key !== "Delete" && event.key !== "Backspace") {
         return;
@@ -11488,7 +11528,8 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
 
     window.addEventListener("keydown", handleDeleteKey, true);
     return () => window.removeEventListener("keydown", handleDeleteKey, true);
-  }, [deleteSelection, deleteTransition]);
+  }, [deleteSelection,
+    suiteChrome, deleteTransition]);
 
   const createKnowledgeObject = useCallback(() => {
     if (!project) {
@@ -11551,6 +11592,8 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
   }, []);
 
   useEffect(() => {
+    if (suiteChrome && !suiteChrome.active) return;
+
     if (!settings.worldnotionBridge.connected || !isTauriRuntime()) {
       return;
     }
