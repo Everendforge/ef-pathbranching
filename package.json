@@ -9,7 +9,7 @@
     "build": "npm run typecheck && node scripts/run-vite.mjs build",
     "typecheck": "node scripts/run-tsc.mjs --noEmit",
     "build:core": "node scripts/run-tsc.mjs -p tsconfig.build.json",
-    "verify:core": "npm run build:core && node scripts/verify-core.mjs && node scripts/verify-narrative-integration.mjs && node scripts/verify-workspace-persistence.mjs && node scripts/verify-action-persistence.mjs && node scripts/verify-worldnotion-yaml-import.mjs && node scripts/verify-story-outline.mjs && node scripts/verify-canon-change-workflow.mjs && node scripts/verify-inspector-tabs.mjs && node scripts/verify-subcanvas-routing.mjs",
+    "verify:core": "npm run build:core && node scripts/verify-core.mjs && node scripts/verify-narrative-integration.mjs && node scripts/verify-workspace-persistence.mjs && node scripts/verify-action-persistence.mjs && node scripts/verify-dialogue-nodes.mjs && node scripts/verify-worldnotion-yaml-import.mjs && node scripts/verify-story-outline.mjs && node scripts/verify-canon-change-workflow.mjs && node scripts/verify-inspector-tabs.mjs && node scripts/verify-subcanvas-routing.mjs",
     "verify:persistence": "npm run build:core && node scripts/verify-workspace-persistence.mjs && node scripts/verify-action-persistence.mjs",
     "demo:bridge": "npm run build:core && node scripts/demo-worldnotion-bridge.mjs",
     "tauri": "tauri",

@@ -19,6 +19,8 @@ export type StoryCanvasNodeKind =
   | "sequence"
   | "start"
   | "boundary"
+  | "workspace"
+  | "endAdder"
   | "routeGate"
   | "branch"
   | "event"
@@ -62,6 +64,14 @@ export type StoryCanvasEdgeData = {
 
 export type StoryCanvasNode = Node<StoryCanvasNodeData, "story">;
 export type StoryCanvasEdge = Edge<StoryCanvasEdgeData>;
+
+export type SubcanvasWorkspaceBounds = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  manual?: boolean;
+};
 
 export type PathBranchingFileItem = {
   id: string;
@@ -156,6 +166,10 @@ function pushNode(
     nodeColors?: StoryCanvasNodeColors;
     summaryBadges?: string[];
     scope?: CanvasScope;
+    autoPosition?: boolean;
+    draggable?: boolean;
+    selectable?: boolean;
+    zIndex?: number;
   } = {},
 ) {
   const persisted = project.canvas?.nodes?.[id];
@@ -163,8 +177,11 @@ function pushNode(
   nodes.push({
     id,
     type: "story",
-    position: positionFor(project, id, x, y, scope),
+    position: options.autoPosition ? { x, y } : positionFor(project, id, x, y, scope),
     parentId: options.parentId,
+    draggable: options.draggable,
+    selectable: options.selectable,
+    zIndex: options.zIndex ?? (kind === "workspace" ? 0 : kind === "routeGate" ? 3 : 2),
     data: {
       kind,
       title,
@@ -436,7 +453,7 @@ function eventSummaryBadges(eventNode: EventNode) {
 
 function dialogueBadges(project: BranchingProject, dialogue: DialogueNode) {
   return [
-    dialogue.speakerRef ? "speaker" : "dialogue",
+    ...(dialogue.speakerRef ? ["speaker"] : []),
     ...(dialogue.canonRefs?.length ? [`${dialogue.canonRefs.length} refs`] : []),
     ...logicBadges(dialogue.availability, dialogue.ruleSets?.length ?? 0),
     ...dataUseBadges(project, dialogue.availability),
@@ -451,48 +468,286 @@ function parentLevelInboundTransitions(project: BranchingProject, eventId: strin
   );
 }
 
+function eventBranchLabel(project: BranchingProject, eventNode: EventNode) {
+  const branch = eventNode.branchRef
+    ? project.branches.find((candidate) => candidate.id === eventNode.branchRef)
+    : undefined;
+  return branch?.title ? `Branch · ${branch.title}` : "No branch";
+}
+
 function buildEventBoundaryPorts(project: BranchingProject, eventNode: EventNode) {
-  const inbound = parentLevelInboundTransitions(project, eventNode.id).map(({ event, transition }) => ({
-    id: boundaryPortId(eventNode.id, "input", transition.id),
-    direction: "input" as const,
-    title: "Entry",
-    subtitle: `from ${event.name}`,
-    transitionId: transition.id,
-  }));
+  const routeSubtitle = (event: EventNode | undefined) => {
+    if (!event) return "Unavailable event";
+    return eventBranchLabel(project, event);
+  };
+  const inbound = [
+    ...parentLevelInboundTransitions(project, eventNode.id).map(({ event, transition }) => ({
+      id: boundaryPortId(eventNode.id, "input", transition.id),
+      direction: "input" as const,
+      title: event.name,
+      subtitle: routeSubtitle(event),
+      transitionId: transition.id,
+      targetEventId: undefined,
+    })),
+    ...project.sequences
+      .filter((sequence) => sequence.entryEventId === eventNode.id)
+      .map((sequence) => ({
+        id: boundaryPortId(eventNode.id, "input", `sequence-entry:${sequence.id}`),
+        direction: "input" as const,
+        title: sequence.name || "Story entry",
+        subtitle: "Sequence entry",
+        transitionId: undefined,
+        targetEventId: undefined,
+      })),
+  ];
+  // Keep legacy Entry bindings addressable. They are still the source nodes
+  // for existing Route Gates even when the visible incoming route is supplied
+  // by a sequence start or another parent event.
+  const preservedBoundInputs = Array.from(
+    new Set(
+      (eventNode.boundaryBindings ?? [])
+        .filter((binding) => binding.direction === "input")
+        .map((binding) => binding.portId),
+    ),
+  )
+    .filter((portId) => !inbound.some((port) => port.id === portId))
+    .map((portId) => ({
+      id: portId,
+      direction: "input" as const,
+      title: inbound[0]?.title ?? "No incoming route",
+      subtitle: inbound[0]?.subtitle ?? "Connect a parent event",
+      transitionId: undefined,
+      targetEventId: undefined,
+    }));
+  const allInbound = [...inbound, ...preservedBoundInputs];
   const outbound = (eventNode.transitions ?? [])
     .filter((transition) => transition.from === eventNode.id)
-    .map((transition) => ({
-      id: boundaryPortId(eventNode.id, "output", transition.id),
-      direction: "output" as const,
-      title: "Exit",
-      subtitle: `to ${project.events.find((event) => event.id === transition.to)?.name ?? transition.to}`,
-      transitionId: transition.id,
-    }));
+    .map((transition) => {
+      const target = project.events.find((event) => event.id === transition.to);
+      return {
+        id: boundaryPortId(eventNode.id, "output", transition.id),
+        slotId: undefined,
+        direction: "output" as const,
+        title: target?.name ?? transition.to,
+        subtitle: routeSubtitle(target),
+        transitionId: transition.id,
+        targetEventId: transition.to,
+      };
+    });
+
+  const scopeKey = canvasScopeKey({ kind: "event", id: eventNode.id });
+  const exitSlots = project.canvas?.scopes?.[scopeKey]?.exitSlots ?? [];
+  const emptySlotIds = outbound.length === 0
+    ? exitSlots.length ? exitSlots : ["exit"]
+    : exitSlots;
+  const emptyOutputs = emptySlotIds.map((slotId) => ({
+    id: boundaryPortId(eventNode.id, "output", slotId),
+    slotId,
+    direction: "output" as const,
+    title: "Add End",
+    subtitle: "Choose an existing or new event",
+    transitionId: undefined,
+    targetEventId: undefined,
+  }));
 
   return {
-    inbound: inbound.length
-      ? inbound
+    inbound: allInbound.length
+      ? allInbound
       : [
           {
             id: boundaryPortId(eventNode.id, "input", "entry"),
             direction: "input" as const,
-            title: "Entry",
-            subtitle: "Event entry",
+            title: "No incoming route",
+            subtitle: "Connect a parent event",
             transitionId: undefined,
+            targetEventId: undefined,
           },
         ],
-    outbound: outbound.length
-      ? outbound
-      : [
-          {
-            id: boundaryPortId(eventNode.id, "output", "exit"),
-            direction: "output" as const,
-            title: "Exit",
-            subtitle: "Event exit",
-            transitionId: undefined,
-          },
-        ],
+    outbound: [...outbound, ...emptyOutputs],
   };
+}
+
+function boundaryPortPosition(
+  nodes: StoryCanvasNode[],
+  direction: "input" | "output",
+  index: number,
+  count: number,
+) {
+  const content = nodes.filter((node) => node.data.kind !== "boundary");
+  const left = content.length
+    ? Math.min(...content.map((node) => node.position.x))
+    : 380;
+  const right = content.length
+    ? Math.max(...content.map((node) => node.position.x + (node.width ?? NODE_WIDTH)))
+    : 610;
+  const top = content.length
+    ? Math.min(...content.map((node) => node.position.y))
+    : 90;
+  const bottom = content.length
+    ? Math.max(...content.map((node) => node.position.y + (node.height ?? 108)))
+    : 270;
+  const centerY = (top + bottom) / 2;
+
+  return {
+    x: direction === "input" ? left - 250 : right + 72,
+    y: centerY - 53 + (index - (count - 1) / 2) * 112,
+  };
+}
+
+const SUBCANVAS_WORKSPACE_PADDING_X = 120;
+const SUBCANVAS_WORKSPACE_PADDING_Y = 100;
+const SUBCANVAS_WORKSPACE_MIN_WIDTH = 720;
+const SUBCANVAS_WORKSPACE_MIN_HEIGHT = 460;
+
+function subcanvasContent(nodes: StoryCanvasNode[]) {
+  return nodes.filter(
+    (node) =>
+      node.data.kind !== "boundary" &&
+      node.data.kind !== "workspace" &&
+      node.data.kind !== "endAdder",
+  );
+}
+
+function boundsForNodes(nodes: StoryCanvasNode[]): SubcanvasWorkspaceBounds {
+  if (!nodes.length) {
+    return { x: 220, y: 40, width: SUBCANVAS_WORKSPACE_MIN_WIDTH, height: SUBCANVAS_WORKSPACE_MIN_HEIGHT };
+  }
+  const left = Math.min(...nodes.map((node) => node.position.x));
+  const right = Math.max(...nodes.map((node) => node.position.x + (node.width ?? NODE_WIDTH)));
+  const top = Math.min(...nodes.map((node) => node.position.y));
+  const bottom = Math.max(...nodes.map((node) => node.position.y + (node.height ?? 108)));
+  const x = left - SUBCANVAS_WORKSPACE_PADDING_X;
+  const y = top - SUBCANVAS_WORKSPACE_PADDING_Y;
+  return {
+    x,
+    y,
+    width: Math.max(SUBCANVAS_WORKSPACE_MIN_WIDTH, right - left + SUBCANVAS_WORKSPACE_PADDING_X * 2),
+    height: Math.max(SUBCANVAS_WORKSPACE_MIN_HEIGHT, bottom - top + SUBCANVAS_WORKSPACE_PADDING_Y * 2),
+  };
+}
+
+function expandedWorkspaceBounds(
+  workspace: SubcanvasWorkspaceBounds,
+  content: StoryCanvasNode[],
+): SubcanvasWorkspaceBounds {
+  if (!content.length) return workspace;
+  const contentBounds = boundsForNodes(content);
+  const x = Math.min(workspace.x, contentBounds.x);
+  const y = Math.min(workspace.y, contentBounds.y);
+  const right = Math.max(workspace.x + workspace.width, contentBounds.x + contentBounds.width);
+  const bottom = Math.max(workspace.y + workspace.height, contentBounds.y + contentBounds.height);
+  return { x, y, width: right - x, height: bottom - y };
+}
+
+function boundaryPositionForWorkspace(
+  workspace: SubcanvasWorkspaceBounds,
+  direction: "input" | "output",
+  index: number,
+  count: number,
+) {
+  return {
+    x: direction === "input" ? workspace.x - 210 : workspace.x + workspace.width,
+    y: workspace.y + workspace.height / 2 - 53 + (index - (count - 1) / 2) * 112,
+  };
+}
+
+export function layoutSubcanvasNodes(
+  nodes: StoryCanvasNode[],
+  options: { preserveWorkspace?: boolean } = {},
+): StoryCanvasNode[] {
+  const workspaceNode = nodes.find((node) => node.data.kind === "workspace");
+  if (!workspaceNode) return nodes;
+
+  const currentWorkspace = {
+    x: workspaceNode.position.x,
+    y: workspaceNode.position.y,
+    width: workspaceNode.width ?? SUBCANVAS_WORKSPACE_MIN_WIDTH,
+    height: workspaceNode.height ?? SUBCANVAS_WORKSPACE_MIN_HEIGHT,
+  };
+  const workspace = options.preserveWorkspace
+    ? currentWorkspace
+    : expandedWorkspaceBounds(currentWorkspace, subcanvasContent(nodes));
+  const inputs = nodes.filter(
+    (node) => node.data.kind === "boundary" && node.data.details?.direction === "input",
+  );
+  const outputs = nodes.filter(
+    (node) => node.data.kind === "boundary" && node.data.details?.direction === "output",
+  );
+  const endAdder = nodes.find((node) => node.data.kind === "endAdder");
+
+  return nodes.map((node) => {
+    if (node.id === workspaceNode.id) {
+      return {
+        ...node,
+        position: { x: workspace.x, y: workspace.y },
+        width: workspace.width,
+        height: workspace.height,
+        style: { ...node.style, width: workspace.width, height: workspace.height },
+      };
+    }
+    if (node.data.kind === "endAdder") {
+      const lastOutputPosition = boundaryPositionForWorkspace(
+        workspace,
+        "output",
+        Math.max(outputs.length - 1, 0),
+        Math.max(outputs.length, 1),
+      );
+      return {
+        ...node,
+        position: {
+          x: lastOutputPosition.x + 246,
+          y: lastOutputPosition.y + 122,
+        },
+      };
+    }
+    if (node.data.kind !== "boundary") return node;
+    const direction = node.data.details?.direction === "output" ? "output" : "input";
+    const ports = direction === "input" ? inputs : outputs;
+    const index = ports.findIndex((port) => port.id === node.id);
+    return {
+      ...node,
+      position: boundaryPositionForWorkspace(workspace, direction, index, ports.length),
+    };
+  });
+}
+
+function addSubcanvasWorkspace(
+  project: BranchingProject,
+  nodes: StoryCanvasNode[],
+  scope: Extract<CanvasScope, { kind: "event" | "dialogue" }>,
+  options: StoryCanvasModelOptions,
+) {
+  const savedBounds = project.canvas?.scopes?.[canvasScopeKey(scope)]?.workspace;
+  const bounds = savedBounds?.manual
+    ? savedBounds
+    : savedBounds
+      ? expandedWorkspaceBounds(savedBounds, subcanvasContent(nodes))
+      : boundsForNodes(subcanvasContent(nodes));
+  pushNode(
+    project,
+    nodes,
+    `workspace:${canvasScopeKey(scope)}`,
+    "workspace",
+    "",
+    undefined,
+    bounds.x,
+    bounds.y,
+    [],
+    { scope },
+    {
+      scope,
+      autoPosition: true,
+      draggable: false,
+      // React Flow disables pointer events entirely for nodes that are neither
+      // draggable nor selectable. Keep it selectable so the resize handle can
+      // receive pointer events; the canvas ignores selection for this node.
+      selectable: true,
+      width: bounds.width,
+      height: bounds.height,
+      zIndex: 0,
+    },
+  );
+  return layoutSubcanvasNodes(nodes, { preserveWorkspace: Boolean(savedBounds?.manual) });
 }
 
 function branchHeight(branch: Branch) {
@@ -675,7 +930,11 @@ function addEventSupportNodes(
   addConsequenceNodes(project, nodes, edges, createdKnowledge, eventNode.id, eventNode.name, eventNode.unlocks, cursor, options);
 }
 
-function buildEventScopeModel(project: BranchingProject, scope: CanvasScope, options: StoryCanvasModelOptions): StoryCanvasModel {
+function buildEventScopeModel(
+  project: BranchingProject,
+  scope: Extract<CanvasScope, { kind: "event" }>,
+  options: StoryCanvasModelOptions,
+): StoryCanvasModel {
   const nodes: StoryCanvasNode[] = [];
   const edges: StoryCanvasEdge[] = [];
   const eventNode = project.events.find((event) => event.id === scope.id);
@@ -691,38 +950,6 @@ function buildEventScopeModel(project: BranchingProject, scope: CanvasScope, opt
       activeSequenceId: project.canvas?.activeSequenceId,
     };
   }
-
-  const ports = buildEventBoundaryPorts(project, eventNode);
-  ports.inbound.forEach((port, index) => {
-    pushNode(
-      project,
-      nodes,
-      port.id,
-      "boundary",
-      port.title,
-      port.subtitle,
-      80,
-      90 + index * 128,
-      ["input"],
-      { eventId: eventNode.id, direction: "input", transitionId: port.transitionId },
-      { nodeColors: options.nodeColors, scope },
-    );
-  });
-  ports.outbound.forEach((port, index) => {
-    pushNode(
-      project,
-      nodes,
-      port.id,
-      "boundary",
-      port.title,
-      port.subtitle,
-      1240,
-      90 + index * 128,
-      ["output"],
-      { eventId: eventNode.id, direction: "output", transitionId: port.transitionId },
-      { nodeColors: options.nodeColors, scope },
-    );
-  });
 
   const childIds = Array.from(
     new Set([
@@ -758,7 +985,7 @@ function buildEventScopeModel(project: BranchingProject, scope: CanvasScope, opt
       childEvent.id,
       "event",
       childEvent.name,
-      childEvent.type,
+      eventBranchLabel(project, childEvent),
       380 + (index % 2) * 290,
       90 + Math.floor(index / 2) * 190,
       eventBadges(project, childEvent),
@@ -866,6 +1093,100 @@ function buildEventScopeModel(project: BranchingProject, scope: CanvasScope, opt
     );
   });
 
+  addConsequenceNodes(
+    project,
+    nodes,
+    edges,
+    createdKnowledge,
+    eventNode.id,
+    eventNode.name,
+    eventNode.unlocks,
+    {
+      sequenceY: 80,
+      branchY: 80,
+      eventY: 80,
+      decisionY: 80,
+      outcomeY: 80,
+      supportY: 720,
+    },
+    { ...options, scope },
+  );
+
+  const ports = buildEventBoundaryPorts(project, eventNode);
+  ports.inbound.forEach((port, index) => {
+    const position = boundaryPortPosition(nodes, "input", index, ports.inbound.length);
+    pushNode(
+      project,
+      nodes,
+      port.id,
+      "boundary",
+      port.title,
+      port.subtitle,
+      position.x,
+      position.y,
+      [],
+      { eventId: eventNode.id, direction: "input", transitionId: port.transitionId },
+      {
+        nodeColors: options.nodeColors,
+        scope,
+        autoPosition: true,
+        draggable: false,
+        width: 210,
+        height: 106,
+      },
+    );
+  });
+  ports.outbound.forEach((port, index) => {
+    const position = boundaryPortPosition(nodes, "output", index, ports.outbound.length);
+    pushNode(
+      project,
+      nodes,
+      port.id,
+      "boundary",
+      port.title,
+      port.subtitle,
+      position.x,
+      position.y,
+      [],
+      {
+        eventId: eventNode.id,
+        direction: "output",
+        transitionId: port.transitionId,
+        targetEventId: port.targetEventId,
+        slotId: port.slotId,
+      },
+      {
+        nodeColors: options.nodeColors,
+        scope,
+        autoPosition: true,
+        draggable: false,
+        width: 210,
+        height: 106,
+      },
+    );
+  });
+  pushNode(
+    project,
+    nodes,
+    `end-adder:${eventNode.id}`,
+    "endAdder",
+    "",
+    undefined,
+    0,
+    0,
+    [],
+    { eventId: eventNode.id },
+    {
+      scope,
+      autoPosition: true,
+      draggable: false,
+      selectable: true,
+      width: 36,
+      height: 36,
+      zIndex: 4,
+    },
+  );
+
   eventNode.boundaryBindings?.forEach((binding) => {
     if (!nodes.some((node) => node.id === binding.portId) || !nodes.some((node) => node.id === binding.nodeId)) {
       return;
@@ -890,29 +1211,11 @@ function buildEventScopeModel(project: BranchingProject, scope: CanvasScope, opt
     }
   });
 
-  addConsequenceNodes(
-    project,
-    nodes,
-    edges,
-    createdKnowledge,
-    eventNode.id,
-    eventNode.name,
-    eventNode.unlocks,
-    {
-      sequenceY: 80,
-      branchY: 80,
-      eventY: 80,
-      decisionY: 80,
-      outcomeY: 80,
-      supportY: 720,
-    },
-    { ...options, scope },
-  );
-
   insertRouteGates(project, nodes, edges, scope, options);
+  const laidOutNodes = addSubcanvasWorkspace(project, nodes, scope, options);
 
   return {
-    nodes,
+    nodes: laidOutNodes,
     edges,
     files: buildPathBranchingFiles(project),
     viewport,
@@ -936,17 +1239,6 @@ function buildDialogueScopeModel(
 
   const inputId = `dialogue-boundary:${eventNode.id}:${dialogue.id}:input`;
   const outputId = `dialogue-boundary:${eventNode.id}:${dialogue.id}:output`;
-  pushNode(project, nodes, inputId, "boundary", "Entry", dialogue.title, 70, 120, ["input"], {
-    eventId: eventNode.id,
-    dialogueId: dialogue.id,
-    direction: "input",
-  }, { nodeColors: options.nodeColors, scope });
-  pushNode(project, nodes, outputId, "boundary", "Exit", dialogue.title, 1120, 120, ["output"], {
-    eventId: eventNode.id,
-    dialogueId: dialogue.id,
-    direction: "output",
-  }, { nodeColors: options.nodeColors, scope });
-
   const scriptBlocks = new Map(
     (project.scriptDocuments ?? []).flatMap((script) =>
       script.blocks.map((block) => [`${script.id}:${block.id}`, block] as const),
@@ -973,6 +1265,57 @@ function buildDialogueScopeModel(
     );
   });
 
+  const inputPosition = boundaryPortPosition(nodes, "input", 0, 1);
+  pushNode(
+    project,
+    nodes,
+    inputId,
+    "boundary",
+    dialogue.title,
+    "Opening beat",
+    inputPosition.x,
+    inputPosition.y,
+    [],
+    {
+      eventId: eventNode.id,
+      dialogueId: dialogue.id,
+      direction: "input",
+    },
+    {
+      nodeColors: options.nodeColors,
+      scope,
+      autoPosition: true,
+      draggable: false,
+      width: 210,
+      height: 106,
+    },
+  );
+  const outputPosition = boundaryPortPosition(nodes, "output", 0, 1);
+  pushNode(
+    project,
+    nodes,
+    outputId,
+    "boundary",
+    dialogue.title,
+    "Closing route",
+    outputPosition.x,
+    outputPosition.y,
+    [],
+    {
+      eventId: eventNode.id,
+      dialogueId: dialogue.id,
+      direction: "output",
+    },
+    {
+      nodeColors: options.nodeColors,
+      scope,
+      autoPosition: true,
+      draggable: false,
+      width: 210,
+      height: 106,
+    },
+  );
+
   const entryBeat = dialogue.entryBeatId
     ? `beat:${eventNode.id}:${dialogue.id}:${dialogue.entryBeatId}`
     : undefined;
@@ -987,9 +1330,10 @@ function buildDialogueScopeModel(
   });
 
   insertRouteGates(project, nodes, edges, scope, options);
+  const laidOutNodes = addSubcanvasWorkspace(project, nodes, scope, options);
 
   return {
-    nodes,
+    nodes: laidOutNodes,
     edges,
     files: buildPathBranchingFiles(project),
     viewport,
@@ -1061,7 +1405,7 @@ export function buildStoryCanvasModel(project: BranchingProject, options: StoryC
       eventNode.id,
       "event",
       eventNode.name,
-      eventNode.type,
+      eventBranchLabel(project, eventNode),
       eventX,
       eventY,
       eventBadges(project, eventNode),

@@ -75,7 +75,6 @@ import {
   SearchCheck,
   Settings,
   Split,
-  SlidersHorizontal,
   Sun,
   Sparkles,
   Upload,
@@ -149,7 +148,6 @@ import {
 import {
   applyEventDraftToProject,
   createEventDraftFromSelection,
-  updateEventDraft,
   type EventDraft,
 } from "./eventDraft.js";
 import {
@@ -259,12 +257,14 @@ import {
 import { validateProject } from "./validate.js";
 import {
   buildStoryCanvasModel,
+  layoutSubcanvasNodes,
   validateStoryCanvasEdges,
   type PathBranchingFileItem,
   type StoryCanvasEdge,
   type StoryCanvasEdgeData,
   type StoryCanvasNode,
   type StoryCanvasNodeData,
+  type SubcanvasWorkspaceBounds,
 } from "./canvas/storyCanvasModel.js";
 import { isTauriRuntime, shortcutMatches } from "./utils/appEnvironment.js";
 
@@ -486,8 +486,25 @@ function updateProjectCanvas(
   scope = activeCanvasScope(project),
 ): BranchingProject {
   const scopeKey = scope ? canvasScopeKey(scope) : undefined;
+  const persistableNodes = nodes.filter(
+    (node) =>
+      node.data.kind !== "boundary" &&
+      node.data.kind !== "workspace" &&
+      node.data.kind !== "endAdder",
+  );
+  const withoutBoundaryPositions = (
+    storedNodes: Record<string, { position?: { x: number; y: number } }> | undefined,
+  ) => Object.fromEntries(
+    Object.entries(storedNodes ?? {}).filter(
+      ([id]) =>
+        !id.startsWith("boundary:") &&
+        !id.startsWith("dialogue-boundary:") &&
+        !id.startsWith("workspace:") &&
+        !id.startsWith("end-adder:"),
+    ),
+  );
   const nextNodes = Object.fromEntries(
-    nodes.map((node) => [
+    persistableNodes.map((node) => [
       node.id,
       {
         ...(scopeKey
@@ -497,6 +514,28 @@ function updateProjectCanvas(
       },
     ]),
   );
+  const workspaceNode = nodes.find((node) => node.data.kind === "workspace");
+  const workspaceBounds = workspaceNode
+    ? {
+        x: workspaceNode.position.x,
+        y: workspaceNode.position.y,
+        width: workspaceNode.width ?? 720,
+        height: workspaceNode.height ?? 460,
+        manual: scopeKey
+          ? project.canvas?.scopes?.[scopeKey]?.workspace?.manual
+          : undefined,
+      }
+    : undefined;
+  const nextScopeState = scopeKey
+    ? {
+        ...(project.canvas?.scopes?.[scopeKey] ?? {}),
+        nodes: {
+          ...withoutBoundaryPositions(project.canvas?.scopes?.[scopeKey]?.nodes),
+          ...nextNodes,
+        },
+        ...(workspaceBounds ? { workspace: workspaceBounds } : {}),
+      }
+    : undefined;
   return {
     ...project,
     canvas: {
@@ -504,7 +543,7 @@ function updateProjectCanvas(
       nodes:
         scope?.kind === "sequence" || !scope
           ? {
-              ...(project.canvas?.nodes ?? {}),
+              ...withoutBoundaryPositions(project.canvas?.nodes),
               ...nextNodes,
             }
           : project.canvas?.nodes,
@@ -513,10 +552,7 @@ function updateProjectCanvas(
             ...(project.canvas?.scopes ?? {}),
             [scopeKey]: {
               ...(project.canvas?.scopes?.[scopeKey] ?? {}),
-              nodes: {
-                ...(project.canvas?.scopes?.[scopeKey]?.nodes ?? {}),
-                ...nextNodes,
-              },
+              ...nextScopeState,
             },
           }
         : project.canvas?.scopes,
@@ -2113,75 +2149,6 @@ function HomeDashboard({
   );
 }
 
-function DiscardChangesDialog({
-  open,
-  onDiscard,
-  onCancel,
-}: {
-  open: boolean;
-  onDiscard: () => void;
-  onCancel: () => void;
-}) {
-  if (!open) {
-    return null;
-  }
-
-  return (
-    <div className="modal-backdrop">
-      <section className="modal-dialog">
-        <h2>Unsaved changes</h2>
-        <p>This event has unsaved edits. Discard them and continue?</p>
-        <div className="inspector-actions">
-          <button type="button" className="danger" onClick={onDiscard}>
-            Discard
-          </button>
-          <button type="button" onClick={onCancel}>
-            Cancel
-          </button>
-        </div>
-      </section>
-    </div>
-  );
-}
-
-function EventDraftChangesDialog({
-  open,
-  description = "This event has unsaved text or component edits. Save them before changing selection?",
-  onSave,
-  onDiscard,
-  onCancel,
-}: {
-  open: boolean;
-  description?: string;
-  onSave: () => void;
-  onDiscard: () => void;
-  onCancel: () => void;
-}) {
-  if (!open) {
-    return null;
-  }
-
-  return (
-    <div className="modal-backdrop">
-      <section className="modal-dialog">
-        <h2>Unsaved event edits</h2>
-        <p>{description}</p>
-        <div className="inspector-actions">
-          <button type="button" onClick={onSave}>
-            Save
-          </button>
-          <button type="button" className="danger" onClick={onDiscard}>
-            Discard
-          </button>
-          <button type="button" onClick={onCancel}>
-            Cancel
-          </button>
-        </div>
-      </section>
-    </div>
-  );
-}
-
 function NamePromptDialog({
   open,
   title,
@@ -2454,6 +2421,7 @@ function PathBranchingSettingsModal({
   onInspectorTabCloseSelectsNextChange,
   onCollapseInspectorTabOnCanvasClickChange,
   onInspectorDebugEnabledChange,
+  onShowStatusMessagesChange,
   onConnectBridge,
   onVerifyBridge,
   onDisconnectBridge,
@@ -2479,6 +2447,7 @@ function PathBranchingSettingsModal({
   onInspectorTabCloseSelectsNextChange: (value: boolean) => void;
   onCollapseInspectorTabOnCanvasClickChange: (value: boolean) => void;
   onInspectorDebugEnabledChange: (value: boolean) => void;
+  onShowStatusMessagesChange: (value: boolean) => void;
   onConnectBridge: () => void;
   onVerifyBridge: () => void;
   onDisconnectBridge: () => void;
@@ -2742,10 +2711,6 @@ function PathBranchingSettingsModal({
                       readOnly
                     />
                   </label>
-                  <label>
-                    <span>Unsaved changes</span>
-                    <input value={fileState.dirty ? "Yes" : "No"} readOnly />
-                  </label>
                 </div>
                 {project ? (
                   <EventCategoriesSettings
@@ -2932,6 +2897,16 @@ function PathBranchingSettingsModal({
                       checked={settings.inspectorDebugEnabled}
                       onChange={(event) =>
                         onInspectorDebugEnabledChange(event.target.checked)
+                      }
+                    />
+                  </label>
+                  <label>
+                    <span>Status messages</span>
+                    <input
+                      type="checkbox"
+                      checked={settings.showStatusMessages}
+                      onChange={(event) =>
+                        onShowStatusMessagesChange(event.target.checked)
                       }
                     />
                   </label>
@@ -4186,7 +4161,6 @@ function EventAuthoringDock({
   onLoadGroup,
   onDeleteGroup,
   onSelect,
-  onSaveEventDraft,
   inspectorTabs,
   expandedInspectorTabId,
   inspectorMaximized,
@@ -4215,7 +4189,6 @@ function EventAuthoringDock({
   onLoadGroup: (groupId: string) => void;
   onDeleteGroup: (groupId: string) => void;
   onSelect: (selection?: Selection) => void;
-  onSaveEventDraft: () => void;
   inspectorTabs: InspectorTab[];
   expandedInspectorTabId?: string;
   inspectorMaximized: boolean;
@@ -4675,14 +4648,6 @@ function EventAuthoringDock({
                             {cardEvent.name ?? "No event selected"}
                           </span>
                         </span>
-                        {isDraftEvent && eventDraft?.dirty ? (
-                          <span
-                            className="event-dirty-star"
-                            aria-label="unsaved edits"
-                          >
-                            *
-                          </span>
-                        ) : null}
                       </strong>
                     </div>
                   ) : (
@@ -4701,38 +4666,10 @@ function EventAuthoringDock({
                         <span className="event-header-copy">
                           <span className="event-header-name">{event.name}</span>
                         </span>
-                        {isDraftEvent && eventDraft?.dirty ? (
-                          <span
-                            className="event-dirty-star"
-                            aria-label="unsaved edits"
-                          >
-                            *
-                          </span>
-                        ) : null}
                       </strong>
                     </button>
                   )}
                   <div className="event-editor-actions">
-                    {isExpanded ? (
-                      <button
-                        type="button"
-                        disabled={
-                          !eventDraft?.dirty ||
-                          !isDraftEvent ||
-                          eventDraft.saving
-                        }
-                        onClick={onSaveEventDraft}
-                      >
-                        {isDraftEvent && eventDraft?.dirty ? (
-                          <span className="event-dirty-star" aria-hidden="true">
-                            *
-                          </span>
-                        ) : null}
-                        {eventDraft?.saving && isDraftEvent
-                          ? "Saving..."
-                          : "Save"}
-                      </button>
-                    ) : null}
                     <button
                       type="button"
                       title={
@@ -4752,11 +4689,7 @@ function EventAuthoringDock({
                     </button>
                     <button
                       type="button"
-                      title={
-                        isDraftEvent && eventDraft?.dirty
-                          ? "Save or discard edits before closing"
-                          : "Close inspector"
-                      }
+                      title="Close inspector"
                       onClick={() => closeInspector(event.id)}
                       onContextMenu={(contextEvent) =>
                         openTabCloseMenu(contextEvent, event.id)
@@ -7498,6 +7431,7 @@ function StoryCanvas({
   selection,
   findings,
   message,
+  showStatusMessages,
   activeScope,
   exportOpen,
   exportPreviewMode,
@@ -7544,6 +7478,11 @@ function StoryCanvas({
   onUpdateOutcome,
   onDeleteOutcome,
   onUpdateTransition,
+  onCreateBoundaryRoute,
+  onCreateBoundaryRouteEvent,
+  onCreateBoundaryEnd,
+  onDeleteBoundaryEnd,
+  onWorkspaceBoundsChange,
   onDeleteTransition,
   onRemoveMissingEventReference,
   onRemoveBoundaryBinding,
@@ -7589,7 +7528,6 @@ function StoryCanvas({
   onSaveEventInspectorTabGroup,
   onLoadEventInspectorTabGroup,
   onDeleteEventInspectorTabGroup,
-  onSaveEventDraft,
   onOpenInspectorTab,
   onCloseInspectorTab,
   onCloseAllInspectorTabs,
@@ -7605,6 +7543,7 @@ function StoryCanvas({
   selection?: Selection;
   findings: ValidationFinding[];
   message?: string;
+  showStatusMessages: boolean;
   activeScope?: CanvasScope;
   exportOpen: boolean;
   exportPreviewMode: ExportPreviewMode;
@@ -7686,6 +7625,15 @@ function StoryCanvas({
     transitionId: string,
     updates: Partial<Transition>,
   ) => void;
+  onCreateBoundaryRoute: (eventId: string, targetEventId: string) => void;
+  onCreateBoundaryRouteEvent: (eventId: string) => void;
+  onCreateBoundaryEnd: (eventId: string) => void;
+  onDeleteBoundaryEnd: (eventId: string, slotId: string) => void;
+  onWorkspaceBoundsChange: (
+    scope: Extract<CanvasScope, { kind: "event" | "dialogue" }>,
+    bounds: SubcanvasWorkspaceBounds,
+    persist: boolean,
+  ) => void;
   onDeleteTransition: (transitionId: string) => void;
   onRemoveMissingEventReference: (
     ownerId: string,
@@ -7749,7 +7697,6 @@ function StoryCanvas({
   onSaveEventInspectorTabGroup: () => void;
   onLoadEventInspectorTabGroup: (groupId: string) => void;
   onDeleteEventInspectorTabGroup: (groupId: string) => void;
-  onSaveEventDraft: () => void;
   onOpenInspectorTab: (id: string) => void;
   onCloseInspectorTab: (id: string) => void;
   onCloseAllInspectorTabs: () => void;
@@ -7807,7 +7754,75 @@ function StoryCanvas({
         data: {
           ...node.data,
           inspectorState: inspectorNodeStates.get(node.id),
-          quickEditor:
+          details: {
+            ...node.data.details,
+            workspaceEditor:
+            node.data.kind === "workspace" &&
+            activeScope &&
+            activeScope.kind !== "sequence"
+              ? {
+                  bounds: {
+                    x: node.position.x,
+                    y: node.position.y,
+                    width: node.width ?? 720,
+                    height: node.height ?? 460,
+                  },
+                  onPreview: (bounds: SubcanvasWorkspaceBounds) =>
+                    onWorkspaceBoundsChange(activeScope, bounds, false),
+                  onCommit: (bounds: SubcanvasWorkspaceBounds) =>
+                    onWorkspaceBoundsChange(activeScope, bounds, true),
+                }
+              : undefined,
+            endAdder:
+              node.data.kind === "endAdder" &&
+              typeof node.data.details?.eventId === "string"
+                ? { onAdd: () => onCreateBoundaryEnd(node.data.details?.eventId as string) }
+                : undefined,
+            routeEditor:
+            activeScope?.kind === "event" &&
+            node.data.kind === "boundary" &&
+            node.data.details?.direction === "output" &&
+            typeof node.data.details?.eventId === "string"
+              ? (() => {
+                  const eventId = node.data.details.eventId;
+                  const transitionId = typeof node.data.details?.transitionId === "string"
+                    ? node.data.details.transitionId
+                    : undefined;
+                  const slotId = typeof node.data.details?.slotId === "string"
+                    ? node.data.details.slotId
+                    : undefined;
+                  const selectedTargetId = typeof node.data.details?.targetEventId === "string"
+                    ? node.data.details.targetEventId
+                    : undefined;
+                  return {
+                    selectedTargetId,
+                    targets: project.events
+                      .filter((event) => event.id !== eventId)
+                      .map((event) => {
+                        const branch = event.branchRef
+                          ? project.branches.find((candidate) => candidate.id === event.branchRef)
+                          : undefined;
+                        return {
+                          id: event.id,
+                          label: `${event.name} · ${branch?.title ?? "No branch"}`,
+                        };
+                      }),
+                    onTargetChange: (targetEventId: string) => {
+                      if (transitionId) {
+                        onUpdateTransition(transitionId, { to: targetEventId });
+                      } else {
+                        onCreateBoundaryRoute(eventId, targetEventId);
+                      }
+                    },
+                    onCreateTarget: () => onCreateBoundaryRouteEvent(eventId),
+                    onDeleteEnd:
+                      !transitionId && slotId && slotId !== "exit"
+                        ? () => onDeleteBoundaryEnd(eventId, slotId)
+                        : undefined,
+                  };
+                })()
+              : undefined,
+            quickEditor:
             (node.data.kind === "speechBeat" || node.data.kind === "directionBeat") &&
             typeof (node.data.details?.beat as { blockRef?: { scriptId?: unknown; blockId?: unknown } } | undefined)?.blockRef?.scriptId === "string" &&
             typeof (node.data.details?.beat as { blockRef?: { scriptId?: unknown; blockId?: unknown } } | undefined)?.blockRef?.blockId === "string"
@@ -7826,6 +7841,7 @@ function StoryCanvas({
                   };
                 })()
               : undefined,
+          },
         },
       })),
       edges: edges.map((edgeItem): StoryCanvasEdge => {
@@ -7836,6 +7852,8 @@ function StoryCanvas({
           edgeData.kind === "transition" || edgeData.kind === "entry";
         return {
           ...edgeItem,
+          // The working area is a visual guide only; transitions remain above it.
+          zIndex: Math.max(edgeItem.zIndex ?? 0, 1),
           type: editable ? "editable" : edgeItem.type,
           data: {
             ...edgeData,
@@ -7852,7 +7870,7 @@ function StoryCanvas({
         };
       }),
     }),
-    [canvasBackground.connectionPadding, commitEdgeLabel, editingEdgeId, edges, inspectorEdgeStates, inspectorNodeStates, nodes, onUpdateScriptBlock, project],
+    [activeScope, canvasBackground.connectionPadding, commitEdgeLabel, editingEdgeId, edges, inspectorEdgeStates, inspectorNodeStates, nodes, onCreateBoundaryEnd, onCreateBoundaryRoute, onCreateBoundaryRouteEvent, onDeleteBoundaryEnd, onUpdateScriptBlock, onUpdateTransition, onWorkspaceBoundsChange, project],
   );
   const activeEventScope =
     activeScope?.kind === "event"
@@ -7988,6 +8006,12 @@ function StoryCanvas({
         x: event.clientX,
         y: event.clientY,
       });
+      const workspaceNode = activeScope?.kind === "sequence"
+        ? undefined
+        : nodes.find((node) => node.data.kind === "workspace");
+      if (workspaceNode && !isPointInside(workspaceNode, flowPosition.x, flowPosition.y)) {
+        return;
+      }
       setContextMenu({
         kind: "create",
         ...clampFloatingMenuPosition(
@@ -8005,7 +8029,7 @@ function StoryCanvas({
         flowY: flowPosition.y,
       });
     },
-    [reactFlowInstance],
+    [activeScope?.kind, nodes, reactFlowInstance],
   );
 
   const openEdgeContextMenu = useCallback(
@@ -8032,6 +8056,7 @@ function StoryCanvas({
     (event: ReactMouseEvent, node: StoryCanvasNode) => {
       event.preventDefault();
       event.stopPropagation();
+      if (node.data.kind === "workspace") return;
       const selectedNodeIds = node.selected
         ? nodes.filter((candidate) => candidate.selected).map((candidate) => candidate.id)
         : [node.id];
@@ -8135,7 +8160,9 @@ function StoryCanvas({
       className={`canvas-shell ${activeScope?.kind === "event" ? "nested-scope" : ""} ${draggingEvent ? "dragging-event" : ""}`}
       ref={shellRef}
     >
-      {message ? <div className="canvas-message">{message}</div> : null}
+      {showStatusMessages && message ? (
+        <div className="canvas-message">{message}</div>
+      ) : null}
 
       <div className="canvas-modebar">
         <div className="canvas-breadcrumb" aria-label="Canvas path">
@@ -8208,6 +8235,7 @@ function StoryCanvas({
           onNodeClick={(event, node) => {
             setContextMenu(undefined);
             setEditingEdgeId(undefined);
+            if (node.data.kind === "workspace") return;
             if (draggedNodeRef.current || event.shiftKey) return;
             if (nodeClickTimeoutRef.current !== undefined) {
               window.clearTimeout(nodeClickTimeoutRef.current);
@@ -8321,27 +8349,6 @@ function StoryCanvas({
           ) : null}
         </ReactFlow>
       </ReactFlowProvider>
-      <div className="canvas-edge-adjustments">
-        <button type="button" className="canvas-edge-adjustments-trigger" aria-label="Adjust connection spacing" title="Adjust connection spacing">
-          <SlidersHorizontal size={15} />
-        </button>
-        <div className="canvas-edge-adjustments-panel">
-          <label>
-            Connection spacing
-            <input
-              type="range"
-              min="0"
-              max="64"
-              step="2"
-              value={canvasBackground.connectionPadding}
-              onChange={(event) => onCanvasBackgroundChange({ connectionPadding: Number(event.target.value) })}
-            />
-            <output>{canvasBackground.connectionPadding}px</output>
-          </label>
-          <button type="button" onClick={() => onCanvasBackgroundChange({ connectionPadding: 18 })}>Reset</button>
-        </div>
-      </div>
-
       {contextMenu ? (
         <div
           className="canvas-menu"
@@ -8528,7 +8535,6 @@ function StoryCanvas({
         onLoadGroup={onLoadEventInspectorTabGroup}
         onDeleteGroup={onDeleteEventInspectorTabGroup}
         onSelect={onSelect}
-        onSaveEventDraft={onSaveEventDraft}
         inspectorTabs={inspectorTabs}
         expandedInspectorTabId={expandedInspectorTabId}
         inspectorMaximized={inspectorMaximized}
@@ -8614,7 +8620,6 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
   const [fileState, setFileState] = useState<ProjectFileState>({
     dirty: false,
   });
-  const [canvasDirty, setCanvasDirty] = useState(false);
   const [nodes, setNodes] = useState<StoryCanvasNode[]>([]);
   const [edges, setEdges] = useState<StoryCanvasEdge[]>([]);
   const [files, setFiles] = useState<PathBranchingFileItem[]>([]);
@@ -8659,14 +8664,6 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
   const [undoStack, setUndoStack] = useState<BranchingProject[]>([]);
   const [redoStack, setRedoStack] = useState<BranchingProject[]>([]);
   const [actionHistory, setActionHistory] = useState<string[]>([]);
-  const [discardDialog, setDiscardDialog] = useState<{
-    resolve: (discard: boolean) => void;
-  }>();
-  const [eventDraftDialog, setEventDraftDialog] = useState<
-    | { kind: "select"; nextSelection?: Selection }
-    | { kind: "closeInspectorTab"; eventId: string }
-    | { kind: "loadInspectorGroup"; groupId: string }
-  >();
   const [nameDialog, setNameDialog] = useState<
     | {
         kind: "createStory";
@@ -8866,7 +8863,6 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
       setUndoStack([]);
       setRedoStack([]);
       setActionHistory([]);
-      setCanvasDirty(false);
       setEventDraft(undefined);
       setMarkdownTabs(savedSession.markdownTabs ?? []);
       setActiveMarkdownTabId(savedSession.activeMarkdownTabId);
@@ -9056,7 +9052,6 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
       result: mutations.MutationResult | BranchingProject,
       nextSelection?: Selection,
     ) => {
-      setCanvasDirty(false);
       void commitStructuralAction(label, result, nextSelection);
     },
     [commitStructuralAction],
@@ -9686,22 +9681,7 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
     [commitStructuralAction, fileState.universePath, markdownTabs],
   );
 
-  const confirmDiscardChanges = useCallback(async () => {
-    if (!eventDraft?.dirty) {
-      return true;
-    }
-    return new Promise<boolean>((resolve) => {
-      setDiscardDialog({ resolve });
-    });
-  }, [eventDraft?.dirty]);
-
-  const resolveDiscardDialog = useCallback(
-    (discard: boolean) => {
-      discardDialog?.resolve(discard);
-      setDiscardDialog(undefined);
-    },
-    [discardDialog],
-  );
+  const confirmDiscardChanges = useCallback(async () => true, []);
 
   const setActiveSequence = useCallback(
     async (sequenceId: string) => {
@@ -9955,6 +9935,10 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
 
   const changeInspectorDebugEnabled = useCallback((value: boolean) => {
     setSettings((current) => ({ ...current, inspectorDebugEnabled: value }));
+  }, []);
+
+  const changeShowStatusMessages = useCallback((value: boolean) => {
+    setSettings((current) => ({ ...current, showStatusMessages: value }));
   }, []);
 
   const changeNodeColors = useCallback(
@@ -10249,87 +10233,17 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
     return queuedSave;
   }, []);
 
-  const saveCanvas = useCallback(async () => {
-    if (!canvasDirty) {
-      setMessage("Canvas has no pending changes.");
-      return;
-    }
-    try {
-      await persistProject({ manual: true });
-      setCanvasDirty(false);
-    } catch (saveError) {
-      setError(saveError instanceof Error ? saveError.message : String(saveError));
-    }
-  }, [canvasDirty, persistProject]);
-
   useEffect(() => {
     persistProjectRef.current = persistProject;
   }, [persistProject]);
 
-  const saveActiveEventDraft = useCallback(async () => {
-    const currentDraft = eventDraft;
-    const currentProject = projectRef.current;
-    if (!currentDraft?.dirty) {
-      setMessage("No event edits to save.");
-      return true;
-    }
-    if (!currentProject) {
-      setMessage("No event is available to save.");
-      return false;
-    }
-
-    const snapshot = {
-      project: currentProject,
-      workspace: workspaceRef.current,
-      fileState: fileStateRef.current,
-      selection: selectionRef.current,
-      undoStack,
-      redoStack,
-      revision: projectRevisionRef.current,
-      savedRevision: savedRevisionRef.current,
-    };
-
-    try {
-      setEventDraft((draft) =>
-        draft?.eventId === currentDraft.eventId
-          ? { ...draft, saving: true }
-          : draft,
-      );
-      const nextProject = applyEventDraftToProject(
-        currentProject,
-        currentDraft,
-      );
-      applyProject(nextProject, { dirty: false, revision: true });
-      await persistProject();
-      setEventDraft({
-        ...currentDraft,
-        baseEvent: structuredClone(currentDraft.draftEvent),
-        draftEvent: structuredClone(currentDraft.draftEvent),
-        dirty: false,
-        saving: false,
-      });
-      setMessage("Saved event edits.");
-      return true;
-    } catch (saveError) {
-      restoreStructuralSnapshot(snapshot);
-      setEventDraft((draft) =>
-        draft?.eventId === currentDraft.eventId
-          ? { ...draft, saving: false }
-          : draft,
-      );
+  const flushProjectAutosave = useCallback(() => {
+    void persistProjectRef.current?.().catch((saveError) => {
       setError(
         saveError instanceof Error ? saveError.message : String(saveError),
       );
-      return false;
-    }
-  }, [
-    applyProject,
-    eventDraft,
-    persistProject,
-    redoStack,
-    restoreStructuralSnapshot,
-    undoStack,
-  ]);
+    });
+  }, []);
 
   const openEventInspectorForEvent = useCallback((eventId: string) => {
     setExpandedInspectorTabId(undefined);
@@ -10354,11 +10268,6 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
 
   const requestCloseEventInspectorForEvent = useCallback(
     (eventId: string) => {
-      if (eventDraft?.dirty && eventDraft.eventId === eventId) {
-        setSelection({ type: "node", id: eventId });
-        setEventDraftDialog({ kind: "closeInspectorTab", eventId });
-        return;
-      }
       setEventInspector((current) =>
         closeEventInspectorTab(current, eventId, {
           selectNextOnClose: settings.inspectorTabCloseSelectsNext,
@@ -10375,7 +10284,6 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
       }
     },
     [
-      eventDraft,
       eventInspector.expandedEventId,
       eventInspector.openEventIds.length,
       inspectorTabs,
@@ -10384,62 +10292,34 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
   );
 
   const closeAllInspectorTabs = useCallback(() => {
-    if (eventDraft?.dirty) {
-      setSelection({ type: "node", id: eventDraft.eventId });
-      setMessage("Save or discard edits before closing all tabs.");
-      return;
-    }
     setEventInspector((current) => closeAllEventInspectorTabs(current));
-  }, [eventDraft]);
+  }, []);
 
   const closeInspectorTabsAbove = useCallback(
     (eventId: string) => {
-      const index = eventInspector.openEventIds.indexOf(eventId);
-      const idsToClose = eventInspector.openEventIds.slice(0, index);
-      if (eventDraft?.dirty && idsToClose.includes(eventDraft.eventId)) {
-        setSelection({ type: "node", id: eventDraft.eventId });
-        setMessage("Save or discard edits before closing that tab.");
-        return;
-      }
       setEventInspector((current) =>
         closeEventInspectorTabsAbove(current, eventId),
       );
     },
-    [eventDraft, eventInspector.openEventIds],
+    [eventInspector.openEventIds],
   );
 
   const closeInspectorTabsBelow = useCallback(
     (eventId: string) => {
-      const index = eventInspector.openEventIds.indexOf(eventId);
-      const idsToClose =
-        index === -1 ? [] : eventInspector.openEventIds.slice(index + 1);
-      if (eventDraft?.dirty && idsToClose.includes(eventDraft.eventId)) {
-        setSelection({ type: "node", id: eventDraft.eventId });
-        setMessage("Save or discard edits before closing that tab.");
-        return;
-      }
       setEventInspector((current) =>
         closeEventInspectorTabsBelow(current, eventId),
       );
     },
-    [eventDraft, eventInspector.openEventIds],
+    [eventInspector.openEventIds],
   );
 
   const closeOtherInspectorTabs = useCallback(
     (eventId: string) => {
-      const idsToClose = eventInspector.openEventIds.filter(
-        (candidate) => candidate !== eventId,
-      );
-      if (eventDraft?.dirty && idsToClose.includes(eventDraft.eventId)) {
-        setSelection({ type: "node", id: eventDraft.eventId });
-        setMessage("Save or discard edits before closing that tab.");
-        return;
-      }
       setEventInspector((current) =>
         closeOtherEventInspectorTabs(current, eventId),
       );
     },
-    [eventDraft, eventInspector.openEventIds],
+    [],
   );
 
   const loadInspectorTabGroup = useCallback(
@@ -10486,13 +10366,9 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
       if (!eventInspectorTabGroups.some((group) => group.id === groupId)) {
         return;
       }
-      if (eventDraft?.dirty) {
-        setEventDraftDialog({ kind: "loadInspectorGroup", groupId });
-        return;
-      }
       loadInspectorTabGroup(groupId);
     },
-    [eventDraft?.dirty, eventInspectorTabGroups, loadInspectorTabGroup],
+    [eventInspectorTabGroups, loadInspectorTabGroup],
   );
 
   const requestSaveInspectorTabGroup = useCallback(() => {
@@ -10524,14 +10400,6 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
       const nextEventId = currentProject
         ? eventIdFromSelection(currentProject, nodes, nextSelection)
         : undefined;
-      if (
-        eventDraft?.dirty &&
-        nextEventId &&
-        nextEventId !== eventDraft.eventId
-      ) {
-        setEventDraftDialog({ kind: "select", nextSelection });
-        return;
-      }
       setSelection(nextSelection);
       if (tab) {
         setInspectorTabs((current) =>
@@ -10549,7 +10417,7 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
         openEventInspectorForEvent(nextEventId);
       }
     },
-    [eventDraft, nodes, openEventInspectorForEvent],
+    [nodes, openEventInspectorForEvent],
   );
 
   const openInspectorTab = useCallback(
@@ -10624,60 +10492,9 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
     [inspectorTabs],
   );
 
-  const resolveEventDraftDialog = useCallback(
-    async (action: "save" | "discard" | "cancel") => {
-      const pendingAction = eventDraftDialog;
-      if (action === "cancel") {
-        setEventDraftDialog(undefined);
-        return;
-      }
-      if (action === "save") {
-        const saved = await saveActiveEventDraft();
-        if (!saved) {
-          return;
-        }
-      }
-      setEventDraftDialog(undefined);
-      setEventDraft(undefined);
-      if (pendingAction?.kind === "closeInspectorTab") {
-        setEventInspector((current) =>
-          closeEventInspectorTab(current, pendingAction.eventId, {
-            selectNextOnClose: settings.inspectorTabCloseSelectsNext,
-          }),
-        );
-        return;
-      }
-      if (pendingAction?.kind === "loadInspectorGroup") {
-        loadInspectorTabGroup(pendingAction.groupId);
-        return;
-      }
-      const nextSelection = pendingAction?.nextSelection;
-      setSelection(nextSelection);
-      const currentProject = projectRef.current;
-      const nextEventId = currentProject
-        ? eventIdFromSelection(currentProject, nodes, nextSelection)
-        : undefined;
-      if (nextEventId) {
-        openEventInspectorForEvent(nextEventId);
-      }
-    },
-    [
-      eventDraftDialog,
-      loadInspectorTabGroup,
-      nodes,
-      openEventInspectorForEvent,
-      saveActiveEventDraft,
-    suiteChrome,
-      settings.inspectorTabCloseSelectsNext,
-    ],
-  );
-
   useEffect(() => {
     if (!project) {
       setEventDraft(undefined);
-      return;
-    }
-    if (eventDraft?.dirty) {
       return;
     }
     const ownerEventId = eventIdFromSelection(project, nodes, selection);
@@ -10698,7 +10515,6 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
     }
     setEventDraft(nextDraft);
   }, [
-    eventDraft?.dirty,
     eventDraft?.eventId,
     eventDraft?.mode,
     nodes,
@@ -10710,28 +10526,34 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
     (
       factory: (projectWithDraft: BranchingProject) => mutations.MutationResult,
     ) => {
-      setEventDraft((currentDraft) => {
-        const currentProject = projectRef.current;
-        if (!currentDraft || !currentProject) {
-          return currentDraft;
-        }
-        const draftProject = applyEventDraftToProject(
-          currentProject,
-          currentDraft,
+      const currentProject = projectRef.current;
+      if (!currentProject) {
+        return;
+      }
+      const result = factory(currentProject);
+      const eventId = eventDraft?.eventId;
+      const nextEvent = eventId ? findEvent(result.project, eventId) : undefined;
+      if (eventId && nextEvent) {
+        setEventDraft((currentDraft) =>
+          currentDraft?.eventId === eventId
+            ? {
+                ...currentDraft,
+                baseEvent: structuredClone(nextEvent),
+                draftEvent: structuredClone(nextEvent),
+                dirty: false,
+                saving: false,
+              }
+            : currentDraft,
         );
-        const result = factory(draftProject);
-        const nextEvent = findEvent(result.project, currentDraft.eventId);
-        if (!nextEvent) {
-          return currentDraft;
-        }
-        return {
-          ...currentDraft,
-          draftEvent: structuredClone(nextEvent),
-          dirty: true,
-        };
+      }
+      applyProject(result.project, { dirty: false, revision: true });
+      void persistProjectRef.current?.().catch((saveError) => {
+        setError(
+          saveError instanceof Error ? saveError.message : String(saveError),
+        );
       });
     },
-    [],
+    [applyProject, eventDraft?.eventId],
   );
 
   const importAssets = useCallback(async () => {
@@ -10952,11 +10774,7 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
       }
       if (shortcutMatches(event, "Mod+S")) {
         event.preventDefault();
-        if (canvasDirty) {
-          void saveCanvas();
-        } else {
-          void saveActiveEventDraft();
-        }
+        flushProjectAutosave();
       }
       if (shortcutMatches(event, "Mod+R")) {
         event.preventDefault();
@@ -10971,11 +10789,9 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
     window.addEventListener("keydown", handleKeyDown, true);
     return () => window.removeEventListener("keydown", handleKeyDown, true);
   }, [
-    canvasDirty,
+    flushProjectAutosave,
     openProject,
     redoProject,
-    saveActiveEventDraft,
-    saveCanvas,
     suiteChrome,
     undoProject,
   ]);
@@ -11516,6 +11332,124 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
     [runCanvasMutation],
   );
 
+  const createBoundaryRoute = useCallback(
+    (eventId: string, targetEventId: string) => {
+      const currentProject = projectRef.current;
+      if (!currentProject) return;
+      if (eventDraft?.eventId === eventId) {
+        mutateEventDraft((draftProject) =>
+          mutations.createInternalTransition(
+            draftProject,
+            eventId,
+            eventId,
+            targetEventId,
+          ),
+        );
+        return;
+      }
+      runCanvasMutation(
+        mutations.createInternalTransition(
+          currentProject,
+          eventId,
+          eventId,
+          targetEventId,
+        ),
+        "Linked route destination",
+      );
+    },
+    [eventDraft?.eventId, mutateEventDraft, runCanvasMutation],
+  );
+
+  const createBoundaryRouteEvent = useCallback(
+    (eventId: string) => {
+      if (!isTauriRuntime()) {
+        setMessage(
+          "Preview web: abre Everend PathBranching con Tauri para crear destinos persistentes.",
+        );
+        return;
+      }
+      const currentProject = projectRef.current;
+      if (!currentProject || workspaceRef.current?.createdDefaultStory) {
+        setMessage("Create an Everend PathBranching story before adding route destinations.");
+        return;
+      }
+      const sourceProject = eventDraft?.eventId === eventId
+        ? applyEventDraftToProject(currentProject, eventDraft)
+        : currentProject;
+      if (eventDraft?.eventId === eventId) setEventDraft(undefined);
+      // End ports point out of the nested canvas. A newly created destination
+      // therefore belongs to the sequence, rather than becoming another child
+      // inside the event we are leaving.
+      const created = mutations.createEvent(sourceProject);
+      const targetEventId = created.selection?.type === "node"
+        ? created.selection.id
+        : undefined;
+      if (!targetEventId) {
+        setMessage(created.message ?? "Could not create a route destination.");
+        return;
+      }
+      runCanvasMutation(
+        mutations.createInternalTransition(
+          created.project,
+          eventId,
+          eventId,
+          targetEventId,
+        ),
+        "Created linked route destination",
+      );
+    },
+    [eventDraft, runCanvasMutation],
+  );
+
+  const createBoundaryEnd = useCallback(
+    (eventId: string) => {
+      const currentProject = projectRef.current;
+      if (!currentProject) return;
+      const scope = { kind: "event" as const, id: eventId };
+      const scopeKey = canvasScopeKey(scope);
+      const currentSlots = currentProject.canvas?.scopes?.[scopeKey]?.exitSlots ?? [];
+      const slotId = `exit-${Date.now().toString(36)}-${currentSlots.length + 1}`;
+      commitCanvasAction("Added subcanvas End port", {
+        ...currentProject,
+        canvas: {
+          ...currentProject.canvas,
+          scopes: {
+            ...(currentProject.canvas?.scopes ?? {}),
+            [scopeKey]: {
+              ...(currentProject.canvas?.scopes?.[scopeKey] ?? {}),
+              exitSlots: [...currentSlots, slotId],
+            },
+          },
+        },
+      });
+    },
+    [commitCanvasAction],
+  );
+
+  const deleteBoundaryEnd = useCallback(
+    (eventId: string, slotId: string) => {
+      const currentProject = projectRef.current;
+      if (!currentProject) return;
+      const scopeKey = canvasScopeKey({ kind: "event", id: eventId });
+      const currentSlots = currentProject.canvas?.scopes?.[scopeKey]?.exitSlots ?? [];
+      if (!currentSlots.includes(slotId)) return;
+      commitCanvasAction("Removed subcanvas End port", {
+        ...currentProject,
+        canvas: {
+          ...currentProject.canvas,
+          scopes: {
+            ...(currentProject.canvas?.scopes ?? {}),
+            [scopeKey]: {
+              ...(currentProject.canvas?.scopes?.[scopeKey] ?? {}),
+              exitSlots: currentSlots.filter((candidate) => candidate !== slotId),
+            },
+          },
+        },
+      });
+    },
+    [commitCanvasAction],
+  );
+
   const createEventInBranch = useCallback(
     (branchId: string, type: EventType = "normal") => {
       createEvent(type, undefined, branchId);
@@ -11751,25 +11685,29 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
 
   const updateEvent = useCallback(
     (id: string, updates: Partial<EventNode>) => {
-      if (!project) {
+      const currentProject = projectRef.current;
+      if (!currentProject) {
         return;
       }
       if (eventDraft?.eventId === id) {
-        setEventDraft((draft) => updateEventDraft(draft, updates));
+        mutateEventDraft((draftProject) =>
+          mutations.updateEvent(draftProject, id, updates),
+        );
         return;
       }
-      runCanvasMutation(mutations.updateEvent(project, id, updates));
+      runCanvasMutation(mutations.updateEvent(currentProject, id, updates));
     },
-    [eventDraft?.eventId, project, runCanvasMutation],
+    [eventDraft?.eventId, mutateEventDraft, runCanvasMutation],
   );
 
   const createDecision = useCallback(
     (eventId: string) => {
-      if (!project) {
+      const currentProject = projectRef.current;
+      if (!currentProject) {
         return;
       }
       if (eventDraft?.eventId === eventId) {
-        const draftProject = applyEventDraftToProject(project, eventDraft);
+        const draftProject = applyEventDraftToProject(currentProject, eventDraft);
         setEventDraft(undefined);
         runCanvasMutation(
           mutations.createDecision(draftProject, eventId),
@@ -11777,18 +11715,19 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
         );
         return;
       }
-      runCanvasMutation(mutations.createDecision(project, eventId));
+      runCanvasMutation(mutations.createDecision(currentProject, eventId));
     },
-    [eventDraft, project, runCanvasMutation],
+    [eventDraft, runCanvasMutation],
   );
 
   const createDialogue = useCallback(
     (eventId: string) => {
-      if (!project) {
+      const currentProject = projectRef.current;
+      if (!currentProject) {
         return;
       }
       if (eventDraft?.eventId === eventId) {
-        const draftProject = applyEventDraftToProject(project, eventDraft);
+        const draftProject = applyEventDraftToProject(currentProject, eventDraft);
         setEventDraft(undefined);
         runCanvasMutation(
           mutations.createDialogue(draftProject, eventId),
@@ -11797,16 +11736,17 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
         return;
       }
       runCanvasMutation(
-        mutations.createDialogue(project, eventId),
+        mutations.createDialogue(currentProject, eventId),
         "Created dialogue",
       );
     },
-    [eventDraft, project, runCanvasMutation],
+    [eventDraft, runCanvasMutation],
   );
 
   const updateDecision = useCallback(
     (eventId: string, decisionId: string, updates: Partial<Decision>) => {
-      if (!project) {
+      const currentProject = projectRef.current;
+      if (!currentProject) {
         return;
       }
       if (eventDraft?.eventId === eventId) {
@@ -11816,15 +11756,16 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
         return;
       }
       runCanvasMutation(
-        mutations.updateDecision(project, eventId, decisionId, updates),
+        mutations.updateDecision(currentProject, eventId, decisionId, updates),
       );
     },
-    [eventDraft?.eventId, mutateEventDraft, project, runCanvasMutation],
+    [eventDraft?.eventId, mutateEventDraft, runCanvasMutation],
   );
 
   const updateDialogue = useCallback(
     (eventId: string, dialogueId: string, updates: Partial<DialogueNode>) => {
-      if (!project) {
+      const currentProject = projectRef.current;
+      if (!currentProject) {
         return;
       }
       if (eventDraft?.eventId === eventId) {
@@ -11834,57 +11775,61 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
         return;
       }
       runCanvasMutation(
-        mutations.updateDialogue(project, eventId, dialogueId, updates),
+        mutations.updateDialogue(currentProject, eventId, dialogueId, updates),
       );
     },
-    [eventDraft?.eventId, mutateEventDraft, project, runCanvasMutation],
+    [eventDraft?.eventId, mutateEventDraft, runCanvasMutation],
   );
 
   const createDialogueBeat = useCallback(
     (eventId: string, dialogueId: string, kind: DialogueBeat["kind"]) => {
-      if (!project) return;
+      const currentProject = projectRef.current;
+      if (!currentProject) return;
       const sourceProject =
         eventDraft?.eventId === eventId
-          ? applyEventDraftToProject(project, eventDraft)
-          : project;
+          ? applyEventDraftToProject(currentProject, eventDraft)
+          : currentProject;
       if (eventDraft?.eventId === eventId) setEventDraft(undefined);
       runCanvasMutation(
         mutations.createDialogueBeat(sourceProject, eventId, dialogueId, kind),
         "Created dialogue beat",
       );
     },
-    [eventDraft, project, runCanvasMutation],
+    [eventDraft, runCanvasMutation],
   );
 
   const createEventDialogueBeat = useCallback(
     (eventId: string, kind: DialogueBeat["kind"]) => {
-      if (!project) return;
+      const currentProject = projectRef.current;
+      if (!currentProject) return;
       const sourceProject = eventDraft?.eventId === eventId
-        ? applyEventDraftToProject(project, eventDraft)
-        : project;
+        ? applyEventDraftToProject(currentProject, eventDraft)
+        : currentProject;
       if (eventDraft?.eventId === eventId) setEventDraft(undefined);
       runCanvasMutation(
         mutations.createEventDialogueBeat(sourceProject, eventId, kind),
         "Created dialogue beat",
       );
     },
-    [eventDraft, project, runCanvasMutation],
+    [eventDraft, runCanvasMutation],
   );
 
   const updateDialogueBeat = useCallback(
     (eventId: string, dialogueId: string, beatId: string, updates: Partial<DialogueBeat>) => {
-      if (!project) return;
-      runCanvasMutation(mutations.updateDialogueBeat(project, eventId, dialogueId, beatId, updates));
+      const currentProject = projectRef.current;
+      if (!currentProject) return;
+      runCanvasMutation(mutations.updateDialogueBeat(currentProject, eventId, dialogueId, beatId, updates));
     },
-    [project, runCanvasMutation],
+    [runCanvasMutation],
   );
 
   const updateEventDialogueBeat = useCallback(
     (eventId: string, beatId: string, updates: Partial<DialogueBeat>) => {
-      if (!project) return;
-      runCanvasMutation(mutations.updateEventDialogueBeat(project, eventId, beatId, updates));
+      const currentProject = projectRef.current;
+      if (!currentProject) return;
+      runCanvasMutation(mutations.updateEventDialogueBeat(currentProject, eventId, beatId, updates));
     },
-    [project, runCanvasMutation],
+    [runCanvasMutation],
   );
 
   const updateScriptBlock = useCallback(
@@ -11952,25 +11897,28 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
 
   const deleteDialogueBeat = useCallback(
     (eventId: string, dialogueId: string, beatId: string) => {
-      if (!project) return;
+      const currentProject = projectRef.current;
+      if (!currentProject) return;
       closeDeletedNodeInspector(`beat:${eventId}:${dialogueId}:${beatId}`);
-      runCanvasMutation(mutations.deleteDialogueBeat(project, eventId, dialogueId, beatId));
+      runCanvasMutation(mutations.deleteDialogueBeat(currentProject, eventId, dialogueId, beatId));
     },
-    [closeDeletedNodeInspector, project, runCanvasMutation],
+    [closeDeletedNodeInspector, runCanvasMutation],
   );
 
   const deleteEventDialogueBeat = useCallback(
     (eventId: string, beatId: string) => {
-      if (!project) return;
+      const currentProject = projectRef.current;
+      if (!currentProject) return;
       closeDeletedNodeInspector(`beat:${eventId}:${beatId}`);
-      runCanvasMutation(mutations.deleteEventDialogueBeat(project, eventId, beatId));
+      runCanvasMutation(mutations.deleteEventDialogueBeat(currentProject, eventId, beatId));
     },
-    [closeDeletedNodeInspector, project, runCanvasMutation],
+    [closeDeletedNodeInspector, runCanvasMutation],
   );
 
   const deleteDecision = useCallback(
     (eventId: string, decisionId: string) => {
-      if (!project) {
+      const currentProject = projectRef.current;
+      if (!currentProject) {
         return;
       }
       if (eventDraft?.eventId === eventId) {
@@ -11981,14 +11929,15 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
         return;
       }
       closeDeletedNodeInspector(`decision:${eventId}:${decisionId}`);
-      runCanvasMutation(mutations.deleteDecision(project, eventId, decisionId));
+      runCanvasMutation(mutations.deleteDecision(currentProject, eventId, decisionId));
     },
-    [closeDeletedNodeInspector, eventDraft?.eventId, mutateEventDraft, project, runCanvasMutation],
+    [closeDeletedNodeInspector, eventDraft?.eventId, mutateEventDraft, runCanvasMutation],
   );
 
   const deleteDialogue = useCallback(
     (eventId: string, dialogueId: string) => {
-      if (!project) {
+      const currentProject = projectRef.current;
+      if (!currentProject) {
         return;
       }
       if (eventDraft?.eventId === eventId) {
@@ -11999,14 +11948,15 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
         return;
       }
       closeDeletedNodeInspector(`dialogue:${eventId}:${dialogueId}`);
-      runCanvasMutation(mutations.deleteDialogue(project, eventId, dialogueId));
+      runCanvasMutation(mutations.deleteDialogue(currentProject, eventId, dialogueId));
     },
-    [closeDeletedNodeInspector, eventDraft?.eventId, mutateEventDraft, project, runCanvasMutation],
+    [closeDeletedNodeInspector, eventDraft?.eventId, mutateEventDraft, runCanvasMutation],
   );
 
   const createOutcome = useCallback(
     (eventId: string, decisionId: string) => {
-      if (!project) {
+      const currentProject = projectRef.current;
+      if (!currentProject) {
         return;
       }
       if (eventDraft?.eventId === eventId) {
@@ -12015,9 +11965,9 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
         );
         return;
       }
-      runCanvasMutation(mutations.createOutcome(project, eventId, decisionId));
+      runCanvasMutation(mutations.createOutcome(currentProject, eventId, decisionId));
     },
-    [eventDraft?.eventId, mutateEventDraft, project, runCanvasMutation],
+    [eventDraft?.eventId, mutateEventDraft, runCanvasMutation],
   );
 
   const updateOutcome = useCallback(
@@ -12027,7 +11977,8 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
       outcomeId: string,
       updates: Partial<Outcome>,
     ) => {
-      if (!project) {
+      const currentProject = projectRef.current;
+      if (!currentProject) {
         return;
       }
       if (eventDraft?.eventId === eventId) {
@@ -12044,7 +11995,7 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
       }
       runCanvasMutation(
         mutations.updateOutcome(
-          project,
+          currentProject,
           eventId,
           decisionId,
           outcomeId,
@@ -12052,12 +12003,13 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
         ),
       );
     },
-    [eventDraft?.eventId, mutateEventDraft, project, runCanvasMutation],
+    [eventDraft?.eventId, mutateEventDraft, runCanvasMutation],
   );
 
   const deleteOutcome = useCallback(
     (eventId: string, decisionId: string, outcomeId: string) => {
-      if (!project) {
+      const currentProject = projectRef.current;
+      if (!currentProject) {
         return;
       }
       if (eventDraft?.eventId === eventId) {
@@ -12067,10 +12019,10 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
         return;
       }
       runCanvasMutation(
-        mutations.deleteOutcome(project, eventId, decisionId, outcomeId),
+        mutations.deleteOutcome(currentProject, eventId, decisionId, outcomeId),
       );
     },
-    [eventDraft?.eventId, mutateEventDraft, project, runCanvasMutation],
+    [eventDraft?.eventId, mutateEventDraft, runCanvasMutation],
   );
 
   const updateTransition = useCallback(
@@ -12280,11 +12232,55 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
     [project, runMutation],
   );
 
+  const changeSubcanvasWorkspace = useCallback(
+    (
+      scope: Extract<CanvasScope, { kind: "event" | "dialogue" }>,
+      bounds: SubcanvasWorkspaceBounds,
+      persist: boolean,
+    ) => {
+      setNodes((currentNodes) =>
+        layoutSubcanvasNodes(
+          currentNodes.map((node) =>
+            node.data.kind === "workspace"
+              ? {
+                  ...node,
+                  position: { x: bounds.x, y: bounds.y },
+                  width: bounds.width,
+                  height: bounds.height,
+                  style: { ...node.style, width: bounds.width, height: bounds.height },
+                }
+              : node,
+          ),
+          { preserveWorkspace: true },
+        ),
+      );
+      if (!persist) return;
+
+      const currentProject = projectRef.current;
+      if (!currentProject) return;
+      const scopeKey = canvasScopeKey(scope);
+      commitCanvasAction("Resized subcanvas working area", {
+        ...currentProject,
+        canvas: {
+          ...currentProject.canvas,
+          scopes: {
+            ...(currentProject.canvas?.scopes ?? {}),
+            [scopeKey]: {
+              ...(currentProject.canvas?.scopes?.[scopeKey] ?? {}),
+              workspace: { ...bounds, manual: true },
+            },
+          },
+        },
+      });
+    },
+    [commitCanvasAction],
+  );
+
   const handleNodesChange = useCallback(
     (changes: NodeChange<StoryCanvasNode>[]) => {
       setNodes((currentNodes) => {
         const nextNodes = applyNodeChanges(changes, currentNodes);
-        return nextNodes;
+        return layoutSubcanvasNodes(nextNodes);
       });
     },
     [],
@@ -12537,7 +12533,8 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
 
   const handleNodeDragStop = useCallback(
     (_: MouseEvent | TouchEvent | ReactMouseEvent, node: StoryCanvasNode) => {
-      if (!project) {
+      const currentProject = projectRef.current;
+      if (!currentProject) {
         return;
       }
 
@@ -12558,7 +12555,7 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
         item.id === node.id ? nextNode : item,
       );
       const canvasProject = updateProjectCanvas(
-        project,
+        currentProject,
         nextNodes,
         activeScope,
       );
@@ -12567,7 +12564,7 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
         id: node.id,
       });
     },
-    [activeScope, commitCanvasAction, nodes, project],
+    [activeScope, commitCanvasAction, nodes],
   );
 
   const updateEdgeLabel = useCallback(
@@ -12696,7 +12693,8 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
 
   const deleteSelection = useCallback(
     (targetSelection: Selection) => {
-      if (!project || targetSelection.type !== "node") {
+      const currentProject = projectRef.current;
+      if (!project || !currentProject || targetSelection.type !== "node") {
         return;
       }
 
@@ -12712,8 +12710,8 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
           const eventId = selectedNode.data.details.eventId;
           closeDeletedNodeInspector(typeof dialogueId === "string" ? `beat:${eventId}:${dialogueId}:${beat.id}` : `beat:${eventId}:${beat.id}`);
           runCanvasMutation(typeof dialogueId === "string"
-            ? mutations.deleteDialogueBeat(project, eventId, dialogueId, beat.id)
-            : mutations.deleteEventDialogueBeat(project, eventId, beat.id));
+            ? mutations.deleteDialogueBeat(currentProject, eventId, dialogueId, beat.id)
+            : mutations.deleteEventDialogueBeat(currentProject, eventId, beat.id));
           setSelection(undefined);
         }
         return;
@@ -12728,7 +12726,7 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
           closeDeletedNodeInspector(`dialogue:${selectedNode.data.details.eventId}:${dialogue.id}`);
           runCanvasMutation(
             mutations.deleteDialogue(
-              project,
+              currentProject,
               selectedNode.data.details.eventId,
               dialogue.id,
             ),
@@ -12747,7 +12745,7 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
           closeDeletedNodeInspector(`decision:${selectedNode.data.details.eventId}:${decision.id}`);
           runCanvasMutation(
             mutations.deleteDecision(
-              project,
+              currentProject,
               selectedNode.data.details.eventId,
               decision.id,
             ),
@@ -12762,7 +12760,7 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
         if (typeof ownerId === "string" && typeof missingEventId === "string") {
           runCanvasMutation(
             mutations.removeMissingEventReference(
-              project,
+              currentProject,
               ownerId,
               missingEventId,
             ),
@@ -12910,11 +12908,12 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
 
   const deleteNodeSelections = useCallback(
     (nodeIds: string[]) => {
-      if (!project) return;
+      const currentProject = projectRef.current;
+      if (!currentProject) return;
 
       const selectedIds = new Set(nodeIds);
       const selectedNodes = nodes.filter((node) => selectedIds.has(node.id));
-      let nextProject = project;
+      let nextProject = currentProject;
       let deletedCount = 0;
 
       for (const node of selectedNodes) {
@@ -13012,7 +13011,7 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
         nextProject,
       );
     },
-    [closeDeletedNodeInspector, commitCanvasAction, nodes, project],
+    [closeDeletedNodeInspector, commitCanvasAction, nodes],
   );
 
   useEffect(() => {
@@ -13180,12 +13179,10 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
           void openProject();
           break;
         case "pb:file:save":
-          if (canvasDirty) void saveCanvas();
-          else void saveActiveEventDraft();
+          flushProjectAutosave();
           break;
         case "pb:file:save-as":
-          if (canvasDirty) void saveCanvas();
-          else void saveActiveEventDraft();
+          flushProjectAutosave();
           break;
         case "pb:file:export-runtime":
           void exportRuntime("runtime");
@@ -13303,9 +13300,7 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
     openProject,
     redoProject,
     resetLayout,
-    saveActiveEventDraft,
-    saveCanvas,
-    canvasDirty,
+    flushProjectAutosave,
     settings.worldnotionBridge.connected,
     toggleCanon,
     toggleFiles,
@@ -13385,10 +13380,11 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
       onThemeChange={changeTheme}
       onToggleTheme={toggleTheme}
       onInspectorTabCloseSelectsNextChange={changeInspectorTabCloseSelectsNext}
-          onCollapseInspectorTabOnCanvasClickChange={
-            changeCollapseInspectorTabOnCanvasClick
-          }
-          onInspectorDebugEnabledChange={changeInspectorDebugEnabled}
+      onCollapseInspectorTabOnCanvasClickChange={
+        changeCollapseInspectorTabOnCanvasClick
+      }
+      onInspectorDebugEnabledChange={changeInspectorDebugEnabled}
+      onShowStatusMessagesChange={changeShowStatusMessages}
       onConnectBridge={connectBridge}
       onVerifyBridge={verifyBridge}
       onDisconnectBridge={disconnectBridge}
@@ -13403,24 +13399,6 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
 
   const appDialogs = (
     <>
-      <DiscardChangesDialog
-        open={Boolean(discardDialog)}
-        onDiscard={() => resolveDiscardDialog(true)}
-        onCancel={() => resolveDiscardDialog(false)}
-      />
-      <EventDraftChangesDialog
-        open={Boolean(eventDraftDialog)}
-        description={
-          eventDraftDialog?.kind === "closeInspectorTab"
-            ? "This event has unsaved text or component edits. Save them before closing this inspector?"
-            : eventDraftDialog?.kind === "loadInspectorGroup"
-              ? "This event has unsaved text or component edits. Save them before loading this tab group?"
-              : "This event has unsaved text or component edits. Save them before changing selection?"
-        }
-        onSave={() => void resolveEventDraftDialog("save")}
-        onDiscard={() => void resolveEventDraftDialog("discard")}
-        onCancel={() => void resolveEventDraftDialog("cancel")}
-      />
       <NamePromptDialog
         open={Boolean(nameDialog)}
         title={nameDialog?.title ?? ""}
@@ -13640,6 +13618,7 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
             selection={selection}
             findings={findings}
             message={message}
+            showStatusMessages={settings.showStatusMessages}
             activeScope={activeScope}
             exportOpen={exportOpen}
             exportPreviewMode={exportPreviewMode}
@@ -13686,6 +13665,11 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
             onUpdateOutcome={updateOutcome}
             onDeleteOutcome={deleteOutcome}
             onUpdateTransition={updateTransition}
+            onCreateBoundaryRoute={createBoundaryRoute}
+            onCreateBoundaryRouteEvent={createBoundaryRouteEvent}
+            onCreateBoundaryEnd={createBoundaryEnd}
+            onDeleteBoundaryEnd={deleteBoundaryEnd}
+            onWorkspaceBoundsChange={changeSubcanvasWorkspace}
             onRemoveMissingEventReference={removeMissingEventReference}
             onRemoveBoundaryBinding={removeBoundaryBinding}
             onNormalizeTransitionOrder={normalizeTransitionOrder}
@@ -13734,7 +13718,6 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
             onSaveEventInspectorTabGroup={requestSaveInspectorTabGroup}
             onLoadEventInspectorTabGroup={requestLoadInspectorTabGroup}
             onDeleteEventInspectorTabGroup={deleteInspectorTabGroup}
-            onSaveEventDraft={() => void saveActiveEventDraft()}
             onOpenInspectorTab={openInspectorTab}
             onCloseInspectorTab={closeInspectorTab}
             onCloseAllInspectorTabs={() => {

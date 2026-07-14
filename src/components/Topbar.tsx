@@ -164,10 +164,7 @@ export function Topbar({
           <UniverseIconFrame profile={fileState?.universeProfile} />
           <span className="dock-universe-copy">
             <strong>{universeName}</strong>
-            <span>
-              {universePath || "Open a universe"}
-              {fileState?.dirty ? " *" : ""}
-            </span>
+            <span>{universePath || "Open a universe"}</span>
           </span>
         </button>
         <button type="button" className="dock-icon-button dock-settings-button" onClick={onOpenSettings} title="Application settings">

@@ -1,0 +1,42 @@
+{
+  "version": "3.0",
+  "baseProperties": {
+    "definitions": [
+      { "id": "id", "label": "ID", "type": "text" },
+      { "id": "type", "label": "Type", "type": "select", "options": [{ "value": "character", "label": "Character" }] },
+      { "id": "name", "label": "Name", "type": "text" },
+      { "id": "status", "label": "Status", "type": "select", "options": [{ "value": "canon", "label": "Canon" }] }
+    ]
+  },
+  "tags": { "rootNodes": [], "allowCustomTags": true, "autoDetectSlashNotation": true },
+  "entityTypes": {
+    "definitions": [{ "id": "character", "label": "Character" }],
+    "defaultType": "character",
+    "allowCustomTypes": true
+  },
+  "statuses": {
+    "definitions": [{ "id": "canon", "label": "Canon" }],
+    "defaultStatus": "canon",
+    "allowCustomStatuses": true
+  },
+  "customFields": {
+    "definitions": [
+      {
+        "id": "identity",
+        "label": "Identity",
+        "type": "group",
+        "appliesTo": ["character"],
+        "children": [
+          { "id": "role", "label": "Role", "type": "text" },
+          {
+            "id": "profile",
+            "label": "Profile",
+            "type": "group",
+            "children": [{ "id": "traits", "label": "Traits", "type": "multiselect", "options": [{ "value": "curious", "label": "Curious" }] }]
+          }
+        ]
+      }
+    ],
+    "globalFields": []
+  }
+}

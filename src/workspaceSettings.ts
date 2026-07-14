@@ -154,6 +154,7 @@ export type AppSettings = {
   inspectorTabCloseSelectsNext: boolean;
   collapseInspectorTabOnCanvasClick: boolean;
   inspectorDebugEnabled: boolean;
+  showStatusMessages: boolean;
 };
 
 export function normalizeCanvasBackgroundSettings(
@@ -323,6 +324,10 @@ export function loadSettings(): AppSettings {
         typeof parsed.inspectorDebugEnabled === "boolean"
           ? parsed.inspectorDebugEnabled
           : false,
+      showStatusMessages:
+        typeof parsed.showStatusMessages === "boolean"
+          ? parsed.showStatusMessages
+          : false,
     };
   } catch {
     return {
@@ -337,6 +342,7 @@ export function loadSettings(): AppSettings {
       inspectorTabCloseSelectsNext: false,
       collapseInspectorTabOnCanvasClick: true,
       inspectorDebugEnabled: false,
+      showStatusMessages: false,
     };
   }
 }

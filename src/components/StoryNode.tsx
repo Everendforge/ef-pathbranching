@@ -6,12 +6,6 @@ function badgeText(value: string) {
   return value.length > 22 ? `${value.slice(0, 19)}...` : value;
 }
 
-function objectString(value: unknown, key: string) {
-  if (!value || typeof value !== "object") return undefined;
-  const nested = (value as Record<string, unknown>)[key];
-  return typeof nested === "string" ? nested : undefined;
-}
-
 type DecisionOption = {
   id: string;
   name: string;
@@ -46,6 +40,65 @@ function isBeatQuickEditor(value: unknown): value is BeatQuickEditor {
   );
 }
 
+type BoundaryRouteEditor = {
+  selectedTargetId?: string;
+  targets: Array<{ id: string; label: string }>;
+  onTargetChange: (eventId: string) => void;
+  onCreateTarget: () => void;
+  onDeleteEnd?: () => void;
+};
+
+function isBoundaryRouteEditor(value: unknown): value is BoundaryRouteEditor {
+  return Boolean(
+    value &&
+      typeof value === "object" &&
+      Array.isArray((value as BoundaryRouteEditor).targets) &&
+      typeof (value as BoundaryRouteEditor).onTargetChange === "function" &&
+      typeof (value as BoundaryRouteEditor).onCreateTarget === "function",
+  );
+}
+
+type WorkspaceEditor = {
+  bounds: { x: number; y: number; width: number; height: number };
+  onPreview: (bounds: { x: number; y: number; width: number; height: number }) => void;
+  onCommit: (bounds: { x: number; y: number; width: number; height: number }) => void;
+};
+
+type WorkspaceResizeDirection = "n" | "ne" | "e" | "se" | "s" | "sw" | "w" | "nw";
+
+const WORKSPACE_RESIZE_DIRECTIONS: WorkspaceResizeDirection[] = [
+  "n",
+  "ne",
+  "e",
+  "se",
+  "s",
+  "sw",
+  "w",
+  "nw",
+];
+
+function isWorkspaceEditor(value: unknown): value is WorkspaceEditor {
+  return Boolean(
+    value &&
+      typeof value === "object" &&
+      typeof (value as WorkspaceEditor).bounds === "object" &&
+      typeof (value as WorkspaceEditor).onPreview === "function" &&
+      typeof (value as WorkspaceEditor).onCommit === "function",
+  );
+}
+
+type EndAdder = {
+  onAdd: () => void;
+};
+
+function isEndAdder(value: unknown): value is EndAdder {
+  return Boolean(
+    value &&
+      typeof value === "object" &&
+      typeof (value as EndAdder).onAdd === "function",
+  );
+}
+
 function stopCanvasInteraction(event: MouseEvent<HTMLElement> | PointerEvent<HTMLElement> | ChangeEvent<HTMLSelectElement> | ChangeEvent<HTMLTextAreaElement>) {
   event.stopPropagation();
 }
@@ -72,8 +125,6 @@ function StoryNode({ data, selected }: NodeProps<StoryCanvasNode>) {
   const canSource = boundaryDirection
     ? boundaryDirection === "input"
     : nodeData.kind !== "missingRef" && (nodeData.kind === "start" || (nodeData.kind !== "sequence" && !isFinalEvent));
-  const eventTypeLabel = objectString(nodeData.details?.category, "label") ?? nodeData.subtitle ?? "Event";
-  const branchLabel = objectString(nodeData.details?.branch, "title");
   const summaryBadges = Array.isArray(nodeData.summaryBadges)
     ? nodeData.summaryBadges.filter((badge): badge is string => typeof badge === "string" && badge.length > 0)
     : [];
@@ -88,7 +139,6 @@ function StoryNode({ data, selected }: NodeProps<StoryCanvasNode>) {
     return (
       <div className={`story-node branch-container${focusClass}${inspectorFocusClass} ${selected ? "selected" : ""}`} style={colorStyle}>
         {canReceive ? <Handle type="target" position={Position.Left} /> : null}
-        <div className="node-kind">{nodeData.kind}</div>
         <div className="node-title">{nodeData.title}</div>
         {nodeData.subtitle ? <div className="node-subtitle">{nodeData.subtitle}</div> : null}
         {nodeData.badges.length > 0 ? (
@@ -108,6 +158,159 @@ function StoryNode({ data, selected }: NodeProps<StoryCanvasNode>) {
       <div className={`story-node start${focusClass}${inspectorFocusClass}${selected ? " selected" : ""}`} style={colorStyle}>
         <span className="node-start-icon" aria-hidden="true" />
         <div className="node-start-title">{nodeData.title}</div>
+        {canSource ? <Handle type="source" position={Position.Right} /> : null}
+      </div>
+    );
+  }
+
+  if (nodeData.kind === "workspace") {
+    const workspaceEditor = isWorkspaceEditor(nodeData.details?.workspaceEditor)
+      ? nodeData.details.workspaceEditor
+      : undefined;
+    const startResize = (
+      direction: WorkspaceResizeDirection,
+      event: PointerEvent<HTMLButtonElement>,
+    ) => {
+      if (!workspaceEditor) return;
+      event.preventDefault();
+      stopCanvasInteraction(event);
+      const origin = workspaceEditor.bounds;
+      const startX = event.clientX;
+      const startY = event.clientY;
+      let latest = origin;
+      const resize = (moveEvent: globalThis.PointerEvent) => {
+        const deltaX = moveEvent.clientX - startX;
+        const deltaY = moveEvent.clientY - startY;
+        let x = origin.x;
+        let y = origin.y;
+        let width = origin.width;
+        let height = origin.height;
+        if (direction.includes("w")) {
+          x = Math.min(origin.x + deltaX, origin.x + origin.width - 720);
+          width = origin.width + origin.x - x;
+        } else if (direction.includes("e")) {
+          width = Math.max(720, origin.width + deltaX);
+        }
+        if (direction.includes("n")) {
+          y = Math.min(origin.y + deltaY, origin.y + origin.height - 460);
+          height = origin.height + origin.y - y;
+        } else if (direction.includes("s")) {
+          height = Math.max(460, origin.height + deltaY);
+        }
+        latest = { x, y, width, height };
+        workspaceEditor.onPreview(latest);
+      };
+      const finish = () => {
+        workspaceEditor.onCommit(latest);
+        window.removeEventListener("pointermove", resize);
+        window.removeEventListener("pointerup", finish);
+        window.removeEventListener("pointercancel", finish);
+      };
+      window.addEventListener("pointermove", resize);
+      window.addEventListener("pointerup", finish, { once: true });
+      window.addEventListener("pointercancel", finish, { once: true });
+    };
+    return (
+      <div className="story-node workspace-node" style={colorStyle}>
+        {workspaceEditor ? (
+          WORKSPACE_RESIZE_DIRECTIONS.map((direction) => (
+            <button
+              key={direction}
+              type="button"
+              className={`workspace-resize-handle workspace-resize-${direction} nodrag nopan`}
+              aria-label={`Resize working area ${direction}`}
+              onPointerDown={(event) => startResize(direction, event)}
+            />
+          ))
+        ) : null}
+      </div>
+    );
+  }
+
+  if (nodeData.kind === "endAdder") {
+    const endAdder = isEndAdder(nodeData.details?.endAdder)
+      ? nodeData.details.endAdder
+      : undefined;
+    return (
+      <div className="story-node end-adder">
+        <button
+          type="button"
+          className="nodrag nopan"
+          aria-label="Add End"
+          title="Add End"
+          onPointerDown={stopCanvasInteraction}
+          onClick={(event) => {
+            stopCanvasInteraction(event);
+            endAdder?.onAdd();
+          }}
+        >
+          +
+        </button>
+      </div>
+    );
+  }
+
+  if (boundaryDirection) {
+    const routeEditor = isBoundaryRouteEditor(nodeData.details?.routeEditor)
+      ? nodeData.details.routeEditor
+      : undefined;
+    return (
+      <div
+        className={`story-node boundary boundary-${boundaryDirection}${focusClass}${inspectorFocusClass}${selected ? " selected" : ""}`}
+        style={colorStyle}
+      >
+        {canReceive ? <Handle type="target" position={Position.Left} /> : null}
+        <span className="node-boundary-icon" aria-hidden="true" />
+        <div className="node-boundary-copy">
+          <div className="node-title">{nodeData.title}</div>
+          {nodeData.subtitle ? <div className="node-subtitle">{nodeData.subtitle}</div> : null}
+        </div>
+        {boundaryDirection === "output" && routeEditor ? (
+          <div className="node-boundary-actions nodrag nopan">
+            <select
+              aria-label="Route destination"
+              value={routeEditor.selectedTargetId ?? ""}
+              onPointerDown={stopCanvasInteraction}
+              onMouseDown={stopCanvasInteraction}
+              onChange={(event) => {
+                stopCanvasInteraction(event);
+                if (event.target.value) routeEditor.onTargetChange(event.target.value);
+              }}
+            >
+              <option value="">Choose existing event…</option>
+              {routeEditor.targets.map((target) => (
+                <option key={target.id} value={target.id}>{target.label}</option>
+              ))}
+            </select>
+            <button
+              type="button"
+              onPointerDown={stopCanvasInteraction}
+              onMouseDown={stopCanvasInteraction}
+              onClick={(event) => {
+                stopCanvasInteraction(event);
+                routeEditor.onCreateTarget();
+              }}
+            >
+              New event
+            </button>
+            {routeEditor.onDeleteEnd ? (
+              <button
+                type="button"
+                className="boundary-delete-end"
+                aria-label="Delete End"
+                title="Delete End"
+                onPointerDown={stopCanvasInteraction}
+                onMouseDown={stopCanvasInteraction}
+                onClick={(event) => {
+                  stopCanvasInteraction(event);
+                  routeEditor.onDeleteEnd?.();
+                }}
+              >
+                ×
+              </button>
+            ) : null}
+          </div>
+        ) : null}
         {canSource ? <Handle type="source" position={Position.Right} /> : null}
       </div>
     );
@@ -134,7 +337,6 @@ function StoryNode({ data, selected }: NodeProps<StoryCanvasNode>) {
         <Handle type="target" position={Position.Left} />
         <div className="decision-header">
           <div>
-            <div className="node-kind">decision</div>
             <div className="node-title">{nodeData.title}</div>
           </div>
           <span className="decision-style">{styleLabel}</span>
@@ -216,15 +418,7 @@ function StoryNode({ data, selected }: NodeProps<StoryCanvasNode>) {
       className={`story-node ${nodeData.kind}${focusClass}${inspectorFocusClass}${isFinalEvent ? " terminal" : ""}${selected ? " selected" : ""}`}
       style={colorStyle}
     >
-      {canReceive ? <Handle type="target" position={boundaryDirection === "output" ? Position.Left : Position.Left} /> : null}
-      {isEvent ? (
-        <div className="node-color-tags" aria-label="Event tags">
-          <span className="node-color-tag type">{badgeText(eventTypeLabel)}</span>
-          {branchLabel ? <span className="node-color-tag branch">{badgeText(branchLabel)}</span> : null}
-        </div>
-      ) : (
-        <div className="node-kind">{nodeData.kind}</div>
-      )}
+      {canReceive ? <Handle type="target" position={Position.Left} /> : null}
       <div className="node-title">{nodeData.title}</div>
       {summaryBadges.length > 0 ? (
         <div className="node-summary-badges">
@@ -233,7 +427,7 @@ function StoryNode({ data, selected }: NodeProps<StoryCanvasNode>) {
           ))}
         </div>
       ) : null}
-      {!isEvent && nodeData.subtitle ? <div className="node-subtitle">{nodeData.subtitle}</div> : null}
+      {nodeData.subtitle ? <div className="node-subtitle">{nodeData.subtitle}</div> : null}
       {detailBadges.length > 0 ? (
         <div className="node-badges">
           {detailBadges.slice(0, 4).map((badge) => (

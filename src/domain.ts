@@ -651,6 +651,15 @@ export type CanvasNodeAuthoringState = {
 export type ScopedCanvasAuthoringState = {
   nodes?: Record<string, CanvasNodeAuthoringState>;
   routeGateSources?: string[];
+  /** Empty End ports explicitly added by the author in an event subcanvas. */
+  exitSlots?: string[];
+  workspace?: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    manual?: boolean;
+  };
   viewport?: {
     x: number;
     y: number;

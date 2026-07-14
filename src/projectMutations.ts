@@ -648,6 +648,7 @@ export function createDialogue(
     title: "New Dialogue",
     text: { format: "plain", content: "" },
     canonRefs: [],
+    beats: [],
   };
   const result = updateEvent(project, eventId, {
     dialogues: [...(event.dialogues ?? []), dialogue],

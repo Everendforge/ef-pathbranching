@@ -225,7 +225,10 @@ function migrateDialogue(
   dialogue: DialogueNode,
   documents: Map<string, ScriptDocument>,
 ): DialogueNode {
-  if (dialogue.beats?.length) return dialogue;
+  // An explicitly empty beats array is a valid authored state. Only migrate
+  // dialogues from the legacy shape where the field was absent altogether;
+  // otherwise deleting the last beat would recreate it during normalization.
+  if (dialogue.beats) return dialogue;
   const scriptId = `script:dialogue:${eventId}:${dialogue.id}`;
   const blockId = `block:${dialogue.id}:speech`;
   if (!documents.has(scriptId)) {
