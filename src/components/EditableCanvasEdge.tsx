@@ -12,7 +12,18 @@ type EditableCanvasEdgeData = StoryCanvasEdgeData & {
   inspectorState?: "open" | "expanded";
   onCommitLabel?: (label: string) => void;
   onCancelLabel?: () => void;
+  connectionPadding?: number;
 };
+
+type RoutePreview = {
+  mode?: "conditional" | "fallback";
+  conditions?: string[];
+  consequences?: string[];
+};
+
+function routePreview(value: unknown): RoutePreview | undefined {
+  return value && typeof value === "object" ? value as RoutePreview : undefined;
+}
 
 export function EditableCanvasEdge({
   sourceX,
@@ -26,6 +37,7 @@ export function EditableCanvasEdge({
   data,
 }: EdgeProps<StoryCanvasEdge>) {
   const edgeData = data as EditableCanvasEdgeData | undefined;
+  const connectionPadding = Number(edgeData?.connectionPadding ?? 0);
   const [edgePath, labelX, labelY] = getBezierPath({
     sourceX,
     sourceY,
@@ -33,6 +45,7 @@ export function EditableCanvasEdge({
     targetX,
     targetY,
     targetPosition,
+    curvature: Math.min(0.85, 0.25 + connectionPadding / 128),
   });
   const editing = edgeData?.editing === true;
   const label =
@@ -43,6 +56,14 @@ export function EditableCanvasEdge({
         : "";
   const [value, setValue] = useState(label);
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const preview = routePreview(edgeData?.routePreview);
+  const previewLabel = preview
+    ? preview.mode === "fallback"
+      ? "Else"
+      : preview.conditions?.length
+        ? `If ${preview.conditions.join(" · ")}`
+        : undefined
+    : undefined;
 
   useEffect(() => {
     if (!editing) return;
@@ -63,7 +84,7 @@ export function EditableCanvasEdge({
           strokeWidth: edgeData?.inspectorState === "expanded" ? 3 : edgeData?.inspectorState ? 2.25 : style?.strokeWidth,
         }}
       />
-      {editing || label ? (
+      {editing || label || previewLabel ? (
         <EdgeLabelRenderer>
           <div
             className={`canvas-edge-label nodrag nopan ${editing ? "editing" : ""}`}
@@ -90,7 +111,11 @@ export function EditableCanvasEdge({
                 }}
               />
             ) : (
-              <span>{label}</span>
+              <span className="canvas-edge-preview">
+                {label ? <strong>{label}</strong> : null}
+                {previewLabel ? <em>{previewLabel}</em> : null}
+                {preview?.consequences?.length ? <small>{preview.consequences.join(" · ")}</small> : null}
+              </span>
             )}
           </div>
         </EdgeLabelRenderer>

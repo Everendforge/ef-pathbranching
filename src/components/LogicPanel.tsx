@@ -1,8 +1,8 @@
 import { ChevronDown, ChevronRight, ChevronUp, CircleDot, Plus, Trash2 } from "lucide-react";
-import { useMemo, useState, type MouseEvent as ReactMouseEvent } from "react";
+import { useMemo, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import type { Selection } from "../appTypes.js";
 import type { BranchingProject, LogicVariable, LogicVariableGroup, LogicVariableType } from "../domain.js";
-import { canonExplorerProperties } from "../explorerSchema.js";
+import { canonExplorerProperties, type CanonExplorerProperty } from "../explorerSchema.js";
 import { WorkspaceSidePanel } from "./WorkspaceSidePanel.js";
 
 const types: LogicVariableType[] = ["text", "number", "boolean", "list", "canonRef"];
@@ -25,6 +25,10 @@ export function LogicPanel({ project, propertiesConfig, collapsed, onCollapsedCh
   const updateVariable = (id: string, changes: Partial<LogicVariable>) => updateVariables((project.logicVariables ?? []).map((variable) => variable.id === id ? { ...variable, ...changes } : variable));
   const toggleSource = (source: "canon" | "local") => setCollapsedSources((current) => { const next = new Set(current); if (next.has(source)) next.delete(source); else next.add(source); return next; });
   const propertySelected = (id: string, source: "canon" | "local") => selected?.type === "explorerProperty" && selected.id === id && selected.source === source;
+  const renderCanonProperty = (property: CanonExplorerProperty, depth = 0): ReactNode => <div className="logic-property-tree-node" key={property.id} style={{ "--property-depth": depth } as CSSProperties}>
+    <button type="button" className={`explorer-entity-open logic-property-row ${propertySelected(property.id, "canon") ? "active" : ""}`} onClick={() => onSelect({ type: "explorerProperty", id: property.id, source: "canon" })}><CircleDot size={14} /><span className="explorer-entity-name">{property.label}</span><em className="explorer-origin canon">{property.valueType}</em></button>
+    {property.children.length ? <div className="logic-property-children">{property.children.map((child) => renderCanonProperty(child, depth + 1))}</div> : null}
+  </div>;
 
   return <WorkspaceSidePanel title="Logic" side="left" collapsed={collapsed} onCollapsedChange={onCollapsedChange} onContextMenu={onContextMenu}>
     <div className="explorer-view-tabs" role="tablist" aria-label="Logic views">
@@ -40,7 +44,7 @@ export function LogicPanel({ project, propertiesConfig, collapsed, onCollapsedCh
           const expanded = !collapsedSources.has(source);
           return <section className="explorer-type-group" key={source}>
             <button type="button" className="explorer-type-heading" onClick={() => toggleSource(source)}>{expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}<CircleDot size={14} /><strong>{source === "canon" ? "Canon properties" : "Local properties"}</strong><span>{properties.length}</span></button>
-            {expanded ? properties.map((property) => <button type="button" key={property.id} className={`explorer-entity-open logic-property-row ${propertySelected(property.id, source) ? "active" : ""}`} onClick={() => onSelect({ type: "explorerProperty", id: property.id, source })}><CircleDot size={14} /><span className="explorer-entity-name">{property.label}</span><em className={`explorer-origin ${source}`}>{property.valueType}</em></button>) : null}
+            {expanded ? source === "canon" ? canonProperties.map((property) => renderCanonProperty(property)) : properties.map((property) => <button type="button" key={property.id} className={`explorer-entity-open logic-property-row ${propertySelected(property.id, source) ? "active" : ""}`} onClick={() => onSelect({ type: "explorerProperty", id: property.id, source })}><CircleDot size={14} /><span className="explorer-entity-name">{property.label}</span><em className={`explorer-origin ${source}`}>{property.valueType}</em></button>) : null}
             {expanded && properties.length === 0 ? <span className="empty-line">No {source} properties.</span> : null}
           </section>;
         })}

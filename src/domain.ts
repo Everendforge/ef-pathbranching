@@ -180,6 +180,8 @@ export type ScriptBlock = {
   id: string;
   kind: ScriptBlockKind;
   content: string;
+  /** Localized alternatives keyed by language code; `content` remains the primary text. */
+  translations?: Record<string, string>;
   speakerRef?: string;
 };
 
@@ -352,6 +354,8 @@ export type EventNode = {
   canonRefs?: string[];
   availability?: ConditionInput;
   decisions?: Decision[];
+  /** Narrative beats authored directly on the event canvas. */
+  dialogueBeats?: DialogueBeat[];
   dialogues?: DialogueNode[];
   boundaryBindings?: BoundaryPortBinding[];
   unlocks?: Consequence[];
@@ -362,12 +366,15 @@ export type EventNode = {
 };
 
 export type DecisionType = "dialogue" | "dice" | "qte" | string;
+export type OutcomePresentationStyle = "visibleText" | "followUpText" | "iconOnly";
 
 export type Decision = {
   id: string;
   name: string;
   description?: string;
   type: DecisionType;
+  optionStyle?: OutcomePresentationStyle;
+  /** @deprecated Legacy grouping only. Decisions now belong directly to the event. */
   dialogueId?: string;
   availability?: ConditionInput;
   ruleSetBindings?: RuleSetBinding[];
@@ -408,6 +415,7 @@ export type Outcome = {
   id: string;
   name: string;
   description?: string;
+  icon?: string;
   requiredCanonRefs?: string[];
   availability?: ConditionInput;
   unavailableBehavior?: "locked" | "hidden";
@@ -642,6 +650,7 @@ export type CanvasNodeAuthoringState = {
 
 export type ScopedCanvasAuthoringState = {
   nodes?: Record<string, CanvasNodeAuthoringState>;
+  routeGateSources?: string[];
   viewport?: {
     x: number;
     y: number;
@@ -653,6 +662,7 @@ export type CanvasAuthoringState = {
   activeSequenceId?: string;
   activeScope?: CanvasScope;
   nodes?: Record<string, CanvasNodeAuthoringState>;
+  routeGateSources?: string[];
   scopes?: Record<string, ScopedCanvasAuthoringState>;
   viewport?: {
     x: number;

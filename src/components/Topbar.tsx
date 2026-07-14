@@ -59,6 +59,7 @@ export function Topbar({
   onRedo,
   canUndo,
   canRedo,
+  recentActions = [],
   suiteChrome,
   panelVisibility,
   onTogglePanelVisibility,
@@ -76,6 +77,7 @@ export function Topbar({
   onRedo: () => void;
   canUndo: boolean;
   canRedo: boolean;
+  recentActions?: string[];
   suiteChrome?: SuiteChrome;
   panelVisibility?: WorkspacePanelState;
   onTogglePanelVisibility?: (panel: WorkspacePanelId) => void;
@@ -191,6 +193,12 @@ export function Topbar({
             <strong>History</strong>
             <button type="button" onClick={() => { onUndo(); setHistoryMenuOpen(false); }} disabled={!canUndo}><ArrowLeft size={14} /> Undo</button>
             <button type="button" onClick={() => { onRedo(); setHistoryMenuOpen(false); }} disabled={!canRedo}><ArrowLeft size={14} style={{ transform: "scaleX(-1)" }} /> Redo</button>
+            {recentActions.length ? <>
+              <span className="topbar-history-label">Recent actions</span>
+              <div className="topbar-history-actions">
+                {recentActions.map((action, index) => <span key={`${action}-${index}`}>{action}</span>)}
+              </div>
+            </> : <span className="topbar-history-empty">No actions yet.</span>}
           </div> : null}
         </div>
 

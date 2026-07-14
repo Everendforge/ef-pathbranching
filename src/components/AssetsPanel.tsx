@@ -1,5 +1,5 @@
 import { BookOpen, ChevronDown, ChevronRight, CircleDot, FileImage, FileText, Film, FolderUp, MapPin, MoreHorizontal, Music, Package, Plus, ScrollText, Search, Trash2, UserRound } from "lucide-react";
-import { useDeferredValue, useMemo, useState, type ComponentType, type MouseEvent as ReactMouseEvent } from "react";
+import { useDeferredValue, useEffect, useMemo, useState, type ComponentType, type CSSProperties, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import type { Selection } from "../appTypes.js";
 import type { AssetKind, BranchingProject, CanonRef, LocalExplorerEntity, ProjectAsset, ProjectDataObject, ScriptBlock } from "../domain.js";
 import { canonRefHasRole } from "../integrationConfig.js";
@@ -22,7 +22,7 @@ function iconFor(kind: AssetKind) {
 }
 
 type ExplorerRow =
-  | { kind: "canon"; id: string; type: string; label: string; search: string; source: "Canon"; value: CanonRef }
+  | { kind: "canon"; id: string; type: string; label: string; search: string; source: "Canon"; value: CanonRef; parentId?: string }
   | { kind: "local"; id: string; type: string; label: string; search: string; source: "Local" | "Published"; value: LocalExplorerEntity }
   | { kind: "data"; id: string; type: string; label: string; search: string; source: "Project Data"; value: ProjectDataObject };
 
@@ -42,7 +42,7 @@ function explorerIconFor(type: string): ComponentType<{ size?: number }> {
 
 function explorerRows(project: BranchingProject): ExplorerRow[] {
   return [
-    ...project.canonRefs.map((ref) => ({ kind: "canon" as const, id: ref.id, type: ref.kind ?? "canon", label: ref.label ?? ref.id, search: [ref.id, ref.label, ref.kind, ...(ref.aliases ?? []), ...(ref.tags ?? [])].filter(Boolean).join(" ").toLowerCase(), source: "Canon" as const, value: ref })),
+    ...project.canonRefs.map((ref) => ({ kind: "canon" as const, id: ref.id, type: ref.kind ?? "canon", label: ref.label ?? ref.id, search: [ref.id, ref.label, ref.kind, ...(ref.aliases ?? []), ...(ref.tags ?? [])].filter(Boolean).join(" ").toLowerCase(), source: "Canon" as const, value: ref, parentId: ref.parentId })),
     ...(project.localExplorerEntities ?? []).map((entity) => ({ kind: "local" as const, id: entity.id, type: entity.type, label: entity.name, search: [entity.id, entity.name, entity.type, ...(entity.aliases ?? []), ...(entity.tags ?? [])].filter(Boolean).join(" ").toLowerCase(), source: (entity.publishedPath ? "Published" : "Local") as "Local" | "Published", value: entity })),
     ...(project.projectDataObjects ?? []).map((data) => ({ kind: "data" as const, id: data.id, type: `data:${data.classId}`, label: data.name, search: [data.id, data.name, data.classId, ...(data.tags ?? [])].filter(Boolean).join(" ").toLowerCase(), source: "Project Data" as const, value: data })),
   ];
@@ -52,6 +52,23 @@ function explorerSelection(row: ExplorerRow): Selection {
   if (row.kind === "canon") return { type: "canon", id: row.id };
   if (row.kind === "local") return { type: "explorerEntity", id: row.id };
   return { type: "dataObject", id: row.id };
+}
+
+type ExplorerTreeNode = { row: ExplorerRow; children: ExplorerTreeNode[] };
+
+function explorerRowTree(rows: ExplorerRow[]): ExplorerTreeNode[] {
+  const byId = new Map<string, ExplorerTreeNode>(rows.map((row) => [row.id, { row, children: [] }]));
+  const roots: ExplorerTreeNode[] = [];
+  byId.forEach((node) => {
+    const parent = node.row.kind === "canon" && node.row.parentId ? byId.get(node.row.parentId) : undefined;
+    if (parent) parent.children.push(node); else roots.push(node);
+  });
+  const sort = (nodes: ExplorerTreeNode[]) => {
+    nodes.sort((left, right) => left.row.label.localeCompare(right.row.label));
+    nodes.forEach((node) => sort(node.children));
+  };
+  sort(roots);
+  return roots;
 }
 
 export function AssetsPanel({
@@ -65,6 +82,7 @@ export function AssetsPanel({
   onAddScriptBlock,
   onUpdateScriptBlock,
   onInsertScriptBlock,
+  focusScriptBlock,
   selected,
   onSelect,
   onCreateEntity,
@@ -81,6 +99,7 @@ export function AssetsPanel({
   onAddScriptBlock: (scriptId: string, kind: ScriptBlock["kind"]) => void;
   onUpdateScriptBlock: (scriptId: string, blockId: string, updates: Partial<ScriptBlock>) => void;
   onInsertScriptBlock: (scriptId: string, blockId: string, eventId: string, dialogueId: string) => void;
+  focusScriptBlock?: { scriptId: string; blockId: string };
   selected?: Selection;
   onSelect: (selection: Selection) => void;
   onCreateEntity: (type: string) => void;
@@ -108,6 +127,19 @@ export function AssetsPanel({
   );
   const scripts = project.scriptDocuments ?? [];
   const selectedScript = scripts.find((script) => script.id === selectedScriptId) ?? scripts[0];
+  useEffect(() => {
+    if (!focusScriptBlock) return;
+    setView("scripts");
+    setSelectedScriptId(focusScriptBlock.scriptId);
+    const frame = window.requestAnimationFrame(() => {
+      const key = `${focusScriptBlock.scriptId}:${focusScriptBlock.blockId}`;
+      document.querySelector(`[data-script-block-key="${CSS.escape(key)}"]`)?.scrollIntoView({
+        block: "center",
+        behavior: "smooth",
+      });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [focusScriptBlock]);
   const speakers = project.canonRefs.filter((ref) => canonRefHasRole(project, ref, "speaker"));
   const dialogueTargets = project.events.flatMap((event) =>
     (event.dialogues ?? []).map((dialogue) => ({
@@ -119,12 +151,24 @@ export function AssetsPanel({
   const explorerTypes = useMemo(() => Array.from(new Set(["concept", ...allExplorerRows.filter((row) => row.kind !== "data").map((row) => row.type), ...(project.localExplorerTypes ?? []).map((type) => type.id)])).sort((left, right) => left.localeCompare(right)), [allExplorerRows, project.localExplorerTypes]);
   const explorerGroups = useMemo(() => {
     const grouped = new Map<string, ExplorerRow[]>();
+    const canonById = new Map(project.canonRefs.map((ref) => [ref.id, ref]));
+    const rootCanonType = (ref: CanonRef) => {
+      let current = ref;
+      const seen = new Set<string>();
+      while (current.parentId && !seen.has(current.id)) {
+        seen.add(current.id);
+        const parent = canonById.get(current.parentId);
+        if (!parent) break;
+        current = parent;
+      }
+      return current.kind ?? ref.kind ?? "canon";
+    };
     allExplorerRows.filter((row) => (itemFilter === "all" || row.kind === itemFilter) && (!deferredQuery || row.search.includes(deferredQuery))).forEach((row) => {
-      const group = row.kind === "data" ? `Project Data · ${row.type.replace(/^data:/, "")}` : displayType(row.type);
+      const group = row.kind === "data" ? `Project Data · ${row.type.replace(/^data:/, "")}` : row.kind === "canon" ? displayType(rootCanonType(row.value)) : displayType(row.type);
       grouped.set(group, [...(grouped.get(group) ?? []), row]);
     });
     return Array.from(grouped.entries()).sort(([left], [right]) => left.localeCompare(right));
-  }, [allExplorerRows, deferredQuery, itemFilter]);
+  }, [allExplorerRows, deferredQuery, itemFilter, project.canonRefs]);
 
   return (
     <WorkspaceSidePanel title="Assets" side="left" collapsed={collapsed} onCollapsedChange={onCollapsedChange} onContextMenu={onContextMenu}>
@@ -154,14 +198,18 @@ export function AssetsPanel({
                 <button type="button" className="explorer-type-heading" onClick={() => setCollapsedGroups((current) => { const next = new Set(current); if (next.has(group)) next.delete(group); else next.add(group); return next; })}>
                   {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}<GroupIcon size={14} /><strong>{group}</strong><span>{rows.length}</span>
                 </button>
-                {expanded ? rows.map((row) => {
+                {expanded ? (() => {
+                  const renderRow = (node: ExplorerTreeNode, depth = 0): ReactNode => {
+                    const row = node.row;
                   const rowSelected = selected?.id === row.id && ((row.kind === "canon" && selected.type === "canon") || (row.kind === "local" && selected.type === "explorerEntity") || (row.kind === "data" && selected.type === "dataObject"));
                   const RowIcon = explorerIconFor(row.type);
-                  return <div className={`explorer-entity-row ${rowSelected ? "active" : ""}`} key={`${row.kind}:${row.id}`}>
+                  return <div className="asset-explorer-tree-node" key={`${row.kind}:${row.id}`} style={{ "--asset-tree-depth": depth } as CSSProperties}><div className={`explorer-entity-row ${rowSelected ? "active" : ""}`}>
                     <button type="button" className="explorer-entity-open" title={row.label} onClick={() => onSelect(explorerSelection(row))}><RowIcon size={14} /><span className="explorer-entity-name">{row.label}</span><em className={`explorer-origin ${row.source.toLowerCase().replace(/\s+/g, "-")}`}>{row.source}</em></button>
                     {row.kind === "local" ? <div className="explorer-row-actions"><button type="button" className="icon-only" title={`Actions for ${row.label}`} onClick={() => setActionsForId((current) => current === row.id ? undefined : row.id)}><MoreHorizontal size={15} /></button>{actionsForId === row.id ? <div className="explorer-row-menu"><button type="button" onClick={() => { onSelect(explorerSelection(row)); setActionsForId(undefined); }}>Open inspector</button><button type="button" className="danger" onClick={() => { onDeleteEntity(row.id); setActionsForId(undefined); }}><Trash2 size={13} /> Delete local entity</button></div> : null}</div> : null}
-                  </div>;
-                }) : null}
+                  </div>{node.children.length ? <div className="asset-explorer-tree-children">{node.children.map((child) => renderRow(child, depth + 1))}</div> : null}</div>;
+                  };
+                  return explorerRowTree(rows).map((node) => renderRow(node));
+                })() : null}
               </section>;
             })}
             {explorerGroups.length === 0 ? <span className="empty-line">No items match this search.</span> : null}
@@ -215,11 +263,11 @@ export function AssetsPanel({
               </div>
               <div className="script-block-list">
                 {selectedScript.blocks.map((block) => (
-                  <article className={`script-block ${block.kind}`} key={block.id}>
+                  <article className={`script-block ${block.kind}`} data-script-block-key={`${selectedScript.id}:${block.id}`} key={block.id}>
                     <span>{block.kind}</span>
                     {block.kind === "speech" ? (
                       <select value={block.speakerRef ?? ""} onChange={(event) => onUpdateScriptBlock(selectedScript.id, block.id, { speakerRef: event.target.value || undefined })}>
-                        <option value="">No speaker</option>
+                        <option value="">Narrador</option>
                         {speakers.map((speaker) => <option key={speaker.id} value={speaker.id}>{speaker.label ?? speaker.id}</option>)}
                       </select>
                     ) : null}

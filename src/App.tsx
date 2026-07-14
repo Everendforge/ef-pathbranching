@@ -41,6 +41,7 @@ import {
 } from "./explorerEntities.js";
 import {
   canonExplorerProperties,
+  flattenCanonExplorerProperties,
   canonExplorerTypes,
   createLocalExplorerProperty,
   createLocalExplorerType,
@@ -74,6 +75,7 @@ import {
   SearchCheck,
   Settings,
   Split,
+  SlidersHorizontal,
   Sun,
   Sparkles,
   Upload,
@@ -174,7 +176,7 @@ import {
   consequenceLabel,
   isConditionSet,
 } from "./logic.js";
-import { canonRefHasRole } from "./integrationConfig.js";
+import { canonRefHasRole, mergeIntegrationConfigs } from "./integrationConfig.js";
 import * as mutations from "./projectMutations.js";
 import {
   exportRuntimeDialog,
@@ -1432,6 +1434,70 @@ function BasicConditionEditor({
         </div>
       ) : null}
     </section>
+  );
+}
+
+function TransitionConditionEditor({
+  value,
+  canonRefs,
+  dataObjects,
+  onChange,
+}: {
+  value?: ConditionInput;
+  canonRefs: string[];
+  dataObjects: ProjectDataObject[];
+  onChange: (value: ConditionInput | undefined) => void;
+}) {
+  if (!value) {
+    return (
+      <section className="inspector-section transition-condition-empty">
+        <h2>Condition</h2>
+        <p className="inspector-connection-hint">None — this route is always eligible.</p>
+        <button
+          type="button"
+          onClick={() =>
+            onChange({ type: "variable", name: "flag", operator: "==", value: true })
+          }
+        >
+          Add If
+        </button>
+      </section>
+    );
+  }
+
+  return (
+    <BasicConditionEditor
+      label="If"
+      value={value}
+      canonRefs={canonRefs}
+      dataObjects={dataObjects}
+      onChange={onChange}
+    />
+  );
+}
+
+function InspectorContentTabs({
+  value,
+  tabs,
+  onChange,
+}: {
+  value: string;
+  tabs: Array<{ id: string; label: string }>;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <nav className="inspector-subtabs" aria-label="Inspector sections">
+      {tabs.map((tab) => (
+        <button
+          key={tab.id}
+          type="button"
+          className={value === tab.id ? "active" : ""}
+          onClick={() => onChange(tab.id)}
+        >
+          {tab.label}
+        </button>
+      ))}
+    </nav>
   );
 }
 
@@ -4024,8 +4090,12 @@ function explorerInspectorTab(
         ? details?.dialogue?.title ||
           details?.dialogue?.text?.content?.slice(0, 48) ||
           "Dialogue"
-        : kind === "decision"
+          : kind === "decision"
           ? details?.decision?.name || "Decision"
+          : kind === "speechBeat"
+            ? "Speech Beat"
+            : kind === "directionBeat"
+              ? "Direction Beat"
           : kind === "routeGate"
             ? "Route Gate"
           : kind === "outcome"
@@ -4038,7 +4108,7 @@ function explorerInspectorTab(
     return { id: `${kind}:${selection.id}`, selection, title };
   }
   if (selection.type === "edge") {
-    return undefined;
+    return { id: `edge:${selection.id}`, selection, title: "Transition" };
   }
   const title =
     selection.type === "canon"
@@ -4161,6 +4231,7 @@ function EventAuthoringDock({
   const manuallyClosedEventIdRef = useRef<string | undefined>(undefined);
   const [selectedTabGroupId, setSelectedTabGroupId] = useState("");
   const [groupMenuOpen, setGroupMenuOpen] = useState(false);
+  const [inspectorHeights, setInspectorHeights] = useState<Record<string, number>>({});
   const [tabContextMenu, setTabContextMenu] = useState<
     | { kind: "event"; eventId: string; x: number; y: number }
     | { kind: "inspector"; x: number; y: number }
@@ -4189,6 +4260,26 @@ function EventAuthoringDock({
     (group) => group.id === selectedTabGroupId,
   );
   const hasInspectorTabs = openEvents.length + inspectorTabs.length > 0;
+  const resizeInspectorCard = useCallback((event: ReactPointerEvent<HTMLDivElement>, tabId: string) => {
+    if (inspectorMaximized) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const card = event.currentTarget.parentElement;
+    const startY = event.clientY;
+    const startHeight = card?.getBoundingClientRect().height ?? inspectorHeights[tabId] ?? 440;
+    const onMove = (moveEvent: PointerEvent) => {
+      setInspectorHeights((current) => ({
+        ...current,
+        [tabId]: Math.min(window.innerHeight - 70, Math.max(180, startHeight + startY - moveEvent.clientY)),
+      }));
+    };
+    const onEnd = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onEnd);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onEnd, { once: true });
+  }, [inspectorHeights, inspectorMaximized]);
   const renderGroupMenu = useCallback(
     (variant: "stack" | "collapsed") => (
       <div
@@ -4438,8 +4529,9 @@ function EventAuthoringDock({
                   role="listitem"
                   data-inspector-kind={tab.selection.type}
                   data-active={expanded || undefined}
-                  style={{ "--stack-index": index + 1 } as CSSProperties}
+                  style={{ "--stack-index": index + 1, "--inspector-card-height": `${inspectorHeights[tab.id] ?? 440}px` } as CSSProperties}
                 >
+                  {expanded ? <div className="event-inspector-card-resize-border" onPointerDown={(event) => resizeInspectorCard(event, tab.id)} title="Drag top border to resize" /> : null}
                   <div className="event-editor-header">
                     <button
                       type="button"
@@ -4503,7 +4595,10 @@ function EventAuthoringDock({
   }
 
   return (
-    <aside className={`event-authoring-dock ${inspectorMaximized ? "maximized" : ""}`} aria-label="Event inspector stack">
+    <aside
+      className={`event-authoring-dock ${inspectorMaximized ? "maximized" : ""}`}
+      aria-label="Event inspector stack"
+    >
       <div className="event-inspector-stack">
         <div className="event-inspector-tab-cluster">
           {hasInspectorTabs ? (
@@ -4530,8 +4625,9 @@ function EventAuthoringDock({
                 role="listitem"
                 data-inspector-kind={tab.selection.type}
                 data-active={expanded || undefined}
-                style={{ "--stack-index": index + openEvents.length + 1 } as CSSProperties}
+                style={{ "--stack-index": index + openEvents.length + 1, "--inspector-card-height": `${inspectorHeights[tab.id] ?? 440}px` } as CSSProperties}
               >
+                {expanded ? <div className="event-inspector-card-resize-border" onPointerDown={(event) => resizeInspectorCard(event, tab.id)} title="Drag top border to resize" /> : null}
                 <div className="event-editor-header">
                   <button type="button" className="event-minimized-title" title={tab.title} onClick={() => onOpenInspectorTab(tab.id)}>
                     <strong><TabIcon className="event-header-icon" size={14} /><span className="event-header-copy"><span className="event-header-name">{tab.title}</span></span></strong>
@@ -4562,8 +4658,9 @@ function EventAuthoringDock({
                 role="listitem"
                 data-inspector-kind="event"
                 data-active={isExpanded || undefined}
-                style={{ "--stack-index": index + 1 } as CSSProperties}
+                style={{ "--stack-index": index + 1, "--inspector-card-height": `${inspectorHeights[`event:${event.id}`] ?? 440}px` } as CSSProperties}
               >
+                {isExpanded ? <div className="event-inspector-card-resize-border" onPointerDown={(pointerEvent) => resizeInspectorCard(pointerEvent, `event:${event.id}`)} title="Drag top border to resize" /> : null}
                 <div className="event-editor-header">
                   {isExpanded ? (
                     <div className="event-header-title">
@@ -4759,8 +4856,10 @@ function Inspector({
   onUpdateDecision,
   onUpdateDialogue,
   onUpdateDialogueBeat,
+  onUpdateEventDialogueBeat,
   onUpdateScriptBlock,
   onDeleteDialogueBeat,
+  onDeleteEventDialogueBeat,
   onDeleteDecision,
   onDeleteDialogue,
   onCreateOutcome,
@@ -4785,6 +4884,7 @@ function Inspector({
   onUpdateLocalExplorerType,
   onUpdateLocalExplorerProperty,
   onUpdateLogicPropertyOverride,
+  onUpdateCharacterCategories,
   onUpdateEdgeLabel,
   onDeleteSelection,
   onOpenRule,
@@ -4823,12 +4923,14 @@ function Inspector({
     beatId: string,
     updates: Partial<DialogueBeat>,
   ) => void;
+  onUpdateEventDialogueBeat: (eventId: string, beatId: string, updates: Partial<DialogueBeat>) => void;
   onUpdateScriptBlock: (
     scriptId: string,
     blockId: string,
-    updates: { content?: string; speakerRef?: string },
+    updates: { content?: string; translations?: Record<string, string>; speakerRef?: string },
   ) => void;
   onDeleteDialogueBeat: (eventId: string, dialogueId: string, beatId: string) => void;
+  onDeleteEventDialogueBeat: (eventId: string, beatId: string) => void;
   onDeleteDecision: (eventId: string, decisionId: string) => void;
   onDeleteDialogue: (eventId: string, dialogueId: string) => void;
   onCreateOutcome: (eventId: string, decisionId: string) => void;
@@ -4880,10 +4982,15 @@ function Inspector({
     updates: Partial<LocalExplorerProperty>,
   ) => void;
   onUpdateLogicPropertyOverride: (propertyId: string, source: "canon" | "local", changes: Partial<LogicPropertyOverride>) => void;
+  onUpdateCharacterCategories: (categories: string[]) => void;
   onUpdateEdgeLabel: (edgeId: string, label: string) => void;
   onDeleteSelection: (selection: Selection) => void;
   onOpenRule: (id: string) => void;
 }) {
+  const [transitionInspectorTab, setTransitionInspectorTab] = useState<
+    "route" | "if" | "effects"
+  >("route");
+  const [objectInspectorTab, setObjectInspectorTab] = useState("overview");
   const selectedNode =
     selection?.type === "node"
       ? nodes.find((node) => node.id === selection.id)
@@ -4936,10 +5043,23 @@ function Inspector({
         ? project.localExplorerProperties?.find(
             (property) => property.id === selection.id,
           )
-        : canonExplorerProperties(propertiesConfig).find(
+        : flattenCanonExplorerProperties(canonExplorerProperties(propertiesConfig)).find(
             (property) => property.id === selection.id,
           )
       : undefined;
+  const characterMappingId = "pathbranching:additional-characters";
+  const additionalCharacterCategories = project.integrationConfigOverride?.mappings
+    .find((mapping) => mapping.id === characterMappingId)?.worldnotionTypes ?? [];
+  const canonCategories = Array.from(new Set(project.canonRefs
+    .map((ref) => ref.kind)
+    .filter((kind): kind is string => Boolean(kind)))).sort();
+  const defaultCharacterCategories = mergeIntegrationConfigs(project.integrationConfig, {
+    specVersion: "0.1",
+    mappings: (project.integrationConfigOverride?.mappings ?? [])
+      .filter((mapping) => mapping.id !== characterMappingId),
+  }).mappings
+    .filter((mapping) => mapping.roles.includes("speaker"))
+    .flatMap((mapping) => mapping.worldnotionTypes);
 
   const sequence =
     selection?.type === "node"
@@ -5036,13 +5156,6 @@ function Inspector({
             : undefined;
         })()
       : undefined;
-  const selectedTransitionIsGateManaged = Boolean(
-    selectedTransition &&
-      selectedTransitionOwner &&
-      (selectedTransitionOwner.transitions ?? []).filter(
-        (transition) => transition.from === selectedTransition.from,
-      ).length > 1,
-  );
   const selectedTransitionTarget = selectedTransition
     ? findEvent(project, selectedTransition.to)
     : undefined;
@@ -5060,16 +5173,26 @@ function Inspector({
             .find((outcome) => outcome.id === selectedTransition.from)?.label ??
           "Nested output"
       : undefined;
+  useEffect(() => {
+    setTransitionInspectorTab("route");
+  }, [selectedTransition?.id]);
+  useEffect(() => {
+    setObjectInspectorTab("overview");
+  }, [selection?.type, selection?.id]);
   const selectedDialogueBeatContext =
     (selectedNode?.data.kind === "speechBeat" || selectedNode?.data.kind === "directionBeat") &&
-    typeof selectedNode.data.details?.eventId === "string" &&
-    typeof selectedNode.data.details?.dialogueId === "string"
+    typeof selectedNode.data.details?.eventId === "string"
       ? (() => {
           const eventId = selectedNode.data.details!.eventId as string;
-          const dialogueId = selectedNode.data.details!.dialogueId as string;
+          const dialogueId = typeof selectedNode.data.details!.dialogueId === "string"
+            ? selectedNode.data.details!.dialogueId as string
+            : undefined;
           const beatId = (selectedNode.data.details?.beat as { id?: string } | undefined)?.id;
-          const dialogue = findEvent(project, eventId)?.dialogues?.find((item) => item.id === dialogueId);
-          const beat = dialogue?.beats?.find((item) => item.id === beatId);
+          const event = findEvent(project, eventId);
+          const dialogue = dialogueId ? event?.dialogues?.find((item) => item.id === dialogueId) : undefined;
+          const beat = dialogueId
+            ? dialogue?.beats?.find((item) => item.id === beatId)
+            : event?.dialogueBeats?.find((item) => item.id === beatId);
           const block = beat
             ? project.scriptDocuments
                 ?.find((script) => script.id === beat.blockRef.scriptId)
@@ -5370,6 +5493,8 @@ function Inspector({
 
         {event ? (
           <>
+            <InspectorContentTabs value={objectInspectorTab} onChange={setObjectInspectorTab} tabs={[{ id: "overview", label: "Overview" }, { id: "connections", label: "Connections" }, { id: "logic", label: "Logic" }, { id: "choices", label: "Choices" }]} />
+            {objectInspectorTab === "overview" ? <>
             <section className="inspector-section">
               <h2>Event</h2>
               <label className="field-label">
@@ -5410,7 +5535,8 @@ function Inspector({
                 </select>
               </label>
             </section>
-
+            </> : null}
+            {objectInspectorTab === "connections" ? <>
             <section className="inspector-section">
               <h2>Connections</h2>
               <ReferencePicker
@@ -5492,7 +5618,8 @@ function Inspector({
                 onCreateCanonSuggestion(canonRefId, { eventId: event.id })
               }
             />
-
+            </> : null}
+            {objectInspectorTab === "logic" ? <>
             <section className="inspector-section">
               <h2>Unlocks</h2>
               <div className="stack-list">
@@ -5530,6 +5657,8 @@ function Inspector({
               onChange={(unlocks) => onUpdateEvent(event.id, { unlocks })}
             />
             <LocalRuleSetEditor value={event.ruleSets} canonRefs={canonRefIds} dataObjects={dataObjects} onChange={(ruleSets) => onUpdateEvent(event.id, { ruleSets })} />
+            </> : null}
+            {objectInspectorTab === "choices" ? <>
             <section className="inspector-section">
               <h2>Decisions</h2>
               <div className="stack-list">
@@ -5587,13 +5716,16 @@ function Inspector({
                 </button>
               </div>
             </section>
+            </> : null}
           </>
         ) : null}
 
         {selectedDecisionContext?.decision ? (
           <>
+            <InspectorContentTabs value={objectInspectorTab} onChange={setObjectInspectorTab} tabs={[{ id: "overview", label: "Overview" }, { id: "choices", label: "Choices" }, { id: "logic", label: "Logic" }]} />
             <section className="inspector-section">
               <h2>Decision</h2>
+              {objectInspectorTab === "overview" ? <>
               <label className="field-label">
                 Name
                 <input
@@ -5640,10 +5772,80 @@ function Inspector({
                   }
                 />
               </label>
+              <label className="field-label">
+                Option presentation
+                <select
+                  value={selectedDecisionContext.decision!.optionStyle ?? "visibleText"}
+                  onChange={(inputEvent) =>
+                    onUpdateDecision(
+                      selectedDecisionContext.eventId,
+                      selectedDecisionContext.decision!.id,
+                      {
+                        optionStyle: inputEvent.target.value as
+                          | "visibleText"
+                          | "followUpText"
+                          | "iconOnly",
+                      },
+                    )
+                  }
+                >
+                  <option value="visibleText">Visible option text</option>
+                  <option value="followUpText">Follow-up text</option>
+                  <option value="iconOnly">Icon only</option>
+                </select>
+              </label>
+              </> : null}
+              {objectInspectorTab === "choices" ? <>
+              <p className="inspector-connection-hint">
+                All options share this decision's input. Each option has its own output port (A, B, C…).
+              </p>
               <div className="stack-list" aria-label="Decision option conditions">
-                {selectedDecisionContext.decision.outcomes.map((outcome) => (
+                {selectedDecisionContext.decision.outcomes.map((outcome, index) => (
                   <div className="mini-card" key={outcome.id}>
-                    <strong>{outcome.name}</strong>
+                    <strong>Option {String.fromCharCode(65 + index)}</strong>
+                    <label className="field-label compact-field">
+                      Visible text
+                      <input
+                        value={outcome.name}
+                        onChange={(inputEvent) =>
+                          onUpdateOutcome(
+                            selectedDecisionContext.eventId,
+                            selectedDecisionContext.decision!.id,
+                            outcome.id,
+                            { name: inputEvent.target.value },
+                          )
+                        }
+                      />
+                    </label>
+                    <label className="field-label compact-field">
+                      Follow-up text
+                      <input
+                        value={outcome.description ?? ""}
+                        onChange={(inputEvent) =>
+                          onUpdateOutcome(
+                            selectedDecisionContext.eventId,
+                            selectedDecisionContext.decision!.id,
+                            outcome.id,
+                            { description: inputEvent.target.value || undefined },
+                          )
+                        }
+                      />
+                    </label>
+                    <label className="field-label compact-field">
+                      Icon
+                      <input
+                        value={outcome.icon ?? ""}
+                        placeholder="◇"
+                        onChange={(inputEvent) =>
+                          onUpdateOutcome(
+                            selectedDecisionContext.eventId,
+                            selectedDecisionContext.decision!.id,
+                            outcome.id,
+                            { icon: inputEvent.target.value || undefined },
+                          )
+                        }
+                      />
+                    </label>
                     <span>
                       {outcome.availability
                         ? outcome.unavailableBehavior === "hidden"
@@ -5680,7 +5882,9 @@ function Inspector({
                   Delete
                 </button>
               </div>
+              </> : null}
             </section>
+            {objectInspectorTab === "logic" ? <>
             <BasicConditionEditor
               value={selectedDecisionContext.decision!.availability}
               canonRefs={canonRefIds}
@@ -5701,11 +5905,14 @@ function Inspector({
                 )
               }
             />
+            </> : null}
           </>
         ) : null}
 
         {selectedDialogueBeatContext ? (
           <>
+            <InspectorContentTabs value={objectInspectorTab} onChange={setObjectInspectorTab} tabs={[{ id: "overview", label: "Content" }, { id: "logic", label: "Logic" }]} />
+            {objectInspectorTab === "overview" ? (
             <section className="inspector-section">
               <h2>{selectedDialogueBeatContext.beat.kind === "speech" ? "Speech Beat" : "Direction Beat"}</h2>
               {selectedDialogueBeatContext.beat.kind === "speech" ? (
@@ -5721,7 +5928,7 @@ function Inspector({
                       )
                     }
                   >
-                    <option value="">No speaker</option>
+                    <option value="">Narrador</option>
                     {speakerCanonRefs.map((canonRef) => (
                       <option key={canonRef.id} value={canonRef.id}>
                         {canonRef.label ?? canonRef.id}
@@ -5744,49 +5951,47 @@ function Inspector({
                   }
                 />
               </label>
-              <dl>
-                <div><dt>Script</dt><dd>{selectedDialogueBeatContext.beat.blockRef.scriptId}</dd></div>
-                <div><dt>Block</dt><dd>{selectedDialogueBeatContext.beat.blockRef.blockId}</dd></div>
-              </dl>
               <button
                 type="button"
                 className="danger"
-                onClick={() => onDeleteDialogueBeat(
-                  selectedDialogueBeatContext.eventId,
-                  selectedDialogueBeatContext.dialogueId,
-                  selectedDialogueBeatContext.beat.id,
-                )}
+                onClick={() => selectedDialogueBeatContext.dialogueId
+                  ? onDeleteDialogueBeat(
+                    selectedDialogueBeatContext.eventId,
+                    selectedDialogueBeatContext.dialogueId,
+                    selectedDialogueBeatContext.beat.id,
+                  )
+                  : onDeleteEventDialogueBeat(
+                    selectedDialogueBeatContext.eventId,
+                    selectedDialogueBeatContext.beat.id,
+                  )}
               >
                 Delete beat
               </button>
             </section>
+            ) : null}
+            {objectInspectorTab === "logic" ? <>
             <BasicConditionEditor
               label="Display condition"
               value={selectedDialogueBeatContext.beat.displayCondition}
               canonRefs={canonRefIds}
               dataObjects={dataObjects}
-              onChange={(displayCondition) =>
-                onUpdateDialogueBeat(
-                  selectedDialogueBeatContext.eventId,
-                  selectedDialogueBeatContext.dialogueId,
-                  selectedDialogueBeatContext.beat.id,
-                  { displayCondition },
-                )
-              }
+              onChange={(displayCondition) => selectedDialogueBeatContext.dialogueId
+                ? onUpdateDialogueBeat(selectedDialogueBeatContext.eventId, selectedDialogueBeatContext.dialogueId, selectedDialogueBeatContext.beat.id, { displayCondition })
+                : onUpdateEventDialogueBeat(selectedDialogueBeatContext.eventId, selectedDialogueBeatContext.beat.id, { displayCondition })}
             />
             <LocalRuleSetEditor value={selectedDialogueBeatContext.beat.ruleSets} canonRefs={canonRefIds} dataObjects={dataObjects} onChange={(ruleSets) =>
-                onUpdateDialogueBeat(
-                  selectedDialogueBeatContext.eventId,
-                  selectedDialogueBeatContext.dialogueId,
-                  selectedDialogueBeatContext.beat.id,
-                  { ruleSets },
-                )
+                selectedDialogueBeatContext.dialogueId
+                  ? onUpdateDialogueBeat(selectedDialogueBeatContext.eventId, selectedDialogueBeatContext.dialogueId, selectedDialogueBeatContext.beat.id, { ruleSets })
+                  : onUpdateEventDialogueBeat(selectedDialogueBeatContext.eventId, selectedDialogueBeatContext.beat.id, { ruleSets })
               } />
+            </> : null}
           </>
         ) : null}
 
         {selectedDialogueContext?.dialogue ? (
           <>
+            <InspectorContentTabs value={objectInspectorTab} onChange={setObjectInspectorTab} tabs={[{ id: "overview", label: "Overview" }, { id: "logic", label: "Logic" }]} />
+            {objectInspectorTab === "overview" ? (
             <section className="inspector-section">
               <h2>Dialogue</h2>
               <label className="field-label">
@@ -5817,7 +6022,7 @@ function Inspector({
                     )
                   }
                 >
-                  <option value="">No speaker</option>
+                  <option value="">Narrador</option>
                   {speakerCanonRefs.map((canonRef) => (
                     <option key={canonRef.id} value={canonRef.id}>{canonRef.label ?? canonRef.id}</option>
                   ))}
@@ -5867,6 +6072,8 @@ function Inspector({
                 Delete
               </button>
             </section>
+            ) : null}
+            {objectInspectorTab === "logic" ? <>
             <BasicConditionEditor
               value={selectedDialogueContext.dialogue.availability}
               canonRefs={canonRefIds}
@@ -5886,6 +6093,7 @@ function Inspector({
                   { ruleSets },
                 )
               } />
+            </> : null}
           </>
         ) : null}
 
@@ -5917,6 +6125,8 @@ function Inspector({
 
         {selectedOutcomeContext?.outcome ? (
           <>
+            <InspectorContentTabs value={objectInspectorTab} onChange={setObjectInspectorTab} tabs={[{ id: "overview", label: "Overview" }, { id: "logic", label: "Logic" }, { id: "effects", label: "Effects" }]} />
+            {objectInspectorTab === "overview" ? (
             <section className="inspector-section">
               <h2>Outcome</h2>
               <label className="field-label">
@@ -5948,6 +6158,21 @@ function Inspector({
                       {
                         description: inputEvent.target.value || undefined,
                       },
+                    )
+                  }
+                />
+              </label>
+              <label className="field-label">
+                Icon
+                <input
+                  value={selectedOutcomeContext.outcome!.icon ?? ""}
+                  placeholder="◇"
+                  onChange={(inputEvent) =>
+                    onUpdateOutcome(
+                      selectedOutcomeContext.eventId,
+                      selectedOutcomeContext.decisionId,
+                      selectedOutcomeContext.outcome!.id,
+                      { icon: inputEvent.target.value || undefined },
                     )
                   }
                 />
@@ -6026,6 +6251,8 @@ function Inspector({
                 Delete
               </button>
             </section>
+            ) : null}
+            {objectInspectorTab === "logic" ? <>
             <BasicConditionEditor
               label="Choice conditions"
               value={selectedOutcomeContext.outcome!.availability}
@@ -6040,6 +6267,16 @@ function Inspector({
                 )
               }
             />
+            <LocalRuleSetEditor value={selectedOutcomeContext.outcome!.ruleSets} canonRefs={canonRefIds} dataObjects={dataObjects} onChange={(ruleSets) =>
+              onUpdateOutcome(
+                selectedOutcomeContext.eventId,
+                selectedOutcomeContext.decisionId,
+                selectedOutcomeContext.outcome!.id,
+                { ruleSets },
+              )
+            } />
+            </> : null}
+            {objectInspectorTab === "effects" ? <>
             <ConsequenceEditor
               value={selectedOutcomeContext.outcome!.consequences}
               canonRefs={canonRefIds}
@@ -6055,16 +6292,7 @@ function Inspector({
                 )
               }
             />
-            <LocalRuleSetEditor value={selectedOutcomeContext.outcome!.ruleSets} canonRefs={canonRefIds} dataObjects={dataObjects} onChange={(ruleSets) =>
-                onUpdateOutcome(
-                  selectedOutcomeContext.eventId,
-                  selectedOutcomeContext.decisionId,
-                  selectedOutcomeContext.outcome!.id,
-                  {
-                    ruleSets,
-                  },
-                )
-              } />
+            </> : null}
           </>
         ) : null}
 
@@ -6194,6 +6422,14 @@ function Inspector({
 
         {selectedEdge ? (
           <>
+            {selectedTransition ? (
+              <nav className="inspector-subtabs" aria-label="Transition inspector sections">
+                <button type="button" className={transitionInspectorTab === "route" ? "active" : ""} onClick={() => setTransitionInspectorTab("route")}>Route</button>
+                <button type="button" className={transitionInspectorTab === "if" ? "active" : ""} onClick={() => setTransitionInspectorTab("if")}>If</button>
+                <button type="button" className={transitionInspectorTab === "effects" ? "active" : ""} onClick={() => setTransitionInspectorTab("effects")}>Effects</button>
+              </nav>
+            ) : null}
+            {!selectedTransition || transitionInspectorTab === "route" ? (
             <section className="inspector-section">
               <h2>
                 {selectedTransition && isParentCanvas
@@ -6233,7 +6469,7 @@ function Inspector({
                   </div>
                 ) : null}
               </dl>
-              {selectedTransition && !isParentCanvas && !selectedTransitionIsGateManaged ? (
+              {selectedTransition ? (
                 <>
                   <div className="logic-grid">
                     <label className="field-label">
@@ -6284,17 +6520,6 @@ function Inspector({
                   </label>
                 </>
               ) : null}
-              {selectedTransition && isParentCanvas ? (
-                <p className="inspector-connection-hint">
-                  This is a canvas connector. Configure its output, conditions,
-                  and effects inside the source event subcanvas.
-                </p>
-              ) : null}
-              {selectedTransitionIsGateManaged ? (
-                <p className="inspector-connection-hint">
-                  This route is managed by its Route Gate. Select the Gate to edit its conditions, order, fallback, and effects.
-                </p>
-              ) : null}
               {selectedTransition ? (
                 <div className="inspector-actions">
                   <button
@@ -6307,10 +6532,11 @@ function Inspector({
                 </div>
               ) : null}
             </section>
-            {selectedTransition && !isParentCanvas && !selectedTransitionIsGateManaged ? (
+            ) : null}
+            {selectedTransition && transitionInspectorTab === "if" ? (
               <>
                 {selectedTransition.mode !== "fallback" ? (
-                  <BasicConditionEditor
+                  <TransitionConditionEditor
                     value={selectedTransition.conditions}
                     canonRefs={canonRefIds}
                     dataObjects={dataObjects}
@@ -6326,17 +6552,19 @@ function Inspector({
                     </p>
                   </section>
                 )}
-                <ConsequenceEditor
-                  value={selectedTransition.consequences}
-                  canonRefs={canonRefIds}
-                  dataObjects={dataObjects}
-                  onChange={(consequences) =>
-                    onUpdateTransition(selectedTransition.id, { consequences })
-                  }
-                />
               </>
             ) : null}
-            {!selectedTransition || !isParentCanvas ? (
+            {selectedTransition && transitionInspectorTab === "effects" ? (
+              <ConsequenceEditor
+                value={selectedTransition.consequences}
+                canonRefs={canonRefIds}
+                dataObjects={dataObjects}
+                onChange={(consequences) =>
+                  onUpdateTransition(selectedTransition.id, { consequences })
+                }
+              />
+            ) : null}
+            {!selectedTransition ? (
               <LogicSection
                 availability={selectedEdge.data?.conditions}
                 consequences={selectedEdge.data?.consequences}
@@ -6348,6 +6576,11 @@ function Inspector({
         {selectedCanon ? (
           <section className="inspector-section">
             <h2>{selectedCanon.label ?? selectedCanon.kind ?? "Canon"}</h2>
+            <div className="inspector-tag-list" aria-label="Canon classification">
+              <span>{selectedCanon.kind ?? "canon"}</span>
+              {selectedCanon.parentId ? <span>Child of {project.canonRefs.find((ref) => ref.id === selectedCanon.parentId)?.label ?? selectedCanon.parentId}</span> : null}
+              {(selectedCanon.tags ?? []).map((tag) => <span key={tag}>{tag}</span>)}
+            </div>
             <dl>
               <div>
                 <dt>ID</dt>
@@ -6664,6 +6897,8 @@ function Inspector({
                 ? "WorldNotion remains the source of truth. These capabilities are stored as Pathbranching overrides."
                 : "Configure how this local property participates in Pathbranching."}
             </p>
+            <InspectorContentTabs value={objectInspectorTab} onChange={setObjectInspectorTab} tabs={[{ id: "overview", label: "Overview" }, { id: "characters", label: "Characters" }]} />
+            {objectInspectorTab === "overview" ? <>
             {selectedExplorerSchemaSource === "local" ? (
               <>
                 <label className="field-label">
@@ -6741,6 +6976,16 @@ function Inspector({
                 <label className="field-label">Can relate to<input value={(override?.relationTargetTypes ?? []).join(", ")} placeholder="character, worldbuilding" onChange={(event) => onUpdateLogicPropertyOverride(selectedExplorerProperty.id, source, { relationTargetTypes: event.target.value.split(",").map((item) => item.trim()).filter(Boolean) })} /></label>
               </>;
             })()}
+            </> : <section className="character-categories-editor">
+              <p className="inspector-connection-hint">Choose which canon categories can be selected as a character in Speech Beats. Defaults are locked; this inspector adds the optional ones.</p>
+              {canonCategories.length ? <div className="character-category-options">
+                {canonCategories.map((category) => {
+                  const isDefault = defaultCharacterCategories.includes(category);
+                  const isAdditional = additionalCharacterCategories.includes(category);
+                  return <label key={category}><input type="checkbox" checked={isDefault || isAdditional} disabled={isDefault} onChange={(event) => onUpdateCharacterCategories(event.target.checked ? [...additionalCharacterCategories, category] : additionalCharacterCategories.filter((item) => item !== category))} /> {category}</label>;
+                })}
+              </div> : <p className="empty-line">No canon categories are available yet.</p>}
+            </section>}
           </section>
         ) : null}
 
@@ -7032,12 +7277,13 @@ function Inspector({
 }
 
 type CanvasContextMenu = {
-  kind: "create" | "connect-create" | "selection";
+  kind: "create" | "connect-create" | "selection" | "route-gate";
   x: number;
   y: number;
   flowX: number;
   flowY: number;
   sourceNodeId?: string;
+  routeSourceId?: string;
   nodeIds?: string[];
 };
 
@@ -7075,6 +7321,8 @@ function EventTypeMenuButton({
 const FIXABLE_FINDING_CODES = new Set<ValidationFinding["code"]>([
   "missing_event",
   "invalid_boundary_binding",
+  "invalid_transition_order",
+  "orphan_script_block",
 ]);
 
 function CanvasFindingsButton({
@@ -7155,7 +7403,7 @@ function CanvasFindingsButton({
                 >
                   <strong>{finding.code}</strong>
                   <span>{finding.message}</span>
-                  {FIXABLE_FINDING_CODES.has(finding.code) && finding.id ? (
+                  {FIXABLE_FINDING_CODES.has(finding.code) && (finding.id || finding.ref) ? (
                     <div className="finding-actions">
                       <button
                         type="button"
@@ -7163,13 +7411,19 @@ function CanvasFindingsButton({
                       >
                         Locate
                       </button>
-                      <button
-                        type="button"
-                        className="danger"
-                        onClick={() => onFixFinding(finding)}
-                      >
-                        Remove reference
-                      </button>
+                      {finding.code === "invalid_transition_order" ? (
+                        <button type="button" onClick={() => onFixFinding(finding)}>
+                          Fix order
+                        </button>
+                      ) : finding.code === "orphan_script_block" ? (
+                        <button type="button" className="danger" onClick={() => onFixFinding(finding)}>
+                          Delete orphan
+                        </button>
+                      ) : (
+                        <button type="button" className="danger" onClick={() => onFixFinding(finding)}>
+                          Remove reference
+                        </button>
+                      )}
                     </div>
                   ) : null}
                 </div>
@@ -7257,6 +7511,7 @@ function StoryCanvas({
   expandedInspectorTabId,
   inspectorMaximized,
   canvasBackground,
+  onCanvasBackgroundChange,
   onNodesChange,
   onEdgesChange,
   onConnect,
@@ -7275,11 +7530,14 @@ function StoryCanvas({
   onCreateDecision,
   onCreateDialogue,
   onCreateDialogueBeat,
+  onCreateEventDialogueBeat,
   onUpdateDecision,
   onUpdateDialogue,
   onUpdateDialogueBeat,
+  onUpdateEventDialogueBeat,
   onUpdateScriptBlock,
   onDeleteDialogueBeat,
+  onDeleteEventDialogueBeat,
   onDeleteDecision,
   onDeleteDialogue,
   onCreateOutcome,
@@ -7289,6 +7547,10 @@ function StoryCanvas({
   onDeleteTransition,
   onRemoveMissingEventReference,
   onRemoveBoundaryBinding,
+  onNormalizeTransitionOrder,
+  onInsertRouteGate,
+  onDeleteScriptBlock,
+  onFocusScriptBlock,
   onCreateCanonSuggestion,
   onUpdateCanonSuggestion,
   onDeleteCanonSuggestion,
@@ -7306,6 +7568,7 @@ function StoryCanvas({
   onUpdateLocalExplorerType,
   onUpdateLocalExplorerProperty,
   onUpdateLogicPropertyOverride,
+  onUpdateCharacterCategories,
   onUpdateEdgeLabel,
   onDeleteSelection,
   onDeleteNodeSelections,
@@ -7355,6 +7618,7 @@ function StoryCanvas({
   expandedInspectorTabId?: string;
   inspectorMaximized: boolean;
   canvasBackground: CanvasBackgroundSettings;
+  onCanvasBackgroundChange: (updates: Partial<CanvasBackgroundSettings>) => void;
   onNodesChange: (changes: NodeChange<StoryCanvasNode>[]) => void;
   onEdgesChange: (changes: EdgeChange<StoryCanvasEdge>[]) => void;
   onConnect: OnConnect;
@@ -7385,9 +7649,10 @@ function StoryCanvas({
   onUpdateBranch: (id: string, updates: Partial<Branch>) => void;
   onCreateEventInBranch: (branchId: string, type?: EventType) => void;
   onUpdateEvent: (id: string, updates: Partial<EventNode>) => void;
-  onCreateDecision: (eventId: string, dialogueId?: string) => void;
+  onCreateDecision: (eventId: string) => void;
   onCreateDialogue: (eventId: string) => void;
   onCreateDialogueBeat: (eventId: string, dialogueId: string, kind: DialogueBeat["kind"]) => void;
+  onCreateEventDialogueBeat: (eventId: string, kind: DialogueBeat["kind"]) => void;
   onUpdateDecision: (
     eventId: string,
     decisionId: string,
@@ -7399,8 +7664,10 @@ function StoryCanvas({
     updates: Partial<DialogueNode>,
   ) => void;
   onUpdateDialogueBeat: (eventId: string, dialogueId: string, beatId: string, updates: Partial<DialogueBeat>) => void;
-  onUpdateScriptBlock: (scriptId: string, blockId: string, updates: { content?: string; speakerRef?: string }) => void;
+  onUpdateEventDialogueBeat: (eventId: string, beatId: string, updates: Partial<DialogueBeat>) => void;
+  onUpdateScriptBlock: (scriptId: string, blockId: string, updates: { content?: string; translations?: Record<string, string>; speakerRef?: string }) => void;
   onDeleteDialogueBeat: (eventId: string, dialogueId: string, beatId: string) => void;
+  onDeleteEventDialogueBeat: (eventId: string, beatId: string) => void;
   onDeleteDecision: (eventId: string, decisionId: string) => void;
   onDeleteDialogue: (eventId: string, dialogueId: string) => void;
   onCreateOutcome: (eventId: string, decisionId: string) => void;
@@ -7425,6 +7692,10 @@ function StoryCanvas({
     missingEventId: string,
   ) => void;
   onRemoveBoundaryBinding: (bindingId: string) => void;
+  onNormalizeTransitionOrder: (sourceId: string) => void;
+  onInsertRouteGate: (sourceId: string) => void;
+  onDeleteScriptBlock: (blockKey: string) => void;
+  onFocusScriptBlock: (target: { scriptId: string; blockId: string }) => void;
   onCreateCanonSuggestion: (
     canonRefId: string,
     source?: { eventId?: string; dataObjectId?: string },
@@ -7457,6 +7728,7 @@ function StoryCanvas({
     updates: Partial<LocalExplorerProperty>,
   ) => void;
   onUpdateLogicPropertyOverride: (propertyId: string, source: "canon" | "local", changes: Partial<LogicPropertyOverride>) => void;
+  onUpdateCharacterCategories: (categories: string[]) => void;
   onUpdateEdgeLabel: (edgeId: string, label: string) => void;
   onDeleteSelection: (selection: Selection) => void;
   onDeleteNodeSelections: (nodeIds: string[]) => void;
@@ -7535,6 +7807,25 @@ function StoryCanvas({
         data: {
           ...node.data,
           inspectorState: inspectorNodeStates.get(node.id),
+          quickEditor:
+            (node.data.kind === "speechBeat" || node.data.kind === "directionBeat") &&
+            typeof (node.data.details?.beat as { blockRef?: { scriptId?: unknown; blockId?: unknown } } | undefined)?.blockRef?.scriptId === "string" &&
+            typeof (node.data.details?.beat as { blockRef?: { scriptId?: unknown; blockId?: unknown } } | undefined)?.blockRef?.blockId === "string"
+              ? (() => {
+                  const block = node.data.details?.block as ScriptBlock | undefined;
+                  const blockRef = (node.data.details!.beat as DialogueBeat).blockRef;
+                  return {
+                    content: block?.content ?? "",
+                    translations: block?.translations,
+                    speakerRef: block?.speakerRef,
+                    speakerOptions: project.canonRefs
+                      .filter((canonRef) => canonRefHasRole(project, canonRef, "speaker"))
+                      .map((canonRef) => ({ id: canonRef.id, label: canonRef.label ?? canonRef.id })),
+                    onUpdate: (updates: { content?: string; translations?: Record<string, string>; speakerRef?: string }) =>
+                      onUpdateScriptBlock(blockRef.scriptId, blockRef.blockId, updates),
+                  };
+                })()
+              : undefined,
         },
       })),
       edges: edges.map((edgeItem): StoryCanvasEdge => {
@@ -7548,6 +7839,7 @@ function StoryCanvas({
           type: editable ? "editable" : edgeItem.type,
           data: {
             ...edgeData,
+            connectionPadding: canvasBackground.connectionPadding,
             customLabel:
               edgeData.kind === "entry" ? customLabel ?? "" : customLabel,
             inspectorState: inspectorEdgeStates.get(edgeItem.id),
@@ -7560,7 +7852,7 @@ function StoryCanvas({
         };
       }),
     }),
-    [commitEdgeLabel, editingEdgeId, edges, inspectorEdgeStates, inspectorNodeStates, nodes],
+    [canvasBackground.connectionPadding, commitEdgeLabel, editingEdgeId, edges, inspectorEdgeStates, inspectorNodeStates, nodes, onUpdateScriptBlock, project],
   );
   const activeEventScope =
     activeScope?.kind === "event"
@@ -7607,9 +7899,31 @@ function StoryCanvas({
         if (ownerEventId) {
           onNavigateScope({ kind: "event", id: ownerEventId });
         }
+        return;
+      }
+      if (findingItem.code === "invalid_transition_order" && findingItem.id) {
+        const ownerEvent = project.events.find((event) =>
+          event.transitions?.some((transition) => transition.from === findingItem.id),
+        );
+        if (ownerEvent) {
+          onNavigateScope(
+            { kind: "event", id: ownerEvent.id },
+            { type: "node", id: findingItem.id },
+          );
+        }
+        return;
+      }
+      if (findingItem.code === "orphan_script_block" && findingItem.ref) {
+        const owner = project.scriptDocuments?.find((script) =>
+          script.blocks.some((block) => `${script.id}:${block.id}` === findingItem.ref),
+        );
+        const block = owner?.blocks.find(
+          (candidate) => `${owner.id}:${candidate.id}` === findingItem.ref,
+        );
+        if (owner && block) onFocusScriptBlock({ scriptId: owner.id, blockId: block.id });
       }
     },
-    [onNavigateScope, project.events, project.sequences],
+    [onFocusScriptBlock, onNavigateScope, project.events, project.scriptDocuments, project.sequences],
   );
   const fixFinding = useCallback(
     (findingItem: ValidationFinding) => {
@@ -7623,9 +7937,17 @@ function StoryCanvas({
       }
       if (findingItem.code === "invalid_boundary_binding" && findingItem.id) {
         onRemoveBoundaryBinding(findingItem.id);
+        return;
+      }
+      if (findingItem.code === "invalid_transition_order" && findingItem.id) {
+        onNormalizeTransitionOrder(findingItem.id);
+        return;
+      }
+      if (findingItem.code === "orphan_script_block" && findingItem.ref) {
+        onDeleteScriptBlock(findingItem.ref);
       }
     },
-    [onRemoveBoundaryBinding, onRemoveMissingEventReference],
+    [onDeleteScriptBlock, onNormalizeTransitionOrder, onRemoveBoundaryBinding, onRemoveMissingEventReference],
   );
   const snapGrid: [number, number] = [
     canvasBackground.gridSize,
@@ -7684,6 +8006,26 @@ function StoryCanvas({
       });
     },
     [reactFlowInstance],
+  );
+
+  const openEdgeContextMenu = useCallback(
+    (event: ReactMouseEvent, edgeItem: StoryCanvasEdge) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (edgeItem.data?.kind !== "transition" || typeof edgeItem.data.routeSourceId !== "string") {
+        return;
+      }
+      const shellRect = shellRef.current?.getBoundingClientRect();
+      setContextMenu({
+        kind: "route-gate",
+        routeSourceId: edgeItem.data.routeSourceId,
+        x: event.clientX - (shellRect?.left ?? 0),
+        y: event.clientY - (shellRect?.top ?? 0),
+        flowX: 0,
+        flowY: 0,
+      });
+    },
+    [],
   );
 
   const openSelectionContextMenu = useCallback(
@@ -7913,6 +8255,7 @@ function StoryCanvas({
               setEditingEdgeId(edgeItem.id);
             }
           }}
+          onEdgeContextMenu={openEdgeContextMenu}
           onPaneClick={() => {
             setContextMenu(undefined);
             setEditingEdgeId(undefined);
@@ -7978,6 +8321,26 @@ function StoryCanvas({
           ) : null}
         </ReactFlow>
       </ReactFlowProvider>
+      <div className="canvas-edge-adjustments">
+        <button type="button" className="canvas-edge-adjustments-trigger" aria-label="Adjust connection spacing" title="Adjust connection spacing">
+          <SlidersHorizontal size={15} />
+        </button>
+        <div className="canvas-edge-adjustments-panel">
+          <label>
+            Connection spacing
+            <input
+              type="range"
+              min="0"
+              max="64"
+              step="2"
+              value={canvasBackground.connectionPadding}
+              onChange={(event) => onCanvasBackgroundChange({ connectionPadding: Number(event.target.value) })}
+            />
+            <output>{canvasBackground.connectionPadding}px</output>
+          </label>
+          <button type="button" onClick={() => onCanvasBackgroundChange({ connectionPadding: 18 })}>Reset</button>
+        </div>
+      </div>
 
       {contextMenu ? (
         <div
@@ -8011,6 +8374,19 @@ function StoryCanvas({
                 Delete selected
               </button>
             </>
+          ) : contextMenu.kind === "route-gate" ? (
+            <>
+              <span className="canvas-menu-label">Transition</span>
+              <button
+                type="button"
+                onClick={() => {
+                  if (contextMenu.routeSourceId) onInsertRouteGate(contextMenu.routeSourceId);
+                  setContextMenu(undefined);
+                }}
+              >
+                Insert Route Gate
+              </button>
+            </>
           ) : activeDialogueScope ? (
             <>
               <span className="canvas-menu-label">Create inside dialogue</span>
@@ -8026,20 +8402,11 @@ function StoryCanvas({
               <button
                 type="button"
                 onClick={() => {
-                  onCreateDialogueBeat(activeDialogueScope.eventId, activeDialogueScope.id, "direction");
+                  onCreateDecision(activeDialogueScope.eventId);
                   setContextMenu(undefined);
                 }}
               >
-                Direction Beat
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  onCreateDecision(activeDialogueScope.eventId, activeDialogueScope.id);
-                  setContextMenu(undefined);
-                }}
-              >
-                Player Decision
+                Decision
               </button>
             </>
           ) : contextMenu.kind === "connect-create" ? (
@@ -8100,6 +8467,15 @@ function StoryCanvas({
                     }}
                   >
                     Decision
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onCreateEventDialogueBeat(activeEventScope.id, "speech");
+                      setContextMenu(undefined);
+                    }}
+                  >
+                    Speech Beat
                   </button>
                   <button
                     type="button"
@@ -8184,8 +8560,10 @@ function StoryCanvas({
           onUpdateDecision={onUpdateDecision}
           onUpdateDialogue={onUpdateDialogue}
           onUpdateDialogueBeat={onUpdateDialogueBeat}
+          onUpdateEventDialogueBeat={onUpdateEventDialogueBeat}
           onUpdateScriptBlock={onUpdateScriptBlock}
           onDeleteDialogueBeat={onDeleteDialogueBeat}
+          onDeleteEventDialogueBeat={onDeleteEventDialogueBeat}
           onDeleteDecision={onDeleteDecision}
           onDeleteDialogue={onDeleteDialogue}
           onCreateOutcome={onCreateOutcome}
@@ -8210,6 +8588,7 @@ function StoryCanvas({
           onUpdateLocalExplorerType={onUpdateLocalExplorerType}
           onUpdateLocalExplorerProperty={onUpdateLocalExplorerProperty}
           onUpdateLogicPropertyOverride={onUpdateLogicPropertyOverride}
+          onUpdateCharacterCategories={onUpdateCharacterCategories}
           onUpdateEdgeLabel={onUpdateEdgeLabel}
           onDeleteSelection={onDeleteSelection}
           onOpenRule={onOpenRule}
@@ -8235,6 +8614,7 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
   const [fileState, setFileState] = useState<ProjectFileState>({
     dirty: false,
   });
+  const [canvasDirty, setCanvasDirty] = useState(false);
   const [nodes, setNodes] = useState<StoryCanvasNode[]>([]);
   const [edges, setEdges] = useState<StoryCanvasEdge[]>([]);
   const [files, setFiles] = useState<PathBranchingFileItem[]>([]);
@@ -8247,6 +8627,10 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
   const [panelCollapsed, setPanelCollapsed] = useState<WorkspacePanelState>(
     DEFAULT_WORKSPACE_PANEL_COLLAPSED,
   );
+  const [focusedScriptBlock, setFocusedScriptBlock] = useState<{
+    scriptId: string;
+    blockId: string;
+  }>();
   const [selectedLogicRuleId, setSelectedLogicRuleId] = useState<string>();
   const [canonWidth, setCanonWidth] = useState(DEFAULT_EXPLORER_WIDTH);
   const [storiesWidth, setStoriesWidth] = useState(DEFAULT_PANEL_WIDTH);
@@ -8274,6 +8658,7 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
   const [focusNodeId, setFocusNodeId] = useState<string>();
   const [undoStack, setUndoStack] = useState<BranchingProject[]>([]);
   const [redoStack, setRedoStack] = useState<BranchingProject[]>([]);
+  const [actionHistory, setActionHistory] = useState<string[]>([]);
   const [discardDialog, setDiscardDialog] = useState<{
     resolve: (discard: boolean) => void;
   }>();
@@ -8480,6 +8865,8 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
       setFileState(nextFileState);
       setUndoStack([]);
       setRedoStack([]);
+      setActionHistory([]);
+      setCanvasDirty(false);
       setEventDraft(undefined);
       setMarkdownTabs(savedSession.markdownTabs ?? []);
       setActiveMarkdownTabId(savedSession.activeMarkdownTabId);
@@ -8630,8 +9017,9 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
         savedRevision: savedRevisionRef.current,
       };
 
-      setUndoStack((current) => [...current.slice(-49), currentProject]);
+      setUndoStack((current) => [...current.slice(-9), currentProject]);
       setRedoStack([]);
+      setActionHistory((current) => [mutationResult.message ?? label, ...current].slice(0, 10));
       applyProject(mutationResult.project, { dirty: false, revision: true });
       if (mutationResult.selection) {
         setSelection(mutationResult.selection as Selection);
@@ -8655,22 +9043,37 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
     [applyProject, redoStack, restoreStructuralSnapshot, undoStack],
   );
 
-  const updateProject = useCallback(
-    (nextProject: BranchingProject, nextSelection?: Selection) => {
-      void commitStructuralAction(
-        "Saved structural change",
-        nextProject,
-        nextSelection,
-      );
-    },
-    [commitStructuralAction],
-  );
-
   const runMutation = useCallback(
     (result: mutations.MutationResult, label = "Saved structural change") => {
       void commitStructuralAction(label, result);
     },
     [commitStructuralAction],
+  );
+
+  const commitCanvasAction = useCallback(
+    (
+      label: string,
+      result: mutations.MutationResult | BranchingProject,
+      nextSelection?: Selection,
+    ) => {
+      setCanvasDirty(false);
+      void commitStructuralAction(label, result, nextSelection);
+    },
+    [commitStructuralAction],
+  );
+
+  const updateProject = useCallback(
+    (nextProject: BranchingProject, nextSelection?: Selection) => {
+      commitCanvasAction("Canvas updated", nextProject, nextSelection);
+    },
+    [commitCanvasAction],
+  );
+
+  const runCanvasMutation = useCallback(
+    (result: mutations.MutationResult, label = "Canvas updated") => {
+      commitCanvasAction(label, result);
+    },
+    [commitCanvasAction],
   );
 
   const createCanonWorkingCopy = useCallback(
@@ -9812,6 +10215,19 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
     return queuedSave;
   }, []);
 
+  const saveCanvas = useCallback(async () => {
+    if (!canvasDirty) {
+      setMessage("Canvas has no pending changes.");
+      return;
+    }
+    try {
+      await persistProject({ manual: true });
+      setCanvasDirty(false);
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : String(saveError));
+    }
+  }, [canvasDirty, persistProject]);
+
   useEffect(() => {
     persistProjectRef.current = persistProject;
   }, [persistProject]);
@@ -10441,7 +10857,8 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
       savedRevision: savedRevisionRef.current,
     };
     setUndoStack((current) => current.slice(0, -1));
-    setRedoStack((current) => [...current.slice(-49), project]);
+    setRedoStack((current) => [...current.slice(-9), project]);
+    setActionHistory((current) => ["Undo", ...current].slice(0, 10));
     applyProject(previous, { dirty: false, revision: true });
     setMessage("Undo...");
     void persistProjectRef
@@ -10471,7 +10888,8 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
       savedRevision: savedRevisionRef.current,
     };
     setRedoStack((current) => current.slice(0, -1));
-    setUndoStack((current) => [...current.slice(-49), project]);
+    setUndoStack((current) => [...current.slice(-9), project]);
+    setActionHistory((current) => ["Redo", ...current].slice(0, 10));
     applyProject(next, { dirty: false, revision: true });
     setMessage("Redo...");
     void persistProjectRef
@@ -10497,7 +10915,16 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
       }
       if (shortcutMatches(event, "Mod+S")) {
         event.preventDefault();
-        void saveActiveEventDraft();
+        if (canvasDirty) {
+          void saveCanvas();
+        } else {
+          void saveActiveEventDraft();
+        }
+      }
+      if (shortcutMatches(event, "Mod+R")) {
+        event.preventDefault();
+        window.location.reload();
+        return;
       }
       if (shortcutMatches(event, "Mod+O")) {
         event.preventDefault();
@@ -10506,7 +10933,7 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
     };
     window.addEventListener("keydown", handleKeyDown, true);
     return () => window.removeEventListener("keydown", handleKeyDown, true);
-  }, [openProject, redoProject, saveActiveEventDraft, undoProject]);
+  }, [canvasDirty, openProject, redoProject, saveActiveEventDraft, saveCanvas, undoProject]);
 
   const navigateCanvasScope = useCallback(
     (scope: CanvasScope, nextSelection?: Selection) => {
@@ -10658,9 +11085,9 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
         );
         return;
       }
-      runMutation(mutations.createSequence(currentProject, name));
+      runCanvasMutation(mutations.createSequence(currentProject, name), "Created sequence");
     },
-    [runMutation],
+    [runCanvasMutation],
   );
 
   const requestCreateStory = useCallback(() => {
@@ -10971,9 +11398,9 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
       const snappedPosition = position
         ? snapCanvasPoint(position, snap.snapToGrid, snap.gridSize)
         : undefined;
-      runMutation(mutations.createBranch(currentProject, snappedPosition));
+      runCanvasMutation(mutations.createBranch(currentProject, snappedPosition), "Created branch");
     },
-    [runMutation],
+    [runCanvasMutation],
   );
 
   const createEvent = useCallback(
@@ -11000,11 +11427,12 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
       const snappedPosition = position
         ? snapCanvasPoint(position, snap.snapToGrid, snap.gridSize)
         : undefined;
-      runMutation(
+      runCanvasMutation(
         mutations.createEvent(currentProject, type, snappedPosition, branchId),
+        "Created event",
       );
     },
-    [runMutation],
+    [runCanvasMutation],
   );
 
   const createNestedEvent = useCallback(
@@ -11030,7 +11458,7 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
       const snappedPosition = position
         ? snapCanvasPoint(position, snap.snapToGrid, snap.gridSize)
         : undefined;
-      runMutation(
+      runCanvasMutation(
         mutations.createNestedEvent(
           currentProject,
           parentEventId,
@@ -11040,7 +11468,7 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
         "Created nested event",
       );
     },
-    [runMutation],
+    [runCanvasMutation],
   );
 
   const createEventInBranch = useCallback(
@@ -11131,7 +11559,7 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
               : sequence,
           ),
         };
-        void commitStructuralAction("Created connected event", {
+        commitCanvasAction("Created connected event", {
           project: nextProject,
           selection: {
             type: "edge",
@@ -11172,11 +11600,16 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
               : event,
           ),
         };
-        void commitStructuralAction("Created event in branch", {
+        commitCanvasAction("Created event in branch", {
           project: nextProject,
           selection: { type: "node", id: targetEventId },
           message: "Created event in branch.",
         });
+        return;
+      }
+
+      if (sourceKind === "decision") {
+        setMessage("Create the connection from a decision option port (A, B, C…).");
         return;
       }
 
@@ -11194,15 +11627,15 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
         return;
       }
 
-      const transitionId = transitionFrom(
-        sourceNode.id,
-        targetEventId,
-        sourceEvent.transitions,
-      );
+      const routeSourceId =
+        sourceKind === "routeGate" &&
+        typeof sourceNode.data.details?.routeSourceId === "string"
+          ? sourceNode.data.details.routeSourceId
+          : sourceNode.id;
+      const transitionId = transitionFrom(routeSourceId, targetEventId, sourceEvent.transitions);
       const transition: Transition = {
         id: transitionId,
-        from:
-          sourceNode.data.kind === "outcome" ? sourceNode.id : sourceEventId,
+        from: sourceNode.data.kind === "outcome" ? sourceNode.id : routeSourceId === sourceNode.id ? sourceEventId : routeSourceId,
         to: targetEventId,
         source: "graph",
       };
@@ -11229,13 +11662,13 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
         ),
       };
 
-      void commitStructuralAction("Created connected event", {
+      commitCanvasAction("Created connected event", {
         project: nextProject,
         selection: { type: "edge", id: `edge:transition:${transitionId}` },
         message: "Created connected event.",
       });
     },
-    [commitStructuralAction, nodes],
+    [commitCanvasAction, nodes],
   );
 
   const updateSequence = useCallback(
@@ -11243,9 +11676,9 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
       if (!project) {
         return;
       }
-      runMutation(mutations.updateSequence(project, id, updates));
+      runCanvasMutation(mutations.updateSequence(project, id, updates));
     },
-    [project, runMutation],
+    [project, runCanvasMutation],
   );
 
   const updateBranch = useCallback(
@@ -11253,9 +11686,9 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
       if (!project) {
         return;
       }
-      runMutation(mutations.updateBranch(project, id, updates));
+      runCanvasMutation(mutations.updateBranch(project, id, updates));
     },
-    [project, runMutation],
+    [project, runCanvasMutation],
   );
 
   const assignEventBranch = useCallback(
@@ -11263,12 +11696,12 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
       if (!project) {
         return;
       }
-      runMutation(
+      runCanvasMutation(
         { project: assignEventToBranch(project, eventId, branchId) },
         "Updated event branch",
       );
     },
-    [project, runMutation],
+    [project, runCanvasMutation],
   );
 
   const updateEvent = useCallback(
@@ -11280,28 +11713,28 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
         setEventDraft((draft) => updateEventDraft(draft, updates));
         return;
       }
-      runMutation(mutations.updateEvent(project, id, updates));
+      runCanvasMutation(mutations.updateEvent(project, id, updates));
     },
-    [eventDraft?.eventId, project, runMutation],
+    [eventDraft?.eventId, project, runCanvasMutation],
   );
 
   const createDecision = useCallback(
-    (eventId: string, dialogueId?: string) => {
+    (eventId: string) => {
       if (!project) {
         return;
       }
       if (eventDraft?.eventId === eventId) {
         const draftProject = applyEventDraftToProject(project, eventDraft);
         setEventDraft(undefined);
-        runMutation(
-          mutations.createDecision(draftProject, eventId, dialogueId),
+        runCanvasMutation(
+          mutations.createDecision(draftProject, eventId),
           "Created decision",
         );
         return;
       }
-      runMutation(mutations.createDecision(project, eventId, dialogueId));
+      runCanvasMutation(mutations.createDecision(project, eventId));
     },
-    [eventDraft, project, runMutation],
+    [eventDraft, project, runCanvasMutation],
   );
 
   const createDialogue = useCallback(
@@ -11312,18 +11745,18 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
       if (eventDraft?.eventId === eventId) {
         const draftProject = applyEventDraftToProject(project, eventDraft);
         setEventDraft(undefined);
-        runMutation(
+        runCanvasMutation(
           mutations.createDialogue(draftProject, eventId),
           "Created dialogue",
         );
         return;
       }
-      runMutation(
+      runCanvasMutation(
         mutations.createDialogue(project, eventId),
         "Created dialogue",
       );
     },
-    [eventDraft, project, runMutation],
+    [eventDraft, project, runCanvasMutation],
   );
 
   const updateDecision = useCallback(
@@ -11337,11 +11770,11 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
         );
         return;
       }
-      runMutation(
+      runCanvasMutation(
         mutations.updateDecision(project, eventId, decisionId, updates),
       );
     },
-    [eventDraft?.eventId, mutateEventDraft, project, runMutation],
+    [eventDraft?.eventId, mutateEventDraft, project, runCanvasMutation],
   );
 
   const updateDialogue = useCallback(
@@ -11355,11 +11788,11 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
         );
         return;
       }
-      runMutation(
+      runCanvasMutation(
         mutations.updateDialogue(project, eventId, dialogueId, updates),
       );
     },
-    [eventDraft?.eventId, mutateEventDraft, project, runMutation],
+    [eventDraft?.eventId, mutateEventDraft, project, runCanvasMutation],
   );
 
   const createDialogueBeat = useCallback(
@@ -11370,20 +11803,43 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
           ? applyEventDraftToProject(project, eventDraft)
           : project;
       if (eventDraft?.eventId === eventId) setEventDraft(undefined);
-      runMutation(
+      runCanvasMutation(
         mutations.createDialogueBeat(sourceProject, eventId, dialogueId, kind),
         "Created dialogue beat",
       );
     },
-    [eventDraft, project, runMutation],
+    [eventDraft, project, runCanvasMutation],
+  );
+
+  const createEventDialogueBeat = useCallback(
+    (eventId: string, kind: DialogueBeat["kind"]) => {
+      if (!project) return;
+      const sourceProject = eventDraft?.eventId === eventId
+        ? applyEventDraftToProject(project, eventDraft)
+        : project;
+      if (eventDraft?.eventId === eventId) setEventDraft(undefined);
+      runCanvasMutation(
+        mutations.createEventDialogueBeat(sourceProject, eventId, kind),
+        "Created dialogue beat",
+      );
+    },
+    [eventDraft, project, runCanvasMutation],
   );
 
   const updateDialogueBeat = useCallback(
     (eventId: string, dialogueId: string, beatId: string, updates: Partial<DialogueBeat>) => {
       if (!project) return;
-      runMutation(mutations.updateDialogueBeat(project, eventId, dialogueId, beatId, updates));
+      runCanvasMutation(mutations.updateDialogueBeat(project, eventId, dialogueId, beatId, updates));
     },
-    [project, runMutation],
+    [project, runCanvasMutation],
+  );
+
+  const updateEventDialogueBeat = useCallback(
+    (eventId: string, beatId: string, updates: Partial<DialogueBeat>) => {
+      if (!project) return;
+      runCanvasMutation(mutations.updateEventDialogueBeat(project, eventId, beatId, updates));
+    },
+    [project, runCanvasMutation],
   );
 
   const updateScriptBlock = useCallback(
@@ -11392,6 +11848,41 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
       runMutation(mutations.updateScriptBlock(project, scriptId, blockId, updates));
     },
     [project, runMutation],
+  );
+
+  const updateCharacterCategories = useCallback((categories: string[]) => {
+    if (!project) return;
+    const mappingId = "pathbranching:additional-characters";
+    const mappings = project.integrationConfigOverride?.mappings ?? [];
+    const nextMappings = categories.length
+      ? [...mappings.filter((mapping) => mapping.id !== mappingId), {
+        id: mappingId,
+        classId: "class:Speaker",
+        worldnotionTypes: categories,
+        roles: ["speaker", "presentation"],
+      }]
+      : mappings.filter((mapping) => mapping.id !== mappingId);
+    runMutation({
+      project: {
+        ...project,
+        integrationConfigOverride: { specVersion: "0.1", mappings: nextMappings },
+      },
+      message: "Updated character categories.",
+    });
+  }, [project, runMutation]);
+
+  // Script blocks edited through Assets are content assets and save immediately.
+  // The same blocks edited from a canvas Speech Beat belong to that canvas edit
+  // session and wait for the explicit Save Canvas action.
+  const updateCanvasScriptBlock = useCallback(
+    (scriptId: string, blockId: string, updates: Partial<ScriptBlock>) => {
+      if (!project) return;
+      runCanvasMutation(
+        mutations.updateScriptBlock(project, scriptId, blockId, updates),
+        "Updated speech beat",
+      );
+    },
+    [project, runCanvasMutation],
   );
 
   const createScriptDocument = useCallback(() => {
@@ -11418,9 +11909,18 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
     (eventId: string, dialogueId: string, beatId: string) => {
       if (!project) return;
       closeDeletedNodeInspector(`beat:${eventId}:${dialogueId}:${beatId}`);
-      runMutation(mutations.deleteDialogueBeat(project, eventId, dialogueId, beatId));
+      runCanvasMutation(mutations.deleteDialogueBeat(project, eventId, dialogueId, beatId));
     },
-    [closeDeletedNodeInspector, project, runMutation],
+    [closeDeletedNodeInspector, project, runCanvasMutation],
+  );
+
+  const deleteEventDialogueBeat = useCallback(
+    (eventId: string, beatId: string) => {
+      if (!project) return;
+      closeDeletedNodeInspector(`beat:${eventId}:${beatId}`);
+      runCanvasMutation(mutations.deleteEventDialogueBeat(project, eventId, beatId));
+    },
+    [closeDeletedNodeInspector, project, runCanvasMutation],
   );
 
   const deleteDecision = useCallback(
@@ -11436,9 +11936,9 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
         return;
       }
       closeDeletedNodeInspector(`decision:${eventId}:${decisionId}`);
-      runMutation(mutations.deleteDecision(project, eventId, decisionId));
+      runCanvasMutation(mutations.deleteDecision(project, eventId, decisionId));
     },
-    [closeDeletedNodeInspector, eventDraft?.eventId, mutateEventDraft, project, runMutation],
+    [closeDeletedNodeInspector, eventDraft?.eventId, mutateEventDraft, project, runCanvasMutation],
   );
 
   const deleteDialogue = useCallback(
@@ -11454,9 +11954,9 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
         return;
       }
       closeDeletedNodeInspector(`dialogue:${eventId}:${dialogueId}`);
-      runMutation(mutations.deleteDialogue(project, eventId, dialogueId));
+      runCanvasMutation(mutations.deleteDialogue(project, eventId, dialogueId));
     },
-    [closeDeletedNodeInspector, eventDraft?.eventId, mutateEventDraft, project, runMutation],
+    [closeDeletedNodeInspector, eventDraft?.eventId, mutateEventDraft, project, runCanvasMutation],
   );
 
   const createOutcome = useCallback(
@@ -11470,9 +11970,9 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
         );
         return;
       }
-      runMutation(mutations.createOutcome(project, eventId, decisionId));
+      runCanvasMutation(mutations.createOutcome(project, eventId, decisionId));
     },
-    [eventDraft?.eventId, mutateEventDraft, project, runMutation],
+    [eventDraft?.eventId, mutateEventDraft, project, runCanvasMutation],
   );
 
   const updateOutcome = useCallback(
@@ -11497,7 +11997,7 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
         );
         return;
       }
-      runMutation(
+      runCanvasMutation(
         mutations.updateOutcome(
           project,
           eventId,
@@ -11507,7 +12007,7 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
         ),
       );
     },
-    [eventDraft?.eventId, mutateEventDraft, project, runMutation],
+    [eventDraft?.eventId, mutateEventDraft, project, runCanvasMutation],
   );
 
   const deleteOutcome = useCallback(
@@ -11521,11 +12021,11 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
         );
         return;
       }
-      runMutation(
+      runCanvasMutation(
         mutations.deleteOutcome(project, eventId, decisionId, outcomeId),
       );
     },
-    [eventDraft?.eventId, mutateEventDraft, project, runMutation],
+    [eventDraft?.eventId, mutateEventDraft, project, runCanvasMutation],
   );
 
   const updateTransition = useCallback(
@@ -11543,13 +12043,13 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
         );
         return;
       }
-      runMutation(mutations.updateTransition(project, transitionId, updates));
+      runCanvasMutation(mutations.updateTransition(project, transitionId, updates));
     },
     [
       eventDraft?.draftEvent.transitions,
       mutateEventDraft,
       project,
-      runMutation,
+      runCanvasMutation,
     ],
   );
 
@@ -11568,13 +12068,13 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
         );
         return;
       }
-      runMutation(mutations.deleteTransition(project, transitionId));
+      runCanvasMutation(mutations.deleteTransition(project, transitionId));
     },
     [
       eventDraft?.draftEvent.transitions,
       mutateEventDraft,
       project,
-      runMutation,
+      runCanvasMutation,
     ],
   );
 
@@ -11583,11 +12083,11 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
       if (!project) {
         return;
       }
-      runMutation(
+      runCanvasMutation(
         mutations.removeMissingEventReference(project, ownerId, missingEventId),
       );
     },
-    [project, runMutation],
+    [project, runCanvasMutation],
   );
 
   const removeBoundaryBinding = useCallback(
@@ -11595,7 +12095,57 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
       if (!project) {
         return;
       }
-      runMutation(mutations.removeBoundaryBinding(project, bindingId));
+      runCanvasMutation(mutations.removeBoundaryBinding(project, bindingId));
+    },
+    [project, runCanvasMutation],
+  );
+
+  const normalizeTransitionOrder = useCallback(
+    (sourceId: string) => {
+      if (!project) return;
+      runCanvasMutation(mutations.normalizeTransitionOrder(project, sourceId));
+    },
+    [project, runCanvasMutation],
+  );
+
+  const insertRouteGate = useCallback(
+    (sourceId: string) => {
+      if (!project) return;
+      const scope = activeScope ?? activeCanvasScope(project);
+      const scopeKey = scope ? canvasScopeKey(scope) : undefined;
+      const currentSources = scopeKey
+        ? project.canvas?.scopes?.[scopeKey]?.routeGateSources
+        : project.canvas?.routeGateSources;
+      if (currentSources?.includes(sourceId)) {
+        setMessage("This connection already has a Route Gate.");
+        return;
+      }
+      updateProject({
+        ...project,
+        canvas: {
+          ...project.canvas,
+          routeGateSources: scopeKey
+            ? project.canvas?.routeGateSources
+            : withValue(project.canvas?.routeGateSources, sourceId),
+          scopes: scopeKey
+            ? {
+                ...(project.canvas?.scopes ?? {}),
+                [scopeKey]: {
+                  ...(project.canvas?.scopes?.[scopeKey] ?? {}),
+                  routeGateSources: withValue(currentSources, sourceId),
+                },
+              }
+            : project.canvas?.scopes,
+        },
+      });
+    },
+    [activeScope, project, updateProject],
+  );
+
+  const deleteScriptBlock = useCallback(
+    (blockKey: string) => {
+      if (!project) return;
+      runMutation(mutations.deleteScriptBlock(project, blockKey));
     },
     [project, runMutation],
   );
@@ -11674,6 +12224,7 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
     [commitStructuralAction, project],
   );
 
+
   const deleteDataObject = useCallback(
     (id: string) => {
       if (!project) {
@@ -11716,11 +12267,15 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
         setMessage("Connection source or target could not be resolved.");
         return;
       }
+      const decisionOutcomeSourceId =
+        sourceNode.data.kind === "decision" && typeof connection.sourceHandle === "string"
+          ? connection.sourceHandle
+          : undefined;
       const routeSourceId =
         sourceNode.data.kind === "routeGate" &&
         typeof sourceNode.data.details?.routeSourceId === "string"
           ? sourceNode.data.details.routeSourceId
-          : sourceNode.id;
+          : decisionOutcomeSourceId ?? sourceNode.id;
 
       const boundaryNode =
         sourceNode.data.kind === "boundary"
@@ -11779,8 +12334,8 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
       }
 
       if (activeScope?.kind === "event" || activeScope?.kind === "dialogue") {
-        if (sourceNode.data.kind === "decision") {
-          setMessage("Connect a Decision through one of its Outcome nodes.");
+        if (sourceNode.data.kind === "decision" && !decisionOutcomeSourceId) {
+          setMessage("Connect from an outcome port (A, B, C…) on the Decision.");
           return;
         }
         const ownerEventId =
@@ -11899,15 +12454,10 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
         return;
       }
 
-      const transitionId = transitionFrom(
-        sourceNode.id,
-        targetEventId,
-        sourceEvent.transitions,
-      );
+      const transitionId = transitionFrom(routeSourceId, targetEventId, sourceEvent.transitions);
       const transition: Transition = {
         id: transitionId,
-        from:
-          sourceNode.data.kind === "outcome" ? sourceNode.id : sourceEventId,
+        from: decisionOutcomeSourceId ?? (sourceNode.data.kind === "outcome" ? sourceNode.id : sourceEventId),
         to: targetEventId,
         source: "graph",
       };
@@ -11967,12 +12517,12 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
         nextNodes,
         activeScope,
       );
-      void commitStructuralAction("Moved node", canvasProject, {
+      commitCanvasAction("Moved node", canvasProject, {
         type: "node",
         id: node.id,
       });
     },
-    [activeScope, commitStructuralAction, nodes, project],
+    [activeScope, commitCanvasAction, nodes, project],
   );
 
   const updateEdgeLabel = useCallback(
@@ -12059,12 +12609,12 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
         gridSize: settings.canvasBackground.gridSize,
       },
     );
-    void commitStructuralAction(
+    commitCanvasAction(
       `Applied ${settings.canvasLayout} layout`,
       layoutProject,
     );
   }, [
-    commitStructuralAction,
+    commitCanvasAction,
     project,
     settings.canvasBackground.gridSize,
     settings.canvasBackground.snapToGrid,
@@ -12086,13 +12636,13 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
           gridSize: settings.canvasBackground.gridSize,
         },
       );
-      void commitStructuralAction(
+      commitCanvasAction(
         `Applied ${normalizedMode} layout`,
         layoutProject,
       );
     },
     [
-      commitStructuralAction,
+      commitCanvasAction,
       project,
       settings.canvasBackground.gridSize,
       settings.canvasBackground.snapToGrid,
@@ -12109,22 +12659,16 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
       const selectedNode = nodes.find((node) => node.id === id);
       if (
         (selectedNode?.data.kind === "speechBeat" || selectedNode?.data.kind === "directionBeat") &&
-        typeof selectedNode.data.details?.eventId === "string" &&
-        typeof selectedNode.data.details?.dialogueId === "string"
+        typeof selectedNode.data.details?.eventId === "string"
       ) {
         const beat = selectedNode.data.details.beat as { id?: string } | undefined;
+        const dialogueId = selectedNode.data.details?.dialogueId;
         if (beat?.id) {
-          closeDeletedNodeInspector(
-            `beat:${selectedNode.data.details.eventId}:${selectedNode.data.details.dialogueId}:${beat.id}`,
-          );
-          runMutation(
-            mutations.deleteDialogueBeat(
-              project,
-              selectedNode.data.details.eventId,
-              selectedNode.data.details.dialogueId,
-              beat.id,
-            ),
-          );
+          const eventId = selectedNode.data.details.eventId;
+          closeDeletedNodeInspector(typeof dialogueId === "string" ? `beat:${eventId}:${dialogueId}:${beat.id}` : `beat:${eventId}:${beat.id}`);
+          runCanvasMutation(typeof dialogueId === "string"
+            ? mutations.deleteDialogueBeat(project, eventId, dialogueId, beat.id)
+            : mutations.deleteEventDialogueBeat(project, eventId, beat.id));
           setSelection(undefined);
         }
         return;
@@ -12137,7 +12681,7 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
           { id?: string } | undefined;
         if (dialogue?.id) {
           closeDeletedNodeInspector(`dialogue:${selectedNode.data.details.eventId}:${dialogue.id}`);
-          runMutation(
+          runCanvasMutation(
             mutations.deleteDialogue(
               project,
               selectedNode.data.details.eventId,
@@ -12156,7 +12700,7 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
           { id?: string } | undefined;
         if (decision?.id) {
           closeDeletedNodeInspector(`decision:${selectedNode.data.details.eventId}:${decision.id}`);
-          runMutation(
+          runCanvasMutation(
             mutations.deleteDecision(
               project,
               selectedNode.data.details.eventId,
@@ -12171,7 +12715,7 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
         const ownerId = selectedNode.data.details?.ownerId;
         const missingEventId = selectedNode.data.details?.missingEventId;
         if (typeof ownerId === "string" && typeof missingEventId === "string") {
-          runMutation(
+          runCanvasMutation(
             mutations.removeMissingEventReference(
               project,
               ownerId,
@@ -12316,7 +12860,7 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
         setSelection(undefined);
       }
     },
-    [closeDeletedNodeInspector, nodes, project, runMutation, updateProject],
+    [closeDeletedNodeInspector, nodes, project, runCanvasMutation, updateProject],
   );
 
   const deleteNodeSelections = useCallback(
@@ -12333,13 +12877,14 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
         const dialogueId = node.data.details?.dialogueId;
         if (
           (node.data.kind === "speechBeat" || node.data.kind === "directionBeat") &&
-          typeof eventId === "string" &&
-          typeof dialogueId === "string"
+          typeof eventId === "string"
         ) {
           const beat = node.data.details?.beat as { id?: string } | undefined;
           if (beat?.id) {
-            closeDeletedNodeInspector(`beat:${eventId}:${dialogueId}:${beat.id}`);
-            nextProject = mutations.deleteDialogueBeat(nextProject, eventId, dialogueId, beat.id).project;
+            closeDeletedNodeInspector(typeof dialogueId === "string" ? `beat:${eventId}:${dialogueId}:${beat.id}` : `beat:${eventId}:${beat.id}`);
+            nextProject = (typeof dialogueId === "string"
+              ? mutations.deleteDialogueBeat(nextProject, eventId, dialogueId, beat.id)
+              : mutations.deleteEventDialogueBeat(nextProject, eventId, beat.id)).project;
             deletedCount += 1;
           }
         } else if (node.data.kind === "dialogue" && typeof eventId === "string") {
@@ -12417,12 +12962,12 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
         return;
       }
       setSelection(undefined);
-      void commitStructuralAction(
+      commitCanvasAction(
         `Deleted ${deletedCount} selected node${deletedCount === 1 ? "" : "s"}`,
         nextProject,
       );
     },
-    [closeDeletedNodeInspector, commitStructuralAction, nodes, project],
+    [closeDeletedNodeInspector, commitCanvasAction, nodes, project],
   );
 
   useEffect(() => {
@@ -12520,6 +13065,16 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
     [],
   );
 
+  const focusScriptBlock = useCallback(
+    (target: { scriptId: string; blockId: string }) => {
+      setPanelVisibility((current) => ({ ...current, assets: true }));
+      setPanelCollapsedState("assets", false);
+      setFocusedScriptBlock(undefined);
+      window.requestAnimationFrame(() => setFocusedScriptBlock(target));
+    },
+    [setPanelCollapsedState],
+  );
+
   const togglePanelVisibility = useCallback((panel: WorkspacePanelId) => {
     setPanelVisibility((current) => {
       const visible = !current[panel];
@@ -12576,10 +13131,12 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
           void openProject();
           break;
         case "pb:file:save":
-          void saveActiveEventDraft();
+          if (canvasDirty) void saveCanvas();
+          else void saveActiveEventDraft();
           break;
         case "pb:file:save-as":
-          void saveActiveEventDraft();
+          if (canvasDirty) void saveCanvas();
+          else void saveActiveEventDraft();
           break;
         case "pb:file:export-runtime":
           void exportRuntime("runtime");
@@ -12598,6 +13155,9 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
           break;
         case "pb:view:home":
           setView("home");
+          break;
+        case "pb:view:reload":
+          window.location.reload();
           break;
         case "pb:view:workspace":
           setView("workspace");
@@ -12695,6 +13255,8 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
     redoProject,
     resetLayout,
     saveActiveEventDraft,
+    saveCanvas,
+    canvasDirty,
     settings.worldnotionBridge.connected,
     toggleCanon,
     toggleFiles,
@@ -12938,6 +13500,7 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
           onRedo={redoProject}
           canUndo={undoStack.length > 0}
           canRedo={redoStack.length > 0}
+          recentActions={actionHistory}
           suiteChrome={suiteChrome}
           panelVisibility={panelVisibility}
           onTogglePanelVisibility={togglePanelVisibility}
@@ -12952,8 +13515,8 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
               panelVisibility.logic ? `${panelCollapsed.logic ? COLLAPSED_RAIL_WIDTH : DEFAULT_PANEL_WIDTH}px` : "",
               panelVisibility.outline ? `${panelCollapsed.outline ? COLLAPSED_RAIL_WIDTH : storiesWidth}px` : "",
               "minmax(0, 1fr)",
-              panelVisibility.export ? `${panelCollapsed.export ? COLLAPSED_RAIL_WIDTH : DEFAULT_PANEL_WIDTH}px` : "",
               panelVisibility.player ? `${panelCollapsed.player ? COLLAPSED_RAIL_WIDTH : DEFAULT_PANEL_WIDTH}px` : "",
+              panelVisibility.export ? `${panelCollapsed.export ? COLLAPSED_RAIL_WIDTH : DEFAULT_PANEL_WIDTH}px` : "",
               panelVisibility.connect ? `${panelCollapsed.connect ? COLLAPSED_RAIL_WIDTH : DEFAULT_PANEL_WIDTH}px` : "",
             ].filter(Boolean).join(" "),
           }}
@@ -12969,6 +13532,7 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
             onAddScriptBlock={createScriptBlock}
             onUpdateScriptBlock={updateScriptBlock}
             onInsertScriptBlock={insertScriptBlock}
+            focusScriptBlock={focusedScriptBlock}
             selected={selection}
             onSelect={selectWithEventDraftGuard}
             onCreateEntity={createExplorerEntity}
@@ -13040,6 +13604,7 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
             expandedInspectorTabId={expandedInspectorTabId}
             inspectorMaximized={inspectorMaximized}
             canvasBackground={settings.canvasBackground}
+            onCanvasBackgroundChange={changeCanvasBackground}
             onNodesChange={handleNodesChange}
             onEdgesChange={handleEdgesChange}
             onConnect={handleConnect}
@@ -13058,11 +13623,14 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
             onCreateDecision={createDecision}
             onCreateDialogue={createDialogue}
             onCreateDialogueBeat={createDialogueBeat}
+            onCreateEventDialogueBeat={createEventDialogueBeat}
             onUpdateDecision={updateDecision}
             onUpdateDialogue={updateDialogue}
             onUpdateDialogueBeat={updateDialogueBeat}
-            onUpdateScriptBlock={updateScriptBlock}
+            onUpdateEventDialogueBeat={updateEventDialogueBeat}
+            onUpdateScriptBlock={updateCanvasScriptBlock}
             onDeleteDialogueBeat={deleteDialogueBeat}
+            onDeleteEventDialogueBeat={deleteEventDialogueBeat}
             onDeleteDecision={deleteDecision}
             onDeleteDialogue={deleteDialogue}
             onCreateOutcome={createOutcome}
@@ -13071,6 +13639,10 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
             onUpdateTransition={updateTransition}
             onRemoveMissingEventReference={removeMissingEventReference}
             onRemoveBoundaryBinding={removeBoundaryBinding}
+            onNormalizeTransitionOrder={normalizeTransitionOrder}
+            onInsertRouteGate={insertRouteGate}
+            onDeleteScriptBlock={deleteScriptBlock}
+            onFocusScriptBlock={focusScriptBlock}
             onDeleteTransition={deleteTransition}
             onCreateCanonSuggestion={createCanonSuggestion}
             onUpdateCanonSuggestion={updateCanonSuggestion}
@@ -13089,6 +13661,7 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
             onUpdateLocalExplorerType={updateLocalExplorerType}
             onUpdateLocalExplorerProperty={updateLocalExplorerProperty}
             onUpdateLogicPropertyOverride={updateLogicPropertyOverride}
+            onUpdateCharacterCategories={updateCharacterCategories}
             onUpdateEdgeLabel={updateEdgeLabel}
             onDeleteSelection={deleteSelection}
             onDeleteNodeSelections={deleteNodeSelections}

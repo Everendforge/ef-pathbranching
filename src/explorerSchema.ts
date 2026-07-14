@@ -20,6 +20,7 @@ export type CanonExplorerProperty = {
   valueType: string;
   description?: string;
   appliesToTypes?: string[];
+  children: CanonExplorerProperty[];
 };
 
 function record(value: unknown): UnknownRecord | undefined {
@@ -68,20 +69,26 @@ export function canonExplorerTypes(
 export function canonExplorerProperties(
   config: UnknownRecord | undefined,
 ): CanonExplorerProperty[] {
-  return definitions(config, "customFields").flatMap((value) => {
+  const parse = (value: unknown): CanonExplorerProperty | undefined => {
     const definition = record(value);
     const id = text(definition?.id);
-    if (!id) return [];
-    return [
-      {
-        id,
-        label: text(definition?.label) ?? id,
-        valueType: text(definition?.type) ?? "text",
-        description: text(definition?.description),
-        appliesToTypes: textArray(definition?.appliesToTypes),
-      },
-    ];
-  });
+    if (!id) return undefined;
+    return {
+      id,
+      label: text(definition?.label) ?? id,
+      valueType: text(definition?.type) ?? "text",
+      description: text(definition?.description),
+      appliesToTypes: textArray(definition?.appliesToTypes),
+      children: Array.isArray(definition?.children)
+        ? definition.children.map(parse).filter((child): child is CanonExplorerProperty => Boolean(child))
+        : [],
+    };
+  };
+  return definitions(config, "customFields").map(parse).filter((property): property is CanonExplorerProperty => Boolean(property));
+}
+
+export function flattenCanonExplorerProperties(properties: CanonExplorerProperty[]): CanonExplorerProperty[] {
+  return properties.flatMap((property) => [property, ...flattenCanonExplorerProperties(property.children)]);
 }
 
 export function createLocalExplorerType(

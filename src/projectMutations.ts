@@ -462,7 +462,6 @@ export function updateEvent(
 export function createDecision(
   project: BranchingProject,
   eventId: string,
-  dialogueId?: string,
 ): MutationResult {
   const event = findEvent(project, eventId);
   if (!event) {
@@ -477,7 +476,7 @@ export function createDecision(
     name: "New Decision",
     description: "",
     type: "dialogue",
-    dialogueId,
+    optionStyle: "visibleText",
     outcomes: [],
   };
 
@@ -757,6 +756,81 @@ export function createDialogueBeat(
   };
 }
 
+/** Create a narrative beat directly on an event, without requiring a dialogue container. */
+export function createEventDialogueBeat(
+  project: BranchingProject,
+  eventId: string,
+  kind: DialogueBeat["kind"] = "speech",
+): MutationResult {
+  const event = findEvent(project, eventId);
+  if (!event) return { project, message: "Event not found." };
+  let scriptDocuments = project.scriptDocuments ?? [];
+  let scriptId = `script:event:${eventId}:dialogue`;
+  if (!scriptDocuments.some((document) => document.id === scriptId)) {
+    scriptId = uniqueId(scriptId, scriptDocuments.map((document) => document.id));
+    scriptDocuments = [...scriptDocuments, {
+      id: scriptId,
+      name: `${event.name} dialogue`,
+      format: "forge-script",
+      blocks: [],
+    }];
+  }
+  const script = scriptDocuments.find((document) => document.id === scriptId)!;
+  const beatId = uniqueId(`beat:${kind}`, (event.dialogueBeats ?? []).map((beat) => beat.id));
+  const blockId = uniqueId(`block:${kind}`, script.blocks.map((block) => block.id));
+  const beat: DialogueBeat = { id: beatId, kind, blockRef: { scriptId, blockId } };
+  return {
+    project: {
+      ...project,
+      scriptDocuments: scriptDocuments.map((document) => document.id === scriptId
+        ? { ...document, blocks: [...document.blocks, { id: blockId, kind: kind === "speech" ? "speech" as const : "direction" as const, content: "" }] }
+        : document),
+      events: project.events.map((item) => item.id === eventId
+        ? { ...item, dialogueBeats: [...(item.dialogueBeats ?? []), beat] }
+        : item),
+    },
+    selection: { type: "node", id: `beat:${eventId}:${beatId}` },
+  };
+}
+
+export function updateEventDialogueBeat(
+  project: BranchingProject,
+  eventId: string,
+  beatId: string,
+  updates: Partial<DialogueBeat>,
+): MutationResult {
+  const event = findEvent(project, eventId);
+  if (!event?.dialogueBeats?.some((beat) => beat.id === beatId)) return { project, message: "Dialogue beat not found." };
+  return updateEvent(project, eventId, {
+    dialogueBeats: event.dialogueBeats.map((beat) => beat.id === beatId ? { ...beat, ...updates } : beat),
+  });
+}
+
+export function deleteEventDialogueBeat(
+  project: BranchingProject,
+  eventId: string,
+  beatId: string,
+): MutationResult {
+  const event = findEvent(project, eventId);
+  const beat = event?.dialogueBeats?.find((item) => item.id === beatId);
+  if (!event || !beat) return { project, message: "Dialogue beat not found." };
+  const nodeId = `beat:${eventId}:${beatId}`;
+  return {
+    project: {
+      ...project,
+      events: project.events.map((item) => ({
+        ...item,
+        dialogueBeats: item.id === eventId ? (item.dialogueBeats ?? []).filter((candidate) => candidate.id !== beatId) : item.dialogueBeats,
+        transitions: item.transitions?.filter((transition) => transition.from !== nodeId && transition.to !== nodeId),
+        boundaryBindings: (item.boundaryBindings ?? []).filter((binding) => binding.nodeId !== nodeId),
+      })),
+      scriptDocuments: (project.scriptDocuments ?? []).map((document) => document.id === beat.blockRef.scriptId
+        ? { ...document, blocks: document.blocks.filter((block) => block.id !== beat.blockRef.blockId) }
+        : document),
+    },
+  };
+}
+
 export function updateDialogueBeat(
   project: BranchingProject,
   eventId: string,
@@ -909,16 +983,11 @@ export function deleteDialogue(
   const removedNodeIds = new Set([
     dialogueNodeId,
     ...(dialogue?.beats ?? []).map((beat) => `beat:${eventId}:${dialogueId}:${beat.id}`),
-    ...(event.decisions ?? []).filter((decision) => decision.dialogueId === dialogueId).flatMap((decision) => [
-      `decision:${eventId}:${decision.id}`,
-      ...decision.outcomes.map((outcome) => `outcome:${eventId}:${decision.id}:${outcome.id}`),
-    ]),
   ]);
   return updateEvent(project, eventId, {
     dialogues: (event.dialogues ?? []).filter(
       (dialogue) => dialogue.id !== dialogueId,
     ),
-    decisions: (event.decisions ?? []).filter((decision) => decision.dialogueId !== dialogueId),
     transitions: (event.transitions ?? []).filter(
       (transition) => !removedNodeIds.has(transition.from) && !removedNodeIds.has(transition.to),
     ),
@@ -1053,6 +1122,37 @@ export function updateTransition(
   };
 }
 
+export function normalizeTransitionOrder(
+  project: BranchingProject,
+  sourceId: string,
+): MutationResult {
+  const owner = project.events.find((event) =>
+    event.transitions?.some((transition) => transition.from === sourceId),
+  );
+  if (!owner) return { project, message: "Transition source not found." };
+
+  const sourceTransitions = (owner.transitions ?? [])
+    .filter((transition) => transition.from === sourceId)
+    .sort((left, right) => {
+      const leftPriority = left.mode === "fallback" ? 2 : left.conditions ? 0 : 1;
+      const rightPriority = right.mode === "fallback" ? 2 : right.conditions ? 0 : 1;
+      return leftPriority - rightPriority || (left.order ?? 0) - (right.order ?? 0);
+    })
+    .map((transition, order) => ({ ...transition, order }));
+  const normalized = new Map(sourceTransitions.map((transition) => [transition.id, transition]));
+
+  return {
+    project: {
+      ...project,
+      events: project.events.map((event) => ({
+        ...event,
+        transitions: event.transitions?.map((transition) => normalized.get(transition.id) ?? transition),
+      })),
+    },
+    message: `Normalized transition order for "${sourceId}".`,
+  };
+}
+
 export function deleteTransition(
   project: BranchingProject,
   transitionId: string,
@@ -1070,6 +1170,28 @@ export function deleteTransition(
         ),
       })),
     },
+  };
+}
+
+export function deleteScriptBlock(
+  project: BranchingProject,
+  blockKey: string,
+): MutationResult {
+  const owner = (project.scriptDocuments ?? []).find((script) =>
+    script.blocks.some((block) => `${script.id}:${block.id}` === blockKey),
+  );
+  if (!owner) return { project, message: "Script block not found." };
+
+  return {
+    project: {
+      ...project,
+      scriptDocuments: (project.scriptDocuments ?? []).map((script) =>
+        script.id === owner.id
+          ? { ...script, blocks: script.blocks.filter((block) => `${script.id}:${block.id}` !== blockKey) }
+          : script,
+      ),
+    },
+    message: `Deleted orphan script block "${blockKey}".`,
   };
 }
 

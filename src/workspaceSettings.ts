@@ -55,6 +55,7 @@ export type CanvasBackgroundSettings = {
   snapToGrid: boolean;
   gridSize: number;
   opacity: number;
+  connectionPadding: number;
 };
 
 export type CanvasLayoutMode = "branching" | "timeline" | "branches";
@@ -97,6 +98,7 @@ export const DEFAULT_CANVAS_BACKGROUND_SETTINGS: CanvasBackgroundSettings = {
   snapToGrid: false,
   gridSize: 24,
   opacity: 0.5,
+  connectionPadding: 18,
 };
 
 export const DEFAULT_NODE_COLOR_SETTINGS: NodeColorSettings = {
@@ -169,6 +171,10 @@ export function normalizeCanvasBackgroundSettings(
     typeof settings.opacity === "number" && Number.isFinite(settings.opacity)
       ? Math.min(1, Math.max(0.05, settings.opacity))
       : DEFAULT_CANVAS_BACKGROUND_SETTINGS.opacity;
+  const connectionPadding =
+    typeof settings.connectionPadding === "number" && Number.isFinite(settings.connectionPadding)
+      ? Math.min(64, Math.max(0, Math.round(settings.connectionPadding)))
+      : DEFAULT_CANVAS_BACKGROUND_SETTINGS.connectionPadding;
   return {
     showDots:
       typeof settings.showDots === "boolean"
@@ -184,6 +190,7 @@ export function normalizeCanvasBackgroundSettings(
         : DEFAULT_CANVAS_BACKGROUND_SETTINGS.snapToGrid,
     gridSize,
     opacity,
+    connectionPadding,
   };
 }
 

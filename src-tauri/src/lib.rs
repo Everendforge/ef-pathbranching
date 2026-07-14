@@ -143,10 +143,12 @@ fn build_app_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     )?;
 
     let view_menu = Submenu::with_items(
-        app,
-        "View",
-        true,
-        &[
+      app,
+      "View",
+      true,
+      &[
+            &menu_item(app, "pb:view:reload", "Reload View", Some("CmdOrCtrl+R"))?,
+            &PredefinedMenuItem::separator(app)?,
             &menu_item(app, "pb:view:home", "Home", Some("CmdOrCtrl+1"))?,
             &menu_item(app, "pb:view:workspace", "Workspace", Some("CmdOrCtrl+2"))?,
             &PredefinedMenuItem::separator(app)?,
