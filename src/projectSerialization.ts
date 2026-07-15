@@ -228,7 +228,12 @@ function migrateDialogue(
   // An explicitly empty beats array is a valid authored state. Only migrate
   // dialogues from the legacy shape where the field was absent altogether;
   // otherwise deleting the last beat would recreate it during normalization.
-  if (dialogue.beats) return dialogue;
+  if (dialogue.beats) {
+    return {
+      ...dialogue,
+      members: dialogue.members ?? dialogue.beats.map((beat) => ({ kind: "beat" as const, id: beat.id })),
+    };
+  }
   const scriptId = `script:dialogue:${eventId}:${dialogue.id}`;
   const blockId = `block:${dialogue.id}:speech`;
   if (!documents.has(scriptId)) {
@@ -256,6 +261,7 @@ function migrateDialogue(
         blockRef: { scriptId, blockId },
       },
     ],
+    members: [{ kind: "beat", id: `beat:${dialogue.id}:1` }],
   };
 }
 
@@ -298,21 +304,59 @@ export function normalizeProject(project: BranchingProject): BranchingProject {
     format: "forge-script" as const,
     blocks: document.blocks ?? [],
   }]));
-  const events = (project.events ?? []).map((event) => ({
-    ...event,
-    childEventIds: event.childEventIds ?? [],
-    decisions: (event.decisions ?? []).map((decision) => ({
-      ...decision,
-      outcomes: (decision.outcomes ?? []).map((outcome) => ({
-        ...outcome,
-        availability: outcome.availability ?? outcome.conditions,
-        unavailableBehavior: outcome.unavailableBehavior ?? "locked",
+  const events = (project.events ?? []).map((event) => {
+    const dialogues = (event.dialogues ?? []).map((dialogue) => {
+      const migrated = migrateDialogue(event.id, dialogue, scriptDocuments);
+      const decisionMembers = (event.decisions ?? [])
+        .filter((decision) => decision.dialogueId === migrated.id)
+        .map((decision) => ({ kind: "decision" as const, id: decision.id }));
+      return {
+        ...migrated,
+        members: migrated.members ?? [
+          ...(migrated.beats ?? []).map((beat) => ({ kind: "beat" as const, id: beat.id })),
+          ...decisionMembers,
+        ],
+      };
+    });
+    const transitions = migrateBoundaryBindingsToTransitions(event);
+    const dialogueStarts = (event.dialogueStarts ?? []).flatMap((start) => {
+      // Automatic starts are already represented by an Event's entry route.
+      if (start.mode === "automatic") return [];
+      const targetNodeId = start.dialogueId
+        ? `dialogue:${event.id}:${start.dialogueId}`
+        : undefined;
+      const nodeId = `dialogue-start:${event.id}:${start.id}`;
+      if (targetNodeId && !transitions.some((transition) => transition.from === nodeId && transition.to === targetNodeId)) {
+        transitions.push({
+          id: `transition:dialogue-trigger:${event.id}:${start.id}`,
+          from: nodeId,
+          to: targetNodeId,
+          order: transitions.filter((transition) => transition.from === nodeId).length,
+          mode: "conditional",
+          source: "graph",
+        });
+      }
+      const { dialogueId: _dialogueId, mode: _mode, ...trigger } = start;
+      return [trigger];
+    });
+    return {
+      ...event,
+      childEventIds: event.childEventIds ?? [],
+      decisions: (event.decisions ?? []).map((decision) => ({
+        ...decision,
+        outcomes: (decision.outcomes ?? []).map((outcome) => ({
+          ...outcome,
+          availability: outcome.availability ?? outcome.conditions,
+          unavailableBehavior: outcome.unavailableBehavior ?? "locked",
+        })),
       })),
-    })),
-    dialogues: (event.dialogues ?? []).map((dialogue) => migrateDialogue(event.id, dialogue, scriptDocuments)),
-    boundaryBindings: event.boundaryBindings ?? [],
-    transitions: migrateBoundaryBindingsToTransitions(event),
-  }));
+      dialogues,
+      presentEntityRefs: event.presentEntityRefs ?? (event.canonRefs ? [...event.canonRefs] : undefined),
+      dialogueStarts,
+      boundaryBindings: event.boundaryBindings ?? [],
+      transitions,
+    };
+  });
 
   return normalizeBranchMembership({
     ...project,

@@ -139,6 +139,9 @@ if (inputPort.draggable !== false || outputPort.draggable !== false) {
 if (!workspace) {
   throw new Error("Expected a visible, resizable working area in the nested canvas.");
 }
+if (workspace.selectable !== false) {
+  throw new Error("Expected the working-area guide to stay out of marquee selection.");
+}
 if (inputPort.position.x + (inputPort.width ?? 0) !== workspace.position.x || outputPort.position.x !== workspace.position.x + (workspace.width ?? 0)) {
   throw new Error("Expected Entry and End ports to meet the working-area edges without a gap.");
 }

@@ -20,7 +20,7 @@ import { UniverseIconFrame } from "./UniverseIconFrame.js";
 import type { WorkspacePanelId, WorkspacePanelState } from "../workspaceSettings.js";
 
 const panelLabels: Record<WorkspacePanelId, string> = {
-  assets: "Assets", logic: "Logic", player: "Player", outline: "Stories", export: "Export", connect: "Connect",
+  assets: "Assets", logic: "Logic", player: "Player", outline: "Stories", export: "Export & Import", connect: "Connect",
 };
 
 const EVEREND_FORGE_GITHUB_URL = "https://github.com/Everendforge/everend-forge";
@@ -211,9 +211,9 @@ export function Topbar({
               </button>)}
             </div> : null}
           </div> : null}
-          <button type="button" title="Export current story" className={exportOpen ? "active" : ""} onClick={onExportRuntime}>
+          <button type="button" title="Export & Import" className={exportOpen ? "active" : ""} onClick={onExportRuntime}>
             <Download size={14} />
-            <span>Export</span>
+            <span>Export & Import</span>
           </button>
         </div>
 

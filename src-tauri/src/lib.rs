@@ -659,7 +659,7 @@ async fn export_runtime_dialog(
     let file_path = app
         .dialog()
         .file()
-        .add_filter("Runtime Package", &["json"])
+        .add_filter("Export file", &["json", "ink", "html"])
         .set_file_name(default_name)
         .blocking_save_file();
 

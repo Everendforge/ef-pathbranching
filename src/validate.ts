@@ -1,7 +1,8 @@
-import type { BranchingProject, ConditionInput, Consequence, RuleSet, RuleSetBinding, ScriptBlock, ValidationFinding } from "./domain.js";
+import type { BranchingProject, ConditionInput, Consequence, EventNode, RuleSet, RuleSetBinding, ScriptBlock, ValidationFinding } from "./domain.js";
 import { conditionInputsFromConsequences, walkConditions } from "./logic.js";
 import { ruleSetPhasesByOwner, type RuleBindingOwnerKind } from "./ruleLibrary.js";
-import { canonRefHasRole, mappingsForCanonRef } from "./integrationConfig.js";
+import { mappingsForCanonRef } from "./integrationConfig.js";
+import { propertySupportsDialogueTrigger } from "./explorerSchema.js";
 
 function finding(
   code: ValidationFinding["code"],
@@ -46,6 +47,12 @@ function validateCanonRef(
       }),
     );
   }
+}
+
+function canonRefHasProperty(ref: BranchingProject["canonRefs"][number], propertyId: string) {
+  return [ref.properties, ref.frontmatter].some((record) =>
+    Boolean(record && Object.prototype.hasOwnProperty.call(record, propertyId)),
+  );
 }
 
 function validateConditionRefs(
@@ -458,6 +465,36 @@ export function validateProject(project: BranchingProject): ValidationFinding[] 
       validateCanonRef(findings, canonIds, event.id, canonRef, `Event "${event.id}"`);
     });
 
+    const presentEntityIds = event.presentEntityRefs ?? event.canonRefs ?? [];
+    presentEntityIds.forEach((canonRef) => {
+      validateCanonRef(findings, canonIds, event.id, canonRef, `Event "${event.id}" present entity`);
+    });
+    event.dialogueStarts?.forEach((start) => {
+      const source = start.source;
+      if (!source) {
+        findings.push(finding("invalid_dialogue_trigger", "warning", `Dialogue Trigger "${start.id}" in event "${event.id}" has no present entity source yet.`, { id: start.id }));
+        return;
+      }
+      if (source.kind !== "canonRef") {
+        findings.push(finding("invalid_dialogue_trigger", "error", `Dialogue Trigger "${start.id}" must reference a present canon entity property.`, { id: start.id, ref: source.id }));
+        return;
+      }
+      if (!presentEntityIds.includes(source.id)) {
+        findings.push(finding("invalid_dialogue_trigger", "error", `Dialogue Trigger "${start.id}" references entity "${source.id}", which is not present in event "${event.id}".`, { id: start.id, ref: source.id }));
+      }
+      if (!source.propertyId) {
+        findings.push(finding("invalid_dialogue_trigger", "warning", `Dialogue Trigger "${start.id}" has no Dialogue Trigger property selected.`, { id: start.id }));
+        return;
+      }
+      if (!propertySupportsDialogueTrigger(project, "canon", source.propertyId)) {
+        findings.push(finding("invalid_dialogue_trigger", "error", `Property "${source.propertyId}" is not enabled as an Entity presentable Dialogue Trigger property.`, { id: start.id, ref: source.propertyId }));
+      }
+      const ref = project.canonRefs.find((candidate) => candidate.id === source.id);
+      if (ref && !canonRefHasProperty(ref, source.propertyId)) {
+        findings.push(finding("invalid_dialogue_trigger", "error", `Entity "${source.id}" does not contain property "${source.propertyId}" required by Dialogue Trigger "${start.id}".`, { id: start.id, ref: source.propertyId }));
+      }
+    });
+
     validateConditionRefs(findings, projectRefs, canonIds, event.id, `Event "${event.id}" availability`, event.availability);
     validateConsequenceCanonRefs(findings, projectRefs, canonIds, event.id, `Event "${event.id}" unlock`, event.unlocks);
     validateRuleSets(findings, projectRefs, canonIds, event.id, `Event "${event.id}"`, event.ruleSets);
@@ -502,6 +539,39 @@ export function validateProject(project: BranchingProject): ValidationFinding[] 
       });
     });
 
+    const validateDialogueBeat = (beat: NonNullable<EventNode["dialogueBeats"]>[number]) => {
+      const blockKey = `${beat.blockRef.scriptId}:${beat.blockRef.blockId}`;
+      referencedScriptBlocks.add(blockKey);
+      scriptBlockUseCounts.set(blockKey, (scriptBlockUseCounts.get(blockKey) ?? 0) + 1);
+      const block = scriptBlocks.get(blockKey);
+      if (!scriptDocumentIds.has(beat.blockRef.scriptId) || !block) {
+        findings.push(
+          finding("missing_script_block", "error", `Dialogue beat "${beat.id}" references missing script block "${blockKey}".`, {
+            id: beat.id,
+            ref: blockKey,
+          }),
+        );
+      }
+      const characterRef = block?.characterRef ?? block?.speakerRef;
+      if (characterRef) {
+        validateCanonRef(findings, canonIds, beat.id, characterRef, `Dialogue beat "${beat.id}" character`);
+        const presentEntityIds = event.presentEntityRefs ?? event.canonRefs ?? [];
+        const hasPresenceConfiguration = event.presentEntityRefs !== undefined || event.canonRefs !== undefined;
+        if (hasPresenceConfiguration && !presentEntityIds.includes(characterRef)) {
+          findings.push(
+            finding("invalid_speaker_presence", "error", `Dialogue beat "${beat.id}" uses speaker "${characterRef}", which is not present in event "${event.id}".`, {
+              id: beat.id,
+              ref: characterRef,
+            }),
+          );
+        }
+      }
+      validateConditionRefs(findings, projectRefs, canonIds, beat.id, `Dialogue beat "${beat.id}" display condition`, beat.displayCondition);
+      validateRuleSets(findings, projectRefs, canonIds, beat.id, `Dialogue beat "${beat.id}"`, beat.ruleSets);
+    };
+
+    (event.dialogueBeats ?? []).forEach(validateDialogueBeat);
+
     event.dialogues?.forEach((dialogue) => {
       dialogue.canonRefs?.forEach((canonRef) => {
         validateCanonRef(findings, canonIds, dialogue.id, canonRef, `Dialogue "${dialogue.id}" in event "${event.id}"`);
@@ -515,34 +585,7 @@ export function validateProject(project: BranchingProject): ValidationFinding[] 
         dialogue.availability,
       );
       validateRuleSets(findings, projectRefs, canonIds, dialogue.id, `Dialogue "${dialogue.id}"`, dialogue.ruleSets);
-      (dialogue.beats ?? []).forEach((beat) => {
-        const blockKey = `${beat.blockRef.scriptId}:${beat.blockRef.blockId}`;
-        referencedScriptBlocks.add(blockKey);
-        scriptBlockUseCounts.set(blockKey, (scriptBlockUseCounts.get(blockKey) ?? 0) + 1);
-        const block = scriptBlocks.get(blockKey);
-        if (!scriptDocumentIds.has(beat.blockRef.scriptId) || !block) {
-          findings.push(
-            finding("missing_script_block", "error", `Dialogue beat "${beat.id}" references missing script block "${blockKey}".`, {
-              id: beat.id,
-              ref: blockKey,
-            }),
-          );
-        }
-        const speakerRef = block?.speakerRef;
-        if (speakerRef) {
-          const canonRef = project.canonRefs.find((ref) => ref.id === speakerRef);
-          if (!canonRef || !canonRefHasRole(project, canonRef, "speaker")) {
-            findings.push(
-              finding("invalid_speaker_role", "error", `Dialogue beat "${beat.id}" uses "${speakerRef}" as speaker, but its WorldNotion type is not mapped to the speaker role.`, {
-                id: beat.id,
-                ref: speakerRef,
-              }),
-            );
-          }
-        }
-        validateConditionRefs(findings, projectRefs, canonIds, beat.id, `Dialogue beat "${beat.id}" display condition`, beat.displayCondition);
-        validateRuleSets(findings, projectRefs, canonIds, beat.id, `Dialogue beat "${beat.id}"`, beat.ruleSets);
-      });
+      (dialogue.beats ?? []).forEach(validateDialogueBeat);
     });
 
     const boundaryNodeIds = new Set([
@@ -579,8 +622,10 @@ export function validateProject(project: BranchingProject): ValidationFinding[] 
       ]),
       ...(event.dialogues ?? []).flatMap((dialogue) => [
         `dialogue:${event.id}:${dialogue.id}`,
-        ...(dialogue.beats ?? []).map((beat) => `beat:${event.id}:${dialogue.id}:${beat.id}`),
+        ...(dialogue.beats ?? []).map((beat) => `beat:${event.id}:${beat.id}`),
       ]),
+      ...(event.dialogueBeats ?? []).map((beat) => `beat:${event.id}:${beat.id}`),
+      ...(event.dialogueStarts ?? []).map((start) => `dialogue-start:${event.id}:${start.id}`),
     ]);
     const parentInternalNodeIds = event.parentEventId
       ? new Set([

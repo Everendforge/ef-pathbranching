@@ -155,6 +155,10 @@ export type LogicPropertyOverride = {
   conditionReadable?: boolean;
   actionWritable?: boolean;
   grantable?: boolean;
+  /** Allows values of this property to be presented as event entities. */
+  entityPresentable?: boolean;
+  /** Child capability: values may be used as Dialogue Trigger sources. */
+  dialogueTrigger?: boolean;
   relationTargetTypes?: string[];
 };
 
@@ -179,10 +183,25 @@ export type ScriptBlockKind = "scene" | "direction" | "speech" | "annotation";
 export type ScriptBlock = {
   id: string;
   kind: ScriptBlockKind;
+  /** Stable key into the story localization catalog. */
+  textKey?: string;
   content: string;
   /** Localized alternatives keyed by language code; `content` remains the primary text. */
   translations?: Record<string, string>;
+  /** Canon identity selected while authoring. Engine speaker ids are resolved at export time. */
+  characterRef?: string;
+  /** @deprecated Use `characterRef`; retained for v0.1 project compatibility. */
   speakerRef?: string;
+};
+
+export type LocalizationEntry = {
+  values: Record<string, string>;
+};
+
+export type LocalizationCatalog = {
+  primaryLocale?: string;
+  locales?: string[];
+  entries: Record<string, LocalizationEntry>;
 };
 
 export type ScriptDocument = {
@@ -352,11 +371,14 @@ export type EventNode = {
   branchRef?: string | null;
   script?: ScriptRef;
   canonRefs?: string[];
+  /** Canon entities configured as present in this event. */
+  presentEntityRefs?: string[];
   availability?: ConditionInput;
   decisions?: Decision[];
   /** Narrative beats authored directly on the event canvas. */
   dialogueBeats?: DialogueBeat[];
   dialogues?: DialogueNode[];
+  dialogueStarts?: DialogueStart[];
   boundaryBindings?: BoundaryPortBinding[];
   unlocks?: Consequence[];
   transitions?: Transition[];
@@ -387,12 +409,32 @@ export type DialogueNode = {
   title: string;
   entryBeatId?: string;
   beats?: DialogueBeat[];
+  members?: DialogueMemberRef[];
   speakerRef?: string;
   text: StoryTextBlock;
   availability?: ConditionInput;
   ruleSetBindings?: RuleSetBinding[];
   ruleSets?: RuleSet[];
   canonRefs?: string[];
+};
+
+export type DialogueMemberRef =
+  | { kind: "beat"; id: string }
+  | { kind: "decision"; id: string };
+
+export type DialogueStart = {
+  id: string;
+  /** @deprecated Migrated to a graph transition targeting the Dialogue node. */
+  dialogueId?: string;
+  /** @deprecated Automatic starts are represented by the event's normal entry route. */
+  mode?: "automatic" | "interaction";
+  source?: {
+    kind: "canonRef" | "dataObject";
+    id: string;
+    /** Property on a present canon entity that exposes the interaction. */
+    propertyId?: string;
+  };
+  availability?: ConditionInput;
 };
 
 export type DialogueBeat = {
@@ -706,6 +748,7 @@ export type BranchingProject = {
   localExplorerProperties?: LocalExplorerProperty[];
   assets?: ProjectAsset[];
   scriptDocuments?: ScriptDocument[];
+  localizationCatalog?: LocalizationCatalog;
   integrationConfig?: PathBranchingIntegrationConfig;
   integrationConfigOverride?: PathBranchingIntegrationConfig;
   logicVariableGroups?: LogicVariableGroup[];
@@ -746,6 +789,7 @@ export type RuntimeNode = {
   type: string;
   textKey?: string;
   speakerRef?: string;
+  characterRef?: string;
   choices?: RuntimeChoice[];
   conditions?: ConditionInput;
   consequences?: Consequence[];
@@ -759,6 +803,8 @@ export type RuntimePackage = {
   canonRefs: CanonRef[];
   variables: Record<string, unknown>;
   localization?: Record<string, string>;
+  primaryLocale?: string;
+  localizations?: Record<string, Record<string, string>>;
   nodes: RuntimeNode[];
   pathBranching?: Record<string, unknown>;
   engineTargets?: Record<string, EngineTarget>;
@@ -799,6 +845,8 @@ export type ValidationFinding = {
     | "orphan_script_block"
     | "duplicate_script_binding"
     | "invalid_speaker_role"
+    | "invalid_speaker_presence"
+    | "invalid_dialogue_trigger"
     | "invalid_scope_transition";
   severity: ValidationSeverity;
   message: string;

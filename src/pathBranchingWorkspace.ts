@@ -10,6 +10,7 @@ import {
   parseProject,
   serializeProject,
 } from "./projectSerialization.js";
+import { machineLocale, normalizeLocaleList, normalizeLocaleNames, normalizeLocalizationCatalog } from "./localization.js";
 import {
   DEFAULT_INTEGRATION_CONFIG,
   parseIntegrationConfigYaml,
@@ -38,6 +39,11 @@ export type UniverseProfile = {
   name?: string;
   icon?: UniverseIcon;
   taxonomyVersion?: string;
+  localization?: {
+    primaryLocale: string;
+    locales: string[];
+    localeNames?: Record<string, string>;
+  };
 };
 
 export type PathBranchingStoryManifestEntry = {
@@ -232,6 +238,15 @@ function parseUniverseProfile(
         typeof parsed.taxonomyVersion === "string"
           ? parsed.taxonomyVersion
           : undefined,
+      localization: (() => {
+        const primaryLocale = parsed.localization?.primaryLocale || machineLocale();
+        const locales = normalizeLocaleList(primaryLocale, parsed.localization?.locales ?? []);
+        return {
+          primaryLocale,
+          locales,
+          localeNames: normalizeLocaleNames(parsed.localization?.localeNames, locales),
+        };
+      })(),
     };
   } catch {
     return undefined;
@@ -542,7 +557,7 @@ export function loadPathBranchingWorkspace(
     canonIndex,
     files: [...files],
     activeStory,
-    activeProject: normalizeProject({
+    activeProject: normalizeLocalizationCatalog(normalizeProject({
       ...activeProject,
       storyId: activeStory?.id ?? fallbackStoryId,
       integrationConfig:
@@ -554,7 +569,7 @@ export function loadPathBranchingWorkspace(
           ? parseIntegrationConfigFile(files, storyIntegrationConfigPath(activeStory.id))
           : undefined) ?? activeProject.integrationConfigOverride,
       canonRefs: mergeCanonRefs(canonIndex, activeProject),
-    }),
+    }), universeProfile?.localization?.primaryLocale ?? machineLocale()),
     storyModifiedMs: loadedStory?.modifiedMs,
     createdDefaultStory: !hasPersistedManifest,
     loadWarnings: loadWarnings.length ? loadWarnings : undefined,

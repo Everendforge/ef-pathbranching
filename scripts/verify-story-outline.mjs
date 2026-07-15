@@ -7,6 +7,7 @@ import {
   eventsForBranch,
   normalizeBranchMembership,
 } from "../lib/storyOutlineModel.js";
+import { deleteSequence } from "../lib/projectMutations.js";
 
 const baseProject = {
   specVersion: "0.1",
@@ -120,5 +121,19 @@ assert.equal(outline.length, 2);
 assert.equal(outline.find((item) => item.event.id === "event:a:one")?.branch?.id, "branch:beta");
 assert.equal(outline.find((item) => item.event.id === "event:a:two")?.outgoing[0]?.eventId, "event:b:one");
 assert.equal(outline.find((item) => item.event.id === "event:a:two")?.event.decisions?.[0]?.outcomes.length, 1);
+
+const deleted = deleteSequence(normalized, "sequence:a");
+assert.equal(deleted.project.sequences.length, 1);
+assert.equal(deleted.project.sequences[0].id, "sequence:b");
+assert.equal(deleted.project.entrySequenceId, "sequence:b");
+assert.deepEqual(deleted.project.events.map((event) => event.id), ["event:b:one"]);
+assert.equal(deleted.project.branches.length, 0);
+assert.equal(deleted.project.canvas?.activeSequenceId, "sequence:b");
+assert.match(deleted.message ?? "", /Deleted sequence/);
+
+const onlySequenceProject = { ...deleted.project, sequences: [deleted.project.sequences[0]] };
+const onlySequence = deleteSequence(onlySequenceProject, "sequence:b");
+assert.equal(onlySequence.project, onlySequenceProject);
+assert.equal(onlySequence.message, "Cannot delete the only sequence in a story.");
 
 console.log("Story outline model verified.");

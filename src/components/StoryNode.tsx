@@ -1,6 +1,7 @@
 import { Handle, Position, type NodeProps, type NodeTypes } from "@xyflow/react";
-import { useState, type CSSProperties, type ChangeEvent, type MouseEvent, type PointerEvent } from "react";
+import { useEffect, useState, type CSSProperties, type ChangeEvent, type MouseEvent, type PointerEvent } from "react";
 import type { StoryCanvasNode, StoryCanvasNodeData } from "../canvas/storyCanvasModel.js";
+import { localeDisplayName, type LocaleNames } from "../localization.js";
 
 function badgeText(value: string) {
   return value.length > 22 ? `${value.slice(0, 19)}...` : value;
@@ -24,19 +25,23 @@ function isDecisionOption(value: unknown): value is DecisionOption {
 }
 
 type BeatQuickEditor = {
-  content: string;
-  translations?: Record<string, string>;
-  speakerRef?: string;
-  speakerOptions: Array<{ id: string; label: string }>;
-  onUpdate: (updates: { content?: string; translations?: Record<string, string>; speakerRef?: string }) => void;
+  values: Record<string, string>;
+  primaryLocale: string;
+  languages: string[];
+  localeNames?: LocaleNames;
+  characterRef?: string;
+  speakerOptions: Array<{ id: string; label: string; portraitUrl?: string }>;
+  onTextUpdate: (locale: string, value: string) => void;
+  onCharacterUpdate: (characterRef?: string) => void;
 };
 
 function isBeatQuickEditor(value: unknown): value is BeatQuickEditor {
   return Boolean(
     value && typeof value === "object" &&
-    typeof (value as BeatQuickEditor).content === "string" &&
+    typeof (value as BeatQuickEditor).primaryLocale === "string" &&
+    Array.isArray((value as BeatQuickEditor).languages) &&
     Array.isArray((value as BeatQuickEditor).speakerOptions) &&
-    typeof (value as BeatQuickEditor).onUpdate === "function",
+    typeof (value as BeatQuickEditor).onTextUpdate === "function",
   );
 }
 
@@ -105,7 +110,14 @@ function stopCanvasInteraction(event: MouseEvent<HTMLElement> | PointerEvent<HTM
 
 function StoryNode({ data, selected }: NodeProps<StoryCanvasNode>) {
   const nodeData = data as StoryCanvasNodeData;
-  const [beatLanguage, setBeatLanguage] = useState("default");
+  const [beatLanguage, setBeatLanguage] = useState("");
+  const quickEditor = isBeatQuickEditor(nodeData.details?.quickEditor)
+    ? nodeData.details.quickEditor
+    : undefined;
+  const draftLocale = beatLanguage || quickEditor?.primaryLocale || "und";
+  const draftExternalText = quickEditor?.values[draftLocale] ?? "";
+  const [draftText, setDraftText] = useState(draftExternalText);
+  useEffect(() => setDraftText(draftExternalText), [draftExternalText, draftLocale]);
   const isEvent = nodeData.kind === "event";
   const isFinalEvent = nodeData.kind === "event" && nodeData.badges.includes("terminal");
   const boundaryDirection =
@@ -121,7 +133,7 @@ function StoryNode({ data, selected }: NodeProps<StoryCanvasNode>) {
       : "";
   const canReceive = boundaryDirection
     ? boundaryDirection === "output"
-    : nodeData.kind !== "start" && nodeData.kind !== "sequence" && nodeData.kind !== "missingRef";
+    : nodeData.kind !== "start" && nodeData.kind !== "sequence" && nodeData.kind !== "missingRef" && nodeData.kind !== "dialogueStart";
   const canSource = boundaryDirection
     ? boundaryDirection === "input"
     : nodeData.kind !== "missingRef" && (nodeData.kind === "start" || (nodeData.kind !== "sequence" && !isFinalEvent));
@@ -364,48 +376,48 @@ function StoryNode({ data, selected }: NodeProps<StoryCanvasNode>) {
     );
   }
 
-  const quickEditor = isBeatQuickEditor(nodeData.details?.quickEditor)
-    ? nodeData.details.quickEditor
-    : undefined;
-  if (nodeData.kind === "speechBeat") {
+  if (nodeData.kind === "speechBeat" || nodeData.kind === "directionBeat") {
     const block = nodeData.details?.block as {
       content?: string;
       translations?: Record<string, string>;
       speakerRef?: string;
     } | undefined;
-    const content = quickEditor?.content ?? block?.content ?? "";
-    const translations = quickEditor?.translations ?? block?.translations ?? {};
-    const speakerRef = quickEditor?.speakerRef ?? block?.speakerRef;
+    const primaryLocale = quickEditor?.primaryLocale ?? "und";
+    const selectedLocale = beatLanguage || primaryLocale;
+    const speakerRef = quickEditor?.characterRef ?? block?.speakerRef;
     const speakerOptions = quickEditor?.speakerOptions ?? [];
-    const languageOptions = Array.from(new Set(["default", "es", "en", "pt", "fr", "ja", ...Object.keys(translations)]));
-    const languageLabel = (code: string) => code === "default" ? "Primary" : code.toUpperCase();
-    const text = beatLanguage === "default" ? content : translations[beatLanguage] ?? "";
+    const speakerPortraitUrl = speakerOptions.find((speaker) => speaker.id === speakerRef)?.portraitUrl;
+    const languageOptions = quickEditor?.languages ?? [primaryLocale];
+    const languageLabel = (code: string) => `${localeDisplayName(code, quickEditor?.localeNames)}${code === primaryLocale ? " · Primary" : ""}`;
+    const isSpeech = nodeData.kind === "speechBeat";
     return (
       <div
         className={`story-node speech-beat-node${focusClass}${inspectorFocusClass}${selected ? " selected" : ""}`}
         style={colorStyle}
       >
         {canReceive ? <Handle type="target" position={Position.Left} /> : null}
-        <label className="speech-beat-character">
+        {isSpeech ? <label className="speech-beat-character">
           <span className="speech-beat-label">Character</span>
-          <select className="nodrag nopan speech-beat-speaker" aria-label="Character" value={speakerRef ?? ""} onPointerDown={stopCanvasInteraction} onMouseDown={stopCanvasInteraction} onChange={(event) => {
-            stopCanvasInteraction(event);
-            quickEditor?.onUpdate({ speakerRef: event.target.value || undefined });
-          }}>
-            <option value="">Narrador</option>
-            {speakerOptions.map((speaker) => <option key={speaker.id} value={speaker.id}>{speaker.label}</option>)}
-          </select>
-        </label>
+          <div className="speech-beat-speaker-row">
+            {speakerPortraitUrl ? <img className="speech-beat-portrait" src={speakerPortraitUrl} alt="" /> : null}
+            <select className="nodrag nopan speech-beat-speaker" aria-label="Character" value={speakerRef ?? ""} onPointerDown={stopCanvasInteraction} onMouseDown={stopCanvasInteraction} onChange={(event) => {
+              stopCanvasInteraction(event);
+              quickEditor?.onCharacterUpdate(event.target.value || undefined);
+            }}>
+              <option value="">Narrador</option>
+              {speakerOptions.map((speaker) => <option key={speaker.id} value={speaker.id}>{speaker.label}</option>)}
+            </select>
+          </div>
+        </label> : null}
         <label className="speech-beat-dialogue">
-          <span className="speech-beat-label">Dialogue</span>
-          <select className="nodrag nopan speech-beat-language" aria-label="Dialogue language" value={beatLanguage} onPointerDown={stopCanvasInteraction} onMouseDown={stopCanvasInteraction} onChange={(event) => { stopCanvasInteraction(event); setBeatLanguage(event.target.value); }}>
+          <span className="speech-beat-label">{isSpeech ? "Dialogue" : "Stage direction"}</span>
+          <select className="nodrag nopan speech-beat-language" aria-label="Dialogue language" value={selectedLocale} onPointerDown={stopCanvasInteraction} onMouseDown={stopCanvasInteraction} onChange={(event) => { stopCanvasInteraction(event); setBeatLanguage(event.target.value); }}>
             {languageOptions.map((code) => <option key={code} value={code}>{languageLabel(code)}</option>)}
           </select>
-          <textarea className="nodrag nopan speech-beat-content" aria-label="Dialogue text" placeholder="Write dialogue…" value={text} rows={3} onPointerDown={stopCanvasInteraction} onMouseDown={stopCanvasInteraction} onChange={(event) => {
+          <textarea className="nodrag nopan speech-beat-content" aria-label={isSpeech ? "Dialogue text" : "Stage direction text"} placeholder={isSpeech ? "Write dialogue…" : "Write stage direction…"} value={draftText} rows={3} onPointerDown={stopCanvasInteraction} onMouseDown={stopCanvasInteraction} onKeyDown={(event) => event.stopPropagation()} onChange={(event) => {
             stopCanvasInteraction(event);
-            quickEditor?.onUpdate(beatLanguage === "default"
-              ? { content: event.target.value }
-              : { translations: { ...translations, [beatLanguage]: event.target.value } });
+            setDraftText(event.target.value);
+            quickEditor?.onTextUpdate(selectedLocale, event.target.value);
           }} />
         </label>
         {canSource ? <Handle type="source" position={Position.Right} /> : null}

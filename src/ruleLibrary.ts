@@ -121,7 +121,7 @@ export function normalizeRuleLibrary(project: BranchingProject): BranchingProjec
       })),
       dialogues: migratedEvent.dialogues?.map((dialogue) => ({
         ...migrateOwner(dialogue, `dialogue:${event.id}:${dialogue.id}`, "dialogue", library),
-        beats: dialogue.beats?.map((beat) => migrateOwner(beat, `beat:${event.id}:${dialogue.id}:${beat.id}`, "beat", library)),
+        beats: dialogue.beats?.map((beat) => migrateOwner(beat, `beat:${event.id}:${beat.id}`, "beat", library)),
       })),
     };
   });

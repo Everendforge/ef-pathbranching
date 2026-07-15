@@ -10,7 +10,7 @@ function eventChoices(event: EventNode): RuntimeChoice[] | undefined {
       )[0];
       return {
         id: outcome.id,
-        textKey: `outcome.${outcome.id}.name`,
+        textKey: `outcome.${outcome.id}.text`,
         targetNodeId: transition?.to ?? event.id,
         conditions: outcome.availability ?? outcome.conditions,
         consequences: outcome.consequences,
@@ -66,6 +66,23 @@ export function exportRuntimePackage(project: BranchingProject): RuntimePackage 
       script.blocks.map((block) => [`${script.id}:${block.id}`, block] as const),
     ),
   );
+  const speakerMappings = (Object.values(project.engineTargets ?? {})[0]?.speakerMappings ?? {}) as Record<string, string>;
+  const runtimeBeat = (event: EventNode, beat: NonNullable<EventNode["dialogueBeats"]>[number], dialogueId?: string): RuntimeNode => {
+    const id = `beat:${event.id}:${beat.id}`;
+    const block = scriptBlocks.get(`${beat.blockRef.scriptId}:${beat.blockRef.blockId}`);
+    const characterRef = block?.characterRef ?? block?.speakerRef;
+    return {
+      id,
+      type: beat.kind === "speech" ? "dialogueBeat" : "directionBeat",
+      textKey: block?.textKey ?? `script.${beat.blockRef.scriptId}.${beat.blockRef.blockId}`,
+      characterRef,
+      speakerRef: characterRef ? speakerMappings[characterRef] || characterRef : undefined,
+      conditions: beat.displayCondition,
+      ruleSetBindings: beat.ruleSetBindings,
+      automaticTransitions: orderedTransitions((event.transitions ?? []).filter((transition) => transition.from === id)),
+      dialogueId,
+    };
+  };
   const dialogueNodes: RuntimeNode[] = project.events.flatMap((event) =>
     (event.dialogues ?? []).flatMap((dialogue) => {
       const containerId = `dialogue:${event.id}:${dialogue.id}`;
@@ -74,33 +91,50 @@ export function exportRuntimePackage(project: BranchingProject): RuntimePackage 
         type: "dialogue",
         textKey: `dialogue.${dialogue.id}.title`,
         entryNodeId: dialogue.entryBeatId
-          ? `beat:${event.id}:${dialogue.id}:${dialogue.entryBeatId}`
+          ? `beat:${event.id}:${dialogue.entryBeatId}`
           : undefined,
         automaticTransitions: orderedTransitions(
           (event.transitions ?? []).filter((transition) => transition.from === containerId),
         ),
         ruleSetBindings: dialogue.ruleSetBindings,
       };
-      const beats = (dialogue.beats ?? []).map((beat) => {
-        const id = `beat:${event.id}:${dialogue.id}:${beat.id}`;
-        const block = scriptBlocks.get(`${beat.blockRef.scriptId}:${beat.blockRef.blockId}`);
-        return {
-          id,
-          type: beat.kind === "speech" ? "dialogueBeat" : "directionBeat",
-          textKey: `script.${beat.blockRef.scriptId}.${beat.blockRef.blockId}`,
-          speakerRef: block?.speakerRef,
-          conditions: beat.displayCondition,
-          ruleSetBindings: beat.ruleSetBindings,
-          automaticTransitions: orderedTransitions(
-            (event.transitions ?? []).filter((transition) => transition.from === id),
-          ),
-          dialogueId: dialogue.id,
-        };
-      });
+      const beats = (dialogue.beats ?? []).map((beat) => runtimeBeat(event, beat, dialogue.id));
       return [container, ...beats];
     }),
   );
-  const nodes = [...eventNodes, ...dialogueNodes];
+  const directBeatNodes = project.events.flatMap((event) => (event.dialogueBeats ?? []).map((beat) => runtimeBeat(event, beat)));
+  const dialogueStartNodes: RuntimeNode[] = project.events.flatMap((event) => (event.dialogueStarts ?? []).map((start) => ({
+    id: `dialogue-start:${event.id}:${start.id}`,
+    type: "dialogueTrigger",
+    source: start.source,
+    conditions: start.availability,
+    automaticTransitions: orderedTransitions(
+      (event.transitions ?? []).filter((transition) => transition.from === `dialogue-start:${event.id}:${start.id}`),
+    ),
+  })));
+  const nodes = [...eventNodes, ...dialogueNodes, ...directBeatNodes, ...dialogueStartNodes];
+
+  const legacyPrimary = {
+    ...Object.fromEntries(project.events.flatMap((event) => [
+      [`event.${event.id}.name`, event.name],
+      ...(event.text?.content ? [[`event.${event.id}.text`, event.text.content] as const] : []),
+      ...(event.decisions ?? []).flatMap((decision) => [
+        [`decision.${decision.id}.prompt`, decision.name] as const,
+        ...decision.outcomes.flatMap((outcome) => [
+          [`outcome.${outcome.id}.text`, decision.optionStyle === "followUpText" ? outcome.description || outcome.name : outcome.name] as const,
+          ...(outcome.lockText?.content ? [[`outcome.${outcome.id}.lock`, outcome.lockText.content] as const] : []),
+        ]),
+      ]),
+      ...(event.dialogues ?? []).flatMap((dialogue) => [[`dialogue.${dialogue.id}.title`, dialogue.title] as const]),
+    ])),
+    ...Object.fromEntries((project.scriptDocuments ?? []).flatMap((script) => script.blocks.map((block) => [block.textKey ?? `script.${script.id}.${block.id}`, block.content] as const))),
+  };
+  const primaryLocale = project.localizationCatalog?.primaryLocale ?? "und";
+  const locales = project.localizationCatalog?.locales ?? [primaryLocale];
+  const localizations = Object.fromEntries(locales.map((locale) => [locale, {
+    ...(locale === primaryLocale ? legacyPrimary : {}),
+    ...Object.fromEntries(Object.entries(project.localizationCatalog?.entries ?? {}).flatMap(([key, entry]) => entry.values[locale] !== undefined ? [[key, entry.values[locale]]] : [])),
+  }]));
 
   return {
     specVersion: "0.1",
@@ -108,29 +142,9 @@ export function exportRuntimePackage(project: BranchingProject): RuntimePackage 
     entryNodeId,
     canonRefs: project.canonRefs,
     variables: project.variables,
-    localization: Object.fromEntries(
-      project.events.flatMap((event) => [
-        [`event.${event.id}.name`, event.name],
-        ...(event.text?.content ? [[`event.${event.id}.text`, event.text.content] as const] : []),
-        ...(event.decisions ?? []).flatMap((decision) =>
-          decision.outcomes.flatMap((outcome) => [
-            [`outcome.${outcome.id}.name`, outcome.name] as const,
-            ...(outcome.lockText?.content
-              ? [[`outcome.${outcome.id}.lock`, outcome.lockText.content] as const]
-              : []),
-          ]),
-        ),
-        ...(event.dialogues ?? []).flatMap((dialogue) =>
-          [
-            [`dialogue.${dialogue.id}.title`, dialogue.title] as const,
-            ...(dialogue.beats ?? []).flatMap((beat) => {
-            const block = scriptBlocks.get(`${beat.blockRef.scriptId}:${beat.blockRef.blockId}`);
-            return block ? [[`script.${beat.blockRef.scriptId}.${beat.blockRef.blockId}`, block.content] as const] : [];
-            }),
-          ],
-        ),
-      ]),
-    ),
+    localization: localizations[primaryLocale],
+    primaryLocale,
+    localizations,
     nodes,
     pathBranching: {
       projectId: project.projectId,

@@ -8,6 +8,7 @@ export * from "./exportPreview.js";
 export * from "./eventDraft.js";
 export * from "./documentController.js";
 export * from "./logic.js";
+export * from "./localization.js";
 export * from "./ruleLibrary.js";
 export * from "./integrationConfig.js";
 export * from "./projectSerialization.js";

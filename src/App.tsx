@@ -15,6 +15,7 @@ import {
   type OnConnectEnd,
   type ReactFlowInstance,
 } from "@xyflow/react";
+import { convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import {
   canonMarkdownDraft,
@@ -28,6 +29,8 @@ import { AssetsPanel } from "./components/AssetsPanel.js";
 import { LogicPanel } from "./components/LogicPanel.js";
 import { PlayerPanel } from "./components/PlayerPanel.js";
 import { ExportPanel } from "./components/ExportPanel.js";
+import { EventScriptWorkspace } from "./components/EventScriptWorkspace.js";
+import { LocaleSettingsFields } from "./components/LocaleSettingsFields.js";
 import { ConnectPanel } from "./components/ConnectPanel.js";
 import { MarkdownEditorDock } from "./components/MarkdownEditorDock.js";
 import { editableCanvasEdgeTypes } from "./components/EditableCanvasEdge.js";
@@ -41,10 +44,16 @@ import {
 } from "./explorerEntities.js";
 import {
   canonExplorerProperties,
+  canonImagePropertiesForRef,
+  canonPresentationImageForRef,
   flattenCanonExplorerProperties,
   canonExplorerTypes,
+  canonExplorerTypeProperty,
   createLocalExplorerProperty,
   createLocalExplorerType,
+  propertyCapability,
+  propertyIsEntityPresentable,
+  propertySupportsDialogueTrigger,
 } from "./explorerSchema.js";
 import {
   AlertTriangle,
@@ -111,7 +120,9 @@ import type {
   DataFieldDefinition,
   Decision,
   DialogueBeat,
+  DialogueMemberRef,
   DialogueNode,
+  DialogueStart,
   EventCategoryDefinition,
   EventNode,
   EventType,
@@ -168,6 +179,7 @@ import {
   type EventInspectorState,
 } from "./eventInspectorState.js";
 import { buildExportPreview, type ExportPreviewMode } from "./exportPreview.js";
+import { importTwineHtml } from "./twineFormat.js";
 import {
   conditionCount,
   conditionLabels,
@@ -175,6 +187,17 @@ import {
   isConditionSet,
 } from "./logic.js";
 import { canonRefHasRole, mergeIntegrationConfigs } from "./integrationConfig.js";
+import {
+  blockValues,
+  canonicalLocale,
+  localeDisplayName,
+  machineLocale,
+  normalizeLocaleList,
+  normalizeLocaleNames,
+  normalizeLocalizationCatalog,
+  scriptBlockTextKey,
+  updateLocalizedEntry,
+} from "./localization.js";
 import * as mutations from "./projectMutations.js";
 import {
   exportRuntimeDialog,
@@ -335,6 +358,18 @@ function canonRefPath(ref: CanonRef) {
   return ref.canonSourcePath ?? ref.id;
 }
 
+function canonVaultImageUrl(
+  project: Pick<BranchingProject, "universeRootPath">,
+  relativePath: string,
+): string | undefined {
+  if (!isTauriRuntime() || !project.universeRootPath) return undefined;
+  const normalizedPath = relativePath.replace(/\\/g, "/").replace(/^\/+/, "");
+  if (!normalizedPath || normalizedPath.split("/").includes("..")) return undefined;
+  return convertFileSrc(
+    `${project.universeRootPath.replace(/[\\/]$/, "")}/${normalizedPath}`,
+  );
+}
+
 function searchablePropertyValues(value: unknown): string[] {
   if (value == null) return [];
   if (
@@ -373,6 +408,24 @@ function canonRefMatches(ref: CanonRef, query: string) {
   ]
     .filter(Boolean)
     .some((value) => String(value).toLowerCase().includes(query));
+}
+
+function canonRefHasProperty(ref: CanonRef, propertyId: string) {
+  return [ref.properties, ref.frontmatter].some((record) =>
+    Boolean(record && Object.prototype.hasOwnProperty.call(record, propertyId)),
+  );
+}
+
+function dialogueTriggerPropertiesForEntity(
+  project: BranchingProject,
+  propertiesConfig: Record<string, unknown> | undefined,
+  ref: CanonRef,
+) {
+  return flattenCanonExplorerProperties(canonExplorerProperties(propertiesConfig)).filter(
+    (property) =>
+      propertySupportsDialogueTrigger(project, "canon", property.id) &&
+      canonRefHasProperty(ref, property.id),
+  );
 }
 
 function folderPathForFolderDescription(ref: CanonRef) {
@@ -1857,6 +1910,78 @@ function CanonRefsPicker({
   );
 }
 
+function CanonEntityRefPicker({
+  title = "Speaker",
+  placeholder = "Search every entity category…",
+  emptyLabel = "Narrator",
+  value,
+  canonRefs,
+  presentEntityRefs,
+  onChange,
+}: {
+  title?: string;
+  placeholder?: string;
+  emptyLabel?: string;
+  value?: string;
+  canonRefs: CanonRef[];
+  presentEntityRefs: string[];
+  onChange: (value?: string) => void;
+}) {
+  const [query, setQuery] = useState("");
+  const normalizedQuery = query.trim().toLowerCase();
+  const selectedRef = value
+    ? canonRefs.find((ref) => ref.id === value)
+    : undefined;
+  const matches = normalizedQuery
+    ? canonRefs.filter((ref) => canonRefMatches(ref, normalizedQuery)).slice(0, 24)
+    : [];
+
+  return (
+    <div className="reference-picker canon-entity-ref-picker">
+      <strong>{title}</strong>
+      <div className="reference-picker-search">
+        <input
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+          placeholder={placeholder}
+          aria-label={title}
+        />
+      </div>
+      {selectedRef ? (
+        <div className="reference-picker-values">
+          <span>
+            {selectedRef.label ?? selectedRef.id}
+            <small>{selectedRef.kind ?? "canon"}</small>
+            <button type="button" onClick={() => onChange(undefined)} title="Clear speaker">×</button>
+          </span>
+        </div>
+      ) : <span className="empty-line">{emptyLabel}</span>}
+      {normalizedQuery ? (
+        <div className="reference-picker-results">
+          {matches.map((ref) => {
+            const isPresent = presentEntityRefs.includes(ref.id);
+            return (
+              <button
+                key={ref.id}
+                type="button"
+                disabled={ref.id === value}
+                onClick={() => {
+                  onChange(ref.id);
+                  setQuery("");
+                }}
+              >
+                <strong>{ref.label ?? ref.id}</strong>
+                <span>{ref.kind ?? "canon"} · {isPresent ? "present in event" : "add to event"}</span>
+              </button>
+            );
+          })}
+          {matches.length === 0 ? <span className="empty-line">No entities found.</span> : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function CanonContextList({
   title = "WorldNotion Context",
   refs,
@@ -2476,6 +2601,10 @@ function PathBranchingSettingsModal({
   const [profileDraft, setProfileDraft] = useState<UniverseProfile>(() => ({
     name: fileState.universeProfile?.name ?? universeName,
     icon: fileState.universeProfile?.icon ?? { type: "preset", value: "book" },
+    localization: fileState.universeProfile?.localization ?? {
+      primaryLocale: machineLocale(),
+      locales: [machineLocale()],
+    },
   }));
   const [profileSaving, setProfileSaving] = useState(false);
 
@@ -2483,6 +2612,10 @@ function PathBranchingSettingsModal({
     setProfileDraft({
       name: fileState.universeProfile?.name ?? universeName,
       icon: fileState.universeProfile?.icon ?? { type: "preset", value: "book" },
+      localization: fileState.universeProfile?.localization ?? {
+        primaryLocale: machineLocale(),
+        locales: [machineLocale()],
+      },
     });
   }, [fileState.universeProfile, universeName]);
 
@@ -2637,6 +2770,11 @@ function PathBranchingSettingsModal({
                       <span>Universe name</span>
                       <input value={profileDraft.name ?? ""} onChange={(event) => setProfileDraft((current) => ({ ...current, name: event.target.value }))} placeholder={universeName} />
                     </label>
+                    <LocaleSettingsFields
+                      value={profileDraft.localization}
+                      fallbackLocale={machineLocale()}
+                      onChange={(localization) => setProfileDraft((current) => ({ ...current, localization }))}
+                    />
                     <div className="icon-preset-row">
                       {[["book", BookOpen], ["globe", Globe2], ["castle", Castle], ["sparkles", Sparkles]].map(([value, Icon]) => (
                         <button key={value as string} type="button" className={profileDraft.icon?.type === "preset" && profileDraft.icon.value === value ? "active" : ""} onClick={() => setProfileDraft((current) => ({ ...current, icon: { type: "preset", value: value as string } }))} title={`Use ${value} icon`}><Icon size={16} /></button>
@@ -4101,6 +4239,94 @@ function explorerInspectorTab(
   return { id: `${selection.type}:${selection.id}${source}`, selection, title };
 }
 
+type ManualInspectorSelection =
+  | { type: "explorerEntity"; id: string }
+  | { type: "explorerType"; id: string; source: "local" }
+  | { type: "explorerProperty"; id: string; source: "canon" | "local" };
+
+type ManualInspectorDraft = {
+  selection: ManualInspectorSelection;
+  project: BranchingProject;
+  dirty: boolean;
+};
+
+function manualInspectorDraftKey(selection?: Selection) {
+  if (selection?.type === "explorerEntity") {
+    return `explorerEntity:${selection.id}`;
+  }
+  if (selection?.type === "explorerType" && selection.source === "local") {
+    return `explorerType:${selection.id}:local`;
+  }
+  if (selection?.type === "explorerProperty") {
+    return `explorerProperty:${selection.id}:${selection.source}`;
+  }
+  return undefined;
+}
+
+function mergeManualInspectorDraft(
+  project: BranchingProject,
+  draft: ManualInspectorDraft,
+) {
+  const { selection, project: draftProject } = draft;
+  if (selection.type === "explorerEntity") {
+    const entity = draftProject.localExplorerEntities?.find(
+      (item) => item.id === selection.id,
+    );
+    if (!entity) return project;
+    return {
+      ...project,
+      localExplorerEntities: (project.localExplorerEntities ?? []).map((item) =>
+        item.id === selection.id ? entity : item,
+      ),
+    };
+  }
+  if (selection.type === "explorerType") {
+    const type = draftProject.localExplorerTypes?.find(
+      (item) => item.id === selection.id,
+    );
+    if (!type) return project;
+    return {
+      ...project,
+      localExplorerTypes: (project.localExplorerTypes ?? []).map((item) =>
+        item.id === selection.id ? type : item,
+      ),
+    };
+  }
+
+  const localProperty =
+    selection.source === "local"
+      ? draftProject.localExplorerProperties?.find(
+          (item) => item.id === selection.id,
+        )
+      : undefined;
+  const draftOverride = draftProject.logicPropertyOverrides?.find(
+    (item) =>
+      item.propertyId === selection.id && item.source === selection.source,
+  );
+  const currentOverrides = project.logicPropertyOverrides ?? [];
+  const nextOverrides = draftOverride
+    ? [
+        ...currentOverrides.filter(
+          (item) =>
+            item.propertyId !== selection.id || item.source !== selection.source,
+        ),
+        draftOverride,
+      ]
+    : currentOverrides;
+  return {
+    ...project,
+    ...(localProperty
+      ? {
+          localExplorerProperties: (project.localExplorerProperties ?? []).map(
+            (item) => (item.id === selection.id ? localProperty : item),
+          ),
+        }
+      : {}),
+    logicPropertyOverrides: nextOverrides,
+    integrationConfigOverride: draftProject.integrationConfigOverride,
+  };
+}
+
 function inspectorTabIcon(tab: InspectorTab) {
   if (tab.id.startsWith("dialogue:")) return MessageSquare;
   if (tab.id.startsWith("routeGate:")) return GitBranch;
@@ -4216,13 +4442,7 @@ function EventAuthoringDock({
     () => currentSequence?.eventIds ?? [],
     [currentSequence?.eventIds],
   );
-  const eventIds = useMemo(() => new Set(validEventIds), [validEventIds]);
   const selectedEventId = eventIdFromSelection(project, nodes, selection);
-  const selectedDirectEventId =
-    selection?.type === "node" &&
-    project.events.some((event) => event.id === selection.id)
-      ? selection.id
-      : undefined;
   const selectedEvent = selectedEventId
     ? project.events.find((event) => event.id === selectedEventId)
     : undefined;
@@ -4351,47 +4571,6 @@ function EventAuthoringDock({
     }
     setSelectedTabGroupId(tabGroups[0]?.id ?? "");
   }, [selectedTabGroupId, tabGroups]);
-
-  useEffect(() => {
-    if (!eventInspector.open) {
-      return;
-    }
-    if (selectedDirectEventId && eventIds.has(selectedDirectEventId)) {
-      if (
-        manuallyClosedEventIdRef.current &&
-        manuallyClosedEventIdRef.current !== selectedDirectEventId
-      ) {
-        manuallyClosedEventIdRef.current = undefined;
-      }
-      if (manuallyClosedEventIdRef.current === selectedDirectEventId) {
-        return;
-      }
-      if (
-        manuallyCollapsedEventIdRef.current &&
-        manuallyCollapsedEventIdRef.current !== selectedDirectEventId
-      ) {
-        manuallyCollapsedEventIdRef.current = undefined;
-      }
-      if (!eventInspector.openEventIds.includes(selectedDirectEventId)) {
-        onOpenEvent(selectedDirectEventId);
-        manuallyCollapsedEventIdRef.current = undefined;
-      }
-      if (manuallyCollapsedEventIdRef.current === selectedDirectEventId) {
-        return;
-      }
-      if (eventInspector.expandedEventId !== selectedDirectEventId) {
-        onOpenEvent(selectedDirectEventId);
-      }
-      return;
-    }
-  }, [
-    eventInspector.expandedEventId,
-    eventInspector.open,
-    eventInspector.openEventIds,
-    onOpenEvent,
-    selectedDirectEventId,
-    eventIds,
-  ]);
 
   const toggleInspector = useCallback(
     (eventId: string) => {
@@ -4769,6 +4948,7 @@ function EventAuthoringDock({
 
 function Inspector({
   project,
+  localeNames,
   scope,
   propertiesConfig,
   nodes,
@@ -4779,6 +4959,8 @@ function Inspector({
   exportOpen,
   exportPreviewMode,
   embedded = false,
+  manualDirty = false,
+  onSaveManual,
   onExportPreviewModeChange,
   onClose,
   onUpdateSequence,
@@ -4791,6 +4973,7 @@ function Inspector({
   onUpdateDialogueBeat,
   onUpdateEventDialogueBeat,
   onUpdateScriptBlock,
+  onUpdateLocalizedText,
   onDeleteDialogueBeat,
   onDeleteEventDialogueBeat,
   onDeleteDecision,
@@ -4823,6 +5006,7 @@ function Inspector({
   onOpenRule,
 }: {
   project: BranchingProject;
+  localeNames?: Record<string, string>;
   scope?: CanvasScope;
   propertiesConfig?: Record<string, unknown>;
   nodes: StoryCanvasNode[];
@@ -4833,13 +5017,15 @@ function Inspector({
   exportOpen: boolean;
   exportPreviewMode: ExportPreviewMode;
   embedded?: boolean;
+  manualDirty?: boolean;
+  onSaveManual?: () => void;
   onExportPreviewModeChange: (mode: ExportPreviewMode) => void;
   onClose: () => void;
   onUpdateSequence: (id: string, updates: Partial<Sequence>) => void;
   onUpdateBranch: (id: string, updates: Partial<Branch>) => void;
   onCreateEventInBranch: (branchId: string, type?: EventType) => void;
   onUpdateEvent: (id: string, updates: Partial<EventNode>) => void;
-  onCreateDecision: (eventId: string) => void;
+  onCreateDecision: (eventId: string, dialogueId?: string) => void;
   onUpdateDecision: (
     eventId: string,
     decisionId: string,
@@ -4860,8 +5046,9 @@ function Inspector({
   onUpdateScriptBlock: (
     scriptId: string,
     blockId: string,
-    updates: { content?: string; translations?: Record<string, string>; speakerRef?: string },
+    updates: Partial<ScriptBlock>,
   ) => void;
+  onUpdateLocalizedText: (textKey: string, locale: string, value: string) => void;
   onDeleteDialogueBeat: (eventId: string, dialogueId: string, beatId: string) => void;
   onDeleteEventDialogueBeat: (eventId: string, beatId: string) => void;
   onDeleteDecision: (eventId: string, decisionId: string) => void;
@@ -4924,6 +5111,7 @@ function Inspector({
     "route" | "if" | "effects"
   >("route");
   const [objectInspectorTab, setObjectInspectorTab] = useState("overview");
+  const [inspectorLocale, setInspectorLocale] = useState(project.localizationCatalog?.primaryLocale ?? "und");
   const selectedNode =
     selection?.type === "node"
       ? nodes.find((node) => node.id === selection.id)
@@ -4976,9 +5164,10 @@ function Inspector({
         ? project.localExplorerProperties?.find(
             (property) => property.id === selection.id,
           )
-        : flattenCanonExplorerProperties(canonExplorerProperties(propertiesConfig)).find(
-            (property) => property.id === selection.id,
-          )
+        : [
+            ...canonExplorerTypes(propertiesConfig).map(canonExplorerTypeProperty),
+            ...flattenCanonExplorerProperties(canonExplorerProperties(propertiesConfig)),
+          ].find((property) => property.id === selection.id)
       : undefined;
   const characterMappingId = "pathbranching:additional-characters";
   const additionalCharacterCategories = project.integrationConfigOverride?.mappings
@@ -5036,6 +5225,14 @@ function Inspector({
                   { id?: string } | undefined
               )?.id,
           ),
+        }
+      : undefined;
+  const selectedDialogueStartContext =
+    selectedNode?.data.kind === "dialogueStart" &&
+    typeof selectedNode.data.details?.eventId === "string"
+      ? {
+          eventId: selectedNode.data.details.eventId,
+          start: selectedNode.data.details.start as DialogueStart | undefined,
         }
       : undefined;
   const selectedOutcomeContext =
@@ -5149,15 +5346,37 @@ function Inspector({
   const canonRefIds = project.canonRefs
     .filter((canonRef) => canonRefHasRole(project, canonRef, "condition"))
     .map((canonRef) => canonRef.id);
-  const speakerCanonRefs = project.canonRefs.filter((canonRef) =>
-    canonRefHasRole(project, canonRef, "speaker"),
-  );
   const eventCategories = project.eventCategories ?? [];
   const dataObjects = project.projectDataObjects ?? [];
   const eventSequence = event ? findSequence(project, event.id) : undefined;
   const eventBranches = eventSequence
     ? branchesForSequence(project, eventSequence.id)
     : project.branches;
+  const selectedBeatEvent = selectedDialogueBeatContext
+    ? findEvent(project, selectedDialogueBeatContext.eventId)
+    : undefined;
+  const selectedBeatPresentEntityRefs = selectedBeatEvent?.presentEntityRefs ?? selectedBeatEvent?.canonRefs ?? [];
+  const selectedDialogueEvent = selectedDialogueContext
+    ? findEvent(project, selectedDialogueContext.eventId)
+    : undefined;
+  const selectedDialoguePresentEntityRefs = selectedDialogueEvent?.presentEntityRefs ?? selectedDialogueEvent?.canonRefs ?? [];
+  const selectedTriggerEvent = selectedDialogueStartContext
+    ? findEvent(project, selectedDialogueStartContext.eventId)
+    : undefined;
+  const presentEntityIds = selectedTriggerEvent?.presentEntityRefs ?? selectedTriggerEvent?.canonRefs ?? [];
+  const presentEntities = presentEntityIds
+    .map((id) => project.canonRefs.find((ref) => ref.id === id))
+    .filter((ref): ref is CanonRef => Boolean(ref));
+  const triggerSource = selectedDialogueStartContext?.start?.source;
+  const selectedTriggerEntity = triggerSource?.kind === "canonRef"
+    ? presentEntities.find((ref) => ref.id === triggerSource.id)
+    : undefined;
+  const triggerProperties = selectedTriggerEntity
+    ? dialogueTriggerPropertiesForEntity(project, propertiesConfig, selectedTriggerEntity)
+    : [];
+  const selectedCanonImages = selectedCanon
+    ? canonImagePropertiesForRef(propertiesConfig, selectedCanon)
+    : [];
   const outgoingTransitions = event?.transitions ?? [];
   const inspectorIdentity = (() => {
     if (event)
@@ -5262,10 +5481,30 @@ function Inspector({
           <div>
             <strong title={inspectorIdentity.label}>
               {inspectorIdentity.label}
+              {manualDirty ? (
+                <span
+                  className="inspector-dirty-star"
+                  title="Unsaved inspector changes"
+                  aria-label="Unsaved inspector changes"
+                >
+                  *
+                </span>
+              ) : null}
             </strong>
             <span>{inspectorIdentity.kind}</span>
           </div>
         </div>
+        {onSaveManual ? (
+          <button
+            type="button"
+            className="inspector-save-button"
+            title="Save inspector changes (Ctrl+S)"
+            onClick={onSaveManual}
+            disabled={!manualDirty}
+          >
+            Save
+          </button>
+        ) : null}
         {!embedded ? (
           <button type="button" title="Close inspector" onClick={onClose}>
             x
@@ -5539,9 +5778,16 @@ function Inspector({
             </section>
 
             <CanonRefsPicker
+              title="Canon context"
               value={event.canonRefs}
               canonRefs={project.canonRefs}
               onChange={(canonRefs) => onUpdateEvent(event.id, { canonRefs })}
+            />
+            <CanonRefsPicker
+              title="Entities present in event"
+              value={event.presentEntityRefs ?? event.canonRefs}
+              canonRefs={project.canonRefs}
+              onChange={(presentEntityRefs) => onUpdateEvent(event.id, { presentEntityRefs })}
             />
             <CanonContextList
               refs={event.canonRefs}
@@ -5849,37 +6095,46 @@ function Inspector({
             <section className="inspector-section">
               <h2>{selectedDialogueBeatContext.beat.kind === "speech" ? "Speech Beat" : "Direction Beat"}</h2>
               {selectedDialogueBeatContext.beat.kind === "speech" ? (
-                <label className="field-label">
-                  Speaker
-                  <select
-                    value={selectedDialogueBeatContext.block.speakerRef ?? ""}
-                    onChange={(event) =>
+                <>
+                  <CanonEntityRefPicker
+                    value={selectedDialogueBeatContext.block.characterRef ?? selectedDialogueBeatContext.block.speakerRef}
+                    canonRefs={project.canonRefs}
+                    presentEntityRefs={selectedBeatPresentEntityRefs}
+                    onChange={(characterRef) => {
                       onUpdateScriptBlock(
                         selectedDialogueBeatContext.beat.blockRef.scriptId,
                         selectedDialogueBeatContext.beat.blockRef.blockId,
-                        { speakerRef: event.target.value || undefined },
-                      )
-                    }
-                  >
-                    <option value="">Narrador</option>
-                    {speakerCanonRefs.map((canonRef) => (
-                      <option key={canonRef.id} value={canonRef.id}>
-                        {canonRef.label ?? canonRef.id}
-                      </option>
-                    ))}
-                  </select>
-                </label>
+                        { characterRef },
+                      );
+                      if (characterRef && selectedBeatEvent && !selectedBeatPresentEntityRefs.includes(characterRef)) {
+                        onUpdateEvent(selectedBeatEvent.id, {
+                          presentEntityRefs: [...selectedBeatPresentEntityRefs, characterRef],
+                        });
+                      }
+                    }}
+                  />
+                  {(selectedDialogueBeatContext.block.characterRef ?? selectedDialogueBeatContext.block.speakerRef) &&
+                  !selectedBeatPresentEntityRefs.includes(selectedDialogueBeatContext.block.characterRef ?? selectedDialogueBeatContext.block.speakerRef ?? "") ? (
+                    <p className="warning-text">This speaker is not present in the event yet. Choose it from the search results to add it automatically.</p>
+                  ) : null}
+                </>
               ) : null}
               <label className="field-label">
                 {selectedDialogueBeatContext.beat.kind === "speech" ? "Dialogue text" : "Stage direction"}
+                <select
+                  value={inspectorLocale}
+                  onChange={(event) => setInspectorLocale(event.target.value)}
+                >
+                  {normalizeLocaleList(project.localizationCatalog?.primaryLocale ?? "und", project.localizationCatalog?.locales ?? []).map((locale) => <option key={locale} value={locale}>{localeDisplayName(locale, localeNames)}{locale === project.localizationCatalog?.primaryLocale ? " · Primary" : ""}</option>)}
+                </select>
                 <textarea
                   rows={7}
-                  value={selectedDialogueBeatContext.block.content}
+                  value={blockValues(project, selectedDialogueBeatContext.beat.blockRef.scriptId, selectedDialogueBeatContext.block, project.localizationCatalog?.primaryLocale ?? "und")[inspectorLocale] ?? ""}
                   onChange={(event) =>
-                    onUpdateScriptBlock(
-                      selectedDialogueBeatContext.beat.blockRef.scriptId,
-                      selectedDialogueBeatContext.beat.blockRef.blockId,
-                      { content: event.target.value },
+                    onUpdateLocalizedText(
+                      selectedDialogueBeatContext.block.textKey ?? scriptBlockTextKey(selectedDialogueBeatContext.beat.blockRef.scriptId, selectedDialogueBeatContext.beat.blockRef.blockId),
+                      inspectorLocale,
+                      event.target.value,
                     )
                   }
                 />
@@ -5921,6 +6176,56 @@ function Inspector({
           </>
         ) : null}
 
+        {selectedDialogueStartContext?.start ? (
+          <section className="inspector-section">
+            <h2>Dialogue Trigger</h2>
+            <p className="inspector-help">This node has an output only. It starts from one present entity and one property marked as a Dialogue Trigger reference.</p>
+            <CanonEntityRefPicker
+              title="Present entity"
+              placeholder="Search every entity category…"
+              emptyLabel="No entity selected"
+              value={triggerSource?.kind === "canonRef" ? triggerSource.id : undefined}
+              canonRefs={project.canonRefs}
+              presentEntityRefs={presentEntityIds}
+              onChange={(entityId) => {
+                const triggerEvent = findEvent(project, selectedDialogueStartContext.eventId);
+                if (!triggerEvent) return;
+                const nextPresentEntityRefs = entityId && !presentEntityIds.includes(entityId)
+                  ? [...presentEntityIds, entityId]
+                  : presentEntityIds;
+                onUpdateEvent(selectedDialogueStartContext.eventId, {
+                  presentEntityRefs: nextPresentEntityRefs,
+                  dialogueStarts: (triggerEvent.dialogueStarts ?? []).map((start) => start.id === selectedDialogueStartContext.start!.id ? {
+                    ...start,
+                    source: entityId ? { kind: "canonRef" as const, id: entityId } : undefined,
+                  } : start),
+                });
+              }}
+            />
+            <label className="field-label">
+              Dialogue Trigger property
+              <select
+                value={triggerSource?.propertyId ?? ""}
+                disabled={!selectedTriggerEntity}
+                onChange={(input) => onUpdateEvent(selectedDialogueStartContext.eventId, {
+                  dialogueStarts: (findEvent(project, selectedDialogueStartContext.eventId)?.dialogueStarts ?? []).map((start) => start.id === selectedDialogueStartContext.start!.id ? {
+                    ...start,
+                    source: selectedTriggerEntity
+                      ? { kind: "canonRef" as const, id: selectedTriggerEntity.id, propertyId: input.target.value || undefined }
+                      : start.source,
+                  } : start),
+                })}
+              >
+                <option value="">Choose a trigger property…</option>
+                {triggerProperties.map((property) => <option key={property.id} value={property.id}>{property.label}</option>)}
+              </select>
+            </label>
+            {selectedTriggerEntity && triggerProperties.length === 0 ? (
+              <p className="warning-text">This entity has no property marked both Entity presentable and Dialogue Trigger reference.</p>
+            ) : null}
+          </section>
+        ) : null}
+
         {selectedDialogueContext?.dialogue ? (
           <>
             <InspectorContentTabs value={objectInspectorTab} onChange={setObjectInspectorTab} tabs={[{ id: "overview", label: "Overview" }, { id: "logic", label: "Logic" }]} />
@@ -5942,25 +6247,24 @@ function Inspector({
                   }
                 />
               </label>
-              <label className="field-label">
-                Speaker Ref
-                <select
-                  value={selectedDialogueFirstBlock?.speakerRef ?? ""}
-                  onChange={(inputEvent) =>
-                    selectedDialogueFirstBeat &&
-                    onUpdateScriptBlock(
-                      selectedDialogueFirstBeat.blockRef.scriptId,
-                      selectedDialogueFirstBeat.blockRef.blockId,
-                      { speakerRef: inputEvent.target.value || undefined },
-                    )
+              <CanonEntityRefPicker
+                value={selectedDialogueFirstBlock?.characterRef ?? selectedDialogueFirstBlock?.speakerRef}
+                canonRefs={project.canonRefs}
+                presentEntityRefs={selectedDialoguePresentEntityRefs}
+                onChange={(characterRef) => {
+                  if (!selectedDialogueFirstBeat) return;
+                  onUpdateScriptBlock(
+                    selectedDialogueFirstBeat.blockRef.scriptId,
+                    selectedDialogueFirstBeat.blockRef.blockId,
+                    { characterRef },
+                  );
+                  if (characterRef && selectedDialogueEvent && !selectedDialoguePresentEntityRefs.includes(characterRef)) {
+                    onUpdateEvent(selectedDialogueEvent.id, {
+                      presentEntityRefs: [...selectedDialoguePresentEntityRefs, characterRef],
+                    });
                   }
-                >
-                  <option value="">Narrador</option>
-                  {speakerCanonRefs.map((canonRef) => (
-                    <option key={canonRef.id} value={canonRef.id}>{canonRef.label ?? canonRef.id}</option>
-                  ))}
-                </select>
-              </label>
+                }}
+              />
               <label className="field-label">
                 Text
                 <textarea
@@ -6555,6 +6859,30 @@ function Inspector({
                 <pre>{JSON.stringify(selectedCanon.properties, null, 2)}</pre>
               </section>
             ) : null}
+            {selectedCanonImages.length ? (
+              <section className="inspector-section">
+                <h2>Images</h2>
+                <div className="readonly-preview-label">
+                  Image properties declared by WorldNotion. Read-only in PathBranching.
+                </div>
+                <div className="canon-image-list">
+                  {selectedCanonImages.map(({ property, value }) => {
+                    const imageUrl = canonVaultImageUrl(project, value);
+                    return (
+                      <div className="canon-image-property" key={property.id}>
+                        {imageUrl ? (
+                          <img src={imageUrl} alt={`${property.label} for ${selectedCanon.label ?? selectedCanon.id}`} />
+                        ) : null}
+                        <div>
+                          <strong>{property.label}</strong>
+                          <code>{value}</code>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </section>
+            ) : null}
             {selectedCanon.frontmatter &&
             Object.keys(selectedCanon.frontmatter).length ? (
               <section className="inspector-section">
@@ -6899,13 +7227,15 @@ function Inspector({
             )}
             {(() => {
               const source = selectedExplorerSchemaSource ?? "local";
-              const override = (project.logicPropertyOverrides ?? []).find(
-                (item) => item.propertyId === selectedExplorerProperty.id && item.source === source,
-              );
+              const override = propertyCapability(project, source, selectedExplorerProperty.id);
+              const entityPresentable = propertyIsEntityPresentable(project, source, selectedExplorerProperty.id);
+              const dialogueTrigger = propertySupportsDialogueTrigger(project, source, selectedExplorerProperty.id);
               return <>
                 <label><input type="checkbox" checked={override?.conditionReadable ?? true} onChange={(event) => onUpdateLogicPropertyOverride(selectedExplorerProperty.id, source, { conditionReadable: event.target.checked })} /> Conditions</label>
                 <label><input type="checkbox" checked={override?.actionWritable ?? source === "local"} onChange={(event) => onUpdateLogicPropertyOverride(selectedExplorerProperty.id, source, { actionWritable: event.target.checked })} /> Actions</label>
                 <label><input type="checkbox" checked={override?.grantable ?? false} onChange={(event) => onUpdateLogicPropertyOverride(selectedExplorerProperty.id, source, { grantable: event.target.checked })} /> Grantable</label>
+                <label><input type="checkbox" checked={entityPresentable} onChange={(event) => onUpdateLogicPropertyOverride(selectedExplorerProperty.id, source, { entityPresentable: event.target.checked, dialogueTrigger: event.target.checked ? dialogueTrigger : false })} /> Entity presentable</label>
+                {entityPresentable ? <label className="nested-capability"><input type="checkbox" checked={dialogueTrigger} onChange={(event) => onUpdateLogicPropertyOverride(selectedExplorerProperty.id, source, { dialogueTrigger: event.target.checked })} /> Referenced as Dialogue Trigger</label> : null}
                 <label className="field-label">Can relate to<input value={(override?.relationTargetTypes ?? []).join(", ")} placeholder="character, worldbuilding" onChange={(event) => onUpdateLogicPropertyOverride(selectedExplorerProperty.id, source, { relationTargetTypes: event.target.value.split(",").map((item) => item.trim()).filter(Boolean) })} /></label>
               </>;
             })()}
@@ -7218,7 +7548,57 @@ type CanvasContextMenu = {
   sourceNodeId?: string;
   routeSourceId?: string;
   nodeIds?: string[];
+  contextNodeId?: string;
 };
+
+const CANVAS_CLICK_SEQUENCE_WINDOW_MS = 360;
+
+type CanvasDialogueMember = {
+  eventId: string;
+  member: DialogueMemberRef;
+};
+
+function dialogueMemberFromCanvasNode(
+  node: StoryCanvasNode,
+): CanvasDialogueMember | undefined {
+  const eventId = node.data.details?.eventId;
+  if (typeof eventId !== "string" || typeof node.data.details?.dialogueId === "string") {
+    return undefined;
+  }
+  if (node.data.kind === "speechBeat" || node.data.kind === "directionBeat") {
+    const beat = node.data.details?.beat as { id?: unknown } | undefined;
+    return typeof beat?.id === "string"
+      ? { eventId, member: { kind: "beat", id: beat.id } }
+      : undefined;
+  }
+  if (node.data.kind === "decision") {
+    const decision = node.data.details?.decision as { id?: unknown } | undefined;
+    return typeof decision?.id === "string"
+      ? { eventId, member: { kind: "decision", id: decision.id } }
+      : undefined;
+  }
+  return undefined;
+}
+
+function canvasDialogueMembers(
+  nodes: StoryCanvasNode[],
+  nodeIds: string[],
+): CanvasDialogueMember[] {
+  return nodes
+    .filter((node) => nodeIds.includes(node.id))
+    .map(dialogueMemberFromCanvasNode)
+    .filter((value): value is CanvasDialogueMember => Boolean(value));
+}
+
+function canCreateDialogueFromSelection(
+  nodes: StoryCanvasNode[],
+  nodeIds: string[],
+) {
+  if (nodeIds.length === 0) return false;
+  const members = canvasDialogueMembers(nodes, nodeIds);
+  if (members.length !== nodeIds.length) return false;
+  return new Set(members.map(({ eventId }) => eventId)).size === 1;
+}
 
 function EventTypeMenuButton({
   label,
@@ -7433,12 +7813,17 @@ function StoryCanvas({
   message,
   showStatusMessages,
   activeScope,
+  primaryLocale,
+  locales,
+  localeNames,
   exportOpen,
   exportPreviewMode,
   dataOpen,
   markdownTabs,
   activeMarkdownTabId,
   eventDraft,
+  manualInspectorDraft,
+  manualInspectorEnabled,
   eventInspector,
   eventInspectorTabGroups,
   inspectorTabs,
@@ -7451,7 +7836,10 @@ function StoryCanvas({
   onConnect,
   onNodeDragStop,
   onSelect,
+  onCanvasSelect,
+  onOpenCanvasInspector,
   onNavigateScope,
+  onOpenEventScript,
   onExportPreviewModeChange,
   onToggleData,
   onCreateEvent,
@@ -7470,6 +7858,7 @@ function StoryCanvas({
   onUpdateDialogueBeat,
   onUpdateEventDialogueBeat,
   onUpdateScriptBlock,
+  onUpdateLocalizedText,
   onDeleteDialogueBeat,
   onDeleteEventDialogueBeat,
   onDeleteDecision,
@@ -7511,6 +7900,10 @@ function StoryCanvas({
   onUpdateEdgeLabel,
   onDeleteSelection,
   onDeleteNodeSelections,
+  onGroupDialogueMembers,
+  onDetachDialogueMembers,
+  onDissolveDialogue,
+  onCreateDialogueStart,
   onActivateMarkdownTab,
   onCloseMarkdownTab,
   onChangeMarkdownContent,
@@ -7533,6 +7926,7 @@ function StoryCanvas({
   onCloseAllInspectorTabs,
   onDisableInspectorDebug,
   onToggleInspectorMaximized,
+  onSaveManualInspector,
   onOpenRule,
 }: {
   project: BranchingProject;
@@ -7545,12 +7939,17 @@ function StoryCanvas({
   message?: string;
   showStatusMessages: boolean;
   activeScope?: CanvasScope;
+  primaryLocale: string;
+  locales: string[];
+  localeNames?: Record<string, string>;
   exportOpen: boolean;
   exportPreviewMode: ExportPreviewMode;
   dataOpen: boolean;
   markdownTabs: MarkdownEditorTab[];
   activeMarkdownTabId?: string;
   eventDraft?: EventDraft;
+  manualInspectorDraft?: ManualInspectorDraft;
+  manualInspectorEnabled: boolean;
   eventInspector: EventInspectorState;
   eventInspectorTabGroups: EventInspectorTabGroup[];
   inspectorTabs: InspectorTab[];
@@ -7566,7 +7965,10 @@ function StoryCanvas({
     node: StoryCanvasNode,
   ) => void;
   onSelect: (selection?: Selection) => void;
+  onCanvasSelect: (selection?: Selection) => void;
+  onOpenCanvasInspector: (selection: Selection) => void;
   onNavigateScope: (scope: CanvasScope, selection?: Selection) => void;
+  onOpenEventScript: (eventId: string, textKey?: string) => void;
   onExportPreviewModeChange: (mode: ExportPreviewMode) => void;
   onToggleData: () => void;
   onCreateEvent: (
@@ -7588,7 +7990,7 @@ function StoryCanvas({
   onUpdateBranch: (id: string, updates: Partial<Branch>) => void;
   onCreateEventInBranch: (branchId: string, type?: EventType) => void;
   onUpdateEvent: (id: string, updates: Partial<EventNode>) => void;
-  onCreateDecision: (eventId: string) => void;
+  onCreateDecision: (eventId: string, dialogueId?: string) => void;
   onCreateDialogue: (eventId: string) => void;
   onCreateDialogueBeat: (eventId: string, dialogueId: string, kind: DialogueBeat["kind"]) => void;
   onCreateEventDialogueBeat: (eventId: string, kind: DialogueBeat["kind"]) => void;
@@ -7604,7 +8006,8 @@ function StoryCanvas({
   ) => void;
   onUpdateDialogueBeat: (eventId: string, dialogueId: string, beatId: string, updates: Partial<DialogueBeat>) => void;
   onUpdateEventDialogueBeat: (eventId: string, beatId: string, updates: Partial<DialogueBeat>) => void;
-  onUpdateScriptBlock: (scriptId: string, blockId: string, updates: { content?: string; translations?: Record<string, string>; speakerRef?: string }) => void;
+  onUpdateScriptBlock: (scriptId: string, blockId: string, updates: Partial<ScriptBlock>) => void;
+  onUpdateLocalizedText: (textKey: string, locale: string, value: string) => void;
   onDeleteDialogueBeat: (eventId: string, dialogueId: string, beatId: string) => void;
   onDeleteEventDialogueBeat: (eventId: string, beatId: string) => void;
   onDeleteDecision: (eventId: string, decisionId: string) => void;
@@ -7680,6 +8083,10 @@ function StoryCanvas({
   onUpdateEdgeLabel: (edgeId: string, label: string) => void;
   onDeleteSelection: (selection: Selection) => void;
   onDeleteNodeSelections: (nodeIds: string[]) => void;
+  onGroupDialogueMembers: (nodeIds: string[]) => void;
+  onDetachDialogueMembers: (nodeIds: string[]) => void;
+  onDissolveDialogue: (eventId: string, dialogueId: string) => void;
+  onCreateDialogueStart: (eventId: string) => void;
   onActivateMarkdownTab: (id: string) => void;
   onCloseMarkdownTab: (id: string) => void;
   onChangeMarkdownContent: (id: string, content: string) => void;
@@ -7702,10 +8109,16 @@ function StoryCanvas({
   onCloseAllInspectorTabs: () => void;
   onDisableInspectorDebug: () => void;
   onToggleInspectorMaximized: () => void;
+  onSaveManualInspector: () => void;
   onOpenRule: (id: string) => void;
 }) {
   const shellRef = useRef<HTMLElement | null>(null);
-  const nodeClickTimeoutRef = useRef<number | undefined>(undefined);
+  const pendingNodeClickRef = useRef<{
+    nodeId: string;
+    count: number;
+    lastClickAt: number;
+    timer?: number;
+  } | undefined>(undefined);
   const draggedNodeRef = useRef(false);
   const [reactFlowInstance, setReactFlowInstance] =
     useState<ReactFlowInstance<StoryCanvasNode, StoryCanvasEdge>>();
@@ -7714,13 +8127,18 @@ function StoryCanvas({
   const [draggingEvent, setDraggingEvent] = useState(false);
   const [minimapOpen, setMinimapOpen] = useState(true);
 
-  useEffect(() => {
-    return () => {
-      if (nodeClickTimeoutRef.current !== undefined) {
-        window.clearTimeout(nodeClickTimeoutRef.current);
-      }
-    };
+  const clearPendingNodeClick = useCallback(() => {
+    const pending = pendingNodeClickRef.current;
+    if (pending?.timer !== undefined) {
+      window.clearTimeout(pending.timer);
+    }
+    pendingNodeClickRef.current = undefined;
   }, []);
+
+  useEffect(() => {
+    return () => clearPendingNodeClick();
+  }, [clearPendingNodeClick]);
+
   const inspectorNodeStates = useMemo(() => {
     const states = new Map<string, "open" | "expanded">();
     eventInspector.openEventIds.forEach((id) => states.set(id, "open"));
@@ -7829,15 +8247,40 @@ function StoryCanvas({
               ? (() => {
                   const block = node.data.details?.block as ScriptBlock | undefined;
                   const blockRef = (node.data.details!.beat as DialogueBeat).blockRef;
+                  const textKey = block?.textKey ?? scriptBlockTextKey(blockRef.scriptId, blockRef.blockId);
+                  const beatEventId = typeof node.data.details?.eventId === "string" ? node.data.details.eventId : undefined;
+                  const beatEvent = beatEventId ? project.events.find((event) => event.id === beatEventId) : undefined;
+                  const presentEntityRefs = beatEvent?.presentEntityRefs ?? beatEvent?.canonRefs ?? [];
+                  const currentCharacterRef = block?.characterRef ?? block?.speakerRef;
                   return {
-                    content: block?.content ?? "",
-                    translations: block?.translations,
-                    speakerRef: block?.speakerRef,
+                    values: block ? blockValues(project, blockRef.scriptId, block, primaryLocale) : {},
+                    primaryLocale,
+                    languages: normalizeLocaleList(primaryLocale, locales),
+                    localeNames,
+                    characterRef: currentCharacterRef,
                     speakerOptions: project.canonRefs
-                      .filter((canonRef) => canonRefHasRole(project, canonRef, "speaker"))
-                      .map((canonRef) => ({ id: canonRef.id, label: canonRef.label ?? canonRef.id })),
-                    onUpdate: (updates: { content?: string; translations?: Record<string, string>; speakerRef?: string }) =>
-                      onUpdateScriptBlock(blockRef.scriptId, blockRef.blockId, updates),
+                      .filter((canonRef) => presentEntityRefs.includes(canonRef.id) || canonRef.id === currentCharacterRef)
+                      .map((canonRef) => {
+                        const portrait = canonPresentationImageForRef(
+                          propertiesConfig,
+                          canonRef,
+                          "portrait",
+                        );
+                        return {
+                          id: canonRef.id,
+                          label: canonRef.label ?? canonRef.id,
+                          portraitUrl: portrait
+                            ? canonVaultImageUrl(project, portrait.value)
+                            : undefined,
+                        };
+                      }),
+                    onTextUpdate: (locale: string, value: string) => onUpdateLocalizedText(textKey, locale, value),
+                    onCharacterUpdate: (characterRef?: string) => {
+                      onUpdateScriptBlock(blockRef.scriptId, blockRef.blockId, { characterRef });
+                      if (characterRef && beatEvent && !presentEntityRefs.includes(characterRef)) {
+                        onUpdateEvent(beatEvent.id, { presentEntityRefs: [...presentEntityRefs, characterRef] });
+                      }
+                    },
                   };
                 })()
               : undefined,
@@ -7870,7 +8313,7 @@ function StoryCanvas({
         };
       }),
     }),
-    [activeScope, canvasBackground.connectionPadding, commitEdgeLabel, editingEdgeId, edges, inspectorEdgeStates, inspectorNodeStates, nodes, onCreateBoundaryEnd, onCreateBoundaryRoute, onCreateBoundaryRouteEvent, onDeleteBoundaryEnd, onUpdateScriptBlock, onUpdateTransition, onWorkspaceBoundsChange, project],
+    [activeScope, canvasBackground.connectionPadding, commitEdgeLabel, editingEdgeId, edges, inspectorEdgeStates, inspectorNodeStates, localeNames, locales, nodes, onCreateBoundaryEnd, onCreateBoundaryRoute, onCreateBoundaryRouteEvent, onDeleteBoundaryEnd, onUpdateEvent, onUpdateLocalizedText, onUpdateScriptBlock, onUpdateTransition, onWorkspaceBoundsChange, primaryLocale, project],
   );
   const activeEventScope =
     activeScope?.kind === "event"
@@ -7974,14 +8417,18 @@ function StoryCanvas({
   const backgroundColor = `color-mix(in srgb, var(--wn-border) ${Math.round(canvasBackground.opacity * 100)}%, transparent)`;
   const inspectorProject = useMemo(
     () =>
-      eventDraft ? applyEventDraftToProject(project, eventDraft) : project,
-    [eventDraft, project],
+      eventDraft
+        ? applyEventDraftToProject(project, eventDraft)
+        : (manualInspectorDraft?.project ?? project),
+    [eventDraft, manualInspectorDraft?.project, project],
   );
   const inspectorEventId =
     eventInspector.expandedEventId ?? eventInspector.openEventIds[0];
   const inspectorSelection = inspectorEventId
     ? { type: "node" as const, id: inspectorEventId }
     : selection;
+  const inspectorShowsManualSave =
+    manualInspectorEnabled && Boolean(manualInspectorDraftKey(inspectorSelection));
 
   useEffect(() => {
     if (!reactFlowInstance) {
@@ -8010,6 +8457,29 @@ function StoryCanvas({
         ? undefined
         : nodes.find((node) => node.data.kind === "workspace");
       if (workspaceNode && !isPointInside(workspaceNode, flowPosition.x, flowPosition.y)) {
+        return;
+      }
+      const selectedNodeIds = nodes
+        .filter((node) => node.selected)
+        .map((node) => node.id);
+      if (selectedNodeIds.length > 0) {
+        setContextMenu({
+          kind: "selection",
+          ...clampFloatingMenuPosition(
+            event.clientX - (shellRect?.left ?? 0),
+            event.clientY - (shellRect?.top ?? 0),
+            {
+              left: 0,
+              top: 0,
+              right: shellRect?.width ?? window.innerWidth,
+              bottom: shellRect?.height ?? window.innerHeight,
+            },
+            250,
+          ),
+          flowX: 0,
+          flowY: 0,
+          nodeIds: selectedNodeIds,
+        });
         return;
       }
       setContextMenu({
@@ -8056,6 +8526,7 @@ function StoryCanvas({
     (event: ReactMouseEvent, node: StoryCanvasNode) => {
       event.preventDefault();
       event.stopPropagation();
+      clearPendingNodeClick();
       if (node.data.kind === "workspace") return;
       const selectedNodeIds = node.selected
         ? nodes.filter((candidate) => candidate.selected).map((candidate) => candidate.id)
@@ -8085,9 +8556,10 @@ function StoryCanvas({
         flowX: 0,
         flowY: 0,
         nodeIds: selectedNodeIds,
+        contextNodeId: node.id,
       });
     },
-    [nodes, onNodesChange],
+    [clearPendingNodeClick, nodes, onNodesChange],
   );
 
   const openConnectionCreateMenu = useCallback<OnConnectEnd>(
@@ -8154,6 +8626,41 @@ function StoryCanvas({
     if (node.data.kind === "event") return "var(--pb-event)";
     return "var(--wn-border)";
   }, []);
+  const openNodeCanvas = useCallback(
+    (node: StoryCanvasNode) => {
+      if (node.data.kind === "event") {
+        onNavigateScope(
+          { kind: "event", id: node.id },
+          { type: "node", id: node.id },
+        );
+        return;
+      }
+      if (
+        node.data.kind === "dialogue" &&
+        typeof node.data.details?.eventId === "string" &&
+        typeof (node.data.details?.dialogue as { id?: string } | undefined)?.id === "string"
+      ) {
+        const dialogueId = (node.data.details!.dialogue as { id: string }).id;
+        onNavigateScope(
+          { kind: "dialogue", id: dialogueId, eventId: node.data.details.eventId as string },
+          undefined,
+        );
+        return;
+      }
+      if (
+        (node.data.kind === "speechBeat" || node.data.kind === "directionBeat") &&
+        typeof node.data.details?.eventId === "string"
+      ) {
+        const block = node.data.details?.block as ScriptBlock | undefined;
+        const beat = node.data.details?.beat as DialogueBeat | undefined;
+        onOpenEventScript(
+          node.data.details.eventId as string,
+          block?.textKey ?? (beat ? scriptBlockTextKey(beat.blockRef.scriptId, beat.blockRef.blockId) : undefined),
+        );
+      }
+    },
+    [onNavigateScope, onOpenEventScript],
+  );
 
   return (
     <main
@@ -8237,62 +8744,64 @@ function StoryCanvas({
             setEditingEdgeId(undefined);
             if (node.data.kind === "workspace") return;
             if (draggedNodeRef.current || event.shiftKey) return;
-            if (nodeClickTimeoutRef.current !== undefined) {
-              window.clearTimeout(nodeClickTimeoutRef.current);
+            const now = Date.now();
+            const pending = pendingNodeClickRef.current;
+            const clickCount =
+              pending?.nodeId === node.id &&
+              now - (pending.lastClickAt ?? 0) <= CANVAS_CLICK_SEQUENCE_WINDOW_MS
+                ? Math.min(pending.count + 1, 3)
+                : 1;
+            const nodeSelection = { type: "node" as const, id: node.id };
+            clearPendingNodeClick();
+            if (clickCount === 1) {
+              onCanvasSelect(nodeSelection);
+              const timer = window.setTimeout(() => {
+                pendingNodeClickRef.current = undefined;
+              }, CANVAS_CLICK_SEQUENCE_WINDOW_MS);
+              pendingNodeClickRef.current = {
+                nodeId: node.id,
+                count: 1,
+                lastClickAt: now,
+                timer,
+              };
+            } else if (clickCount === 2) {
+              const timer = window.setTimeout(() => {
+                onOpenCanvasInspector(nodeSelection);
+                pendingNodeClickRef.current = undefined;
+              }, CANVAS_CLICK_SEQUENCE_WINDOW_MS);
+              pendingNodeClickRef.current = {
+                nodeId: node.id,
+                count: 2,
+                lastClickAt: now,
+                timer,
+              };
+            } else {
+              openNodeCanvas(node);
             }
-            nodeClickTimeoutRef.current = window.setTimeout(() => {
-              onSelect({ type: "node", id: node.id });
-              nodeClickTimeoutRef.current = undefined;
-            }, 220);
           }}
           onNodeContextMenu={openSelectionContextMenu}
-          onNodeDoubleClick={(_, node) => {
-            if (nodeClickTimeoutRef.current !== undefined) {
-              window.clearTimeout(nodeClickTimeoutRef.current);
-              nodeClickTimeoutRef.current = undefined;
-            }
-            if (node.data.kind === "event") {
-              onNavigateScope(
-                { kind: "event", id: node.id },
-                { type: "node", id: node.id },
-              );
-            } else if (
-              node.data.kind === "dialogue" &&
-              typeof node.data.details?.eventId === "string" &&
-              typeof (node.data.details?.dialogue as { id?: string } | undefined)?.id === "string"
-            ) {
-              const dialogueId = (node.data.details!.dialogue as { id: string }).id;
-              onNavigateScope(
-                { kind: "dialogue", id: dialogueId, eventId: node.data.details.eventId as string },
-                undefined,
-              );
-            }
-          }}
-          onEdgeClick={(_, edgeItem) => {
+          onEdgeClick={(event, edgeItem) => {
             setContextMenu(undefined);
             setEditingEdgeId(undefined);
-            onSelect({ type: "edge", id: edgeItem.id });
-          }}
-          onEdgeDoubleClick={(_, edgeItem) => {
-            setContextMenu(undefined);
-            onSelect({ type: "edge", id: edgeItem.id });
-            if (
-              edgeItem.data?.kind === "transition" ||
-              edgeItem.data?.kind === "entry"
-            ) {
-              setEditingEdgeId(edgeItem.id);
+            const clickCount = Math.min(Math.max(event.detail || 1, 1), 3);
+            const edgeSelection = { type: "edge" as const, id: edgeItem.id };
+            if (clickCount === 1) {
+              onCanvasSelect(edgeSelection);
+            } else if (clickCount === 2) {
+              onOpenCanvasInspector(edgeSelection);
             }
           }}
           onEdgeContextMenu={openEdgeContextMenu}
           onPaneClick={() => {
             setContextMenu(undefined);
             setEditingEdgeId(undefined);
+            clearPendingNodeClick();
             if (
               collapseInspectorTabOnCanvasClick &&
               eventInspector.expandedEventId
             ) {
               onCollapseEventInspectorEvent(eventInspector.expandedEventId);
-              onSelect(undefined);
+              onCanvasSelect(undefined);
             }
           }}
           onPaneContextMenu={openContextMenu}
@@ -8359,6 +8868,23 @@ function StoryCanvas({
               <span className="canvas-menu-label">
                 {contextMenu.nodeIds?.length ?? 0} selected node{(contextMenu.nodeIds?.length ?? 0) === 1 ? "" : "s"}
               </span>
+              {(() => {
+                const contextNode = contextMenu.contextNodeId
+                  ? nodes.find((node) => node.id === contextMenu.contextNodeId)
+                  : undefined;
+                if (contextNode?.data.kind !== "event") return null;
+                return (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      openNodeCanvas(contextNode);
+                      setContextMenu(undefined);
+                    }}
+                  >
+                    Open subcanvas
+                  </button>
+                );
+              })()}
               <button
                 type="button"
                 onClick={() => {
@@ -8370,6 +8896,38 @@ function StoryCanvas({
               >
                 Open inspectors
               </button>
+              {activeScope?.kind === "event" && canCreateDialogueFromSelection(nodes, contextMenu.nodeIds ?? []) ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    onGroupDialogueMembers(contextMenu.nodeIds ?? []);
+                    setContextMenu(undefined);
+                  }}
+                >
+                  Create Dialogue from selection
+                </button>
+              ) : null}
+              {activeDialogueScope && (contextMenu.nodeIds ?? []).some((id) => {
+                const selectedNode = nodes.find((node) => node.id === id);
+                return selectedNode?.data.kind === "speechBeat" || selectedNode?.data.kind === "directionBeat" || selectedNode?.data.kind === "decision";
+              }) ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    onDetachDialogueMembers(contextMenu.nodeIds ?? []);
+                    setContextMenu(undefined);
+                  }}
+                >
+                  Detach selected
+                </button>
+              ) : null}
+              {(contextMenu.nodeIds ?? []).length === 1 && (() => {
+                const selectedNode = nodes.find((node) => node.id === contextMenu.nodeIds?.[0]);
+                const dialogue = selectedNode?.data.details?.dialogue as { id?: string } | undefined;
+                const eventId = selectedNode?.data.details?.eventId;
+                if (selectedNode?.data.kind !== "dialogue" || typeof dialogue?.id !== "string" || typeof eventId !== "string") return null;
+                return <button type="button" onClick={() => { onDissolveDialogue(eventId, dialogue.id!); setContextMenu(undefined); }}>Dissolve Dialogue</button>;
+              })()}
               <button
                 type="button"
                 className="danger"
@@ -8409,7 +8967,7 @@ function StoryCanvas({
               <button
                 type="button"
                 onClick={() => {
-                  onCreateDecision(activeDialogueScope.eventId);
+                  onCreateDecision(activeDialogueScope.eventId, activeDialogueScope.id);
                   setContextMenu(undefined);
                 }}
               >
@@ -8493,6 +9051,15 @@ function StoryCanvas({
                   >
                     Dialogue
                   </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onCreateDialogueStart(activeEventScope.id);
+                      setContextMenu(undefined);
+                    }}
+                  >
+                    Dialogue Trigger
+                  </button>
                 </>
               ) : (
                 <>
@@ -8546,6 +9113,7 @@ function StoryCanvas({
       >
         <Inspector
           project={inspectorProject}
+          localeNames={localeNames}
           scope={activeScope}
           propertiesConfig={propertiesConfig}
           nodes={nodes}
@@ -8556,6 +9124,10 @@ function StoryCanvas({
           exportOpen={exportOpen}
           exportPreviewMode={exportPreviewMode}
           embedded
+          manualDirty={manualInspectorDraft?.dirty}
+          onSaveManual={
+            inspectorShowsManualSave ? onSaveManualInspector : undefined
+          }
           onExportPreviewModeChange={onExportPreviewModeChange}
           onClose={() => onSelect(undefined)}
           onUpdateSequence={onUpdateSequence}
@@ -8568,6 +9140,7 @@ function StoryCanvas({
           onUpdateDialogueBeat={onUpdateDialogueBeat}
           onUpdateEventDialogueBeat={onUpdateEventDialogueBeat}
           onUpdateScriptBlock={onUpdateScriptBlock}
+          onUpdateLocalizedText={onUpdateLocalizedText}
           onDeleteDialogueBeat={onDeleteDialogueBeat}
           onDeleteEventDialogueBeat={onDeleteEventDialogueBeat}
           onDeleteDecision={onDeleteDecision}
@@ -8636,6 +9209,7 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
     scriptId: string;
     blockId: string;
   }>();
+  const [eventScriptWorkspace, setEventScriptWorkspace] = useState<{ eventId: string; textKey?: string }>();
   const [selectedLogicRuleId, setSelectedLogicRuleId] = useState<string>();
   const [canonWidth, setCanonWidth] = useState(DEFAULT_EXPLORER_WIDTH);
   const [storiesWidth, setStoriesWidth] = useState(DEFAULT_PANEL_WIDTH);
@@ -8656,6 +9230,9 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
   const [markdownTabs, setMarkdownTabs] = useState<MarkdownEditorTab[]>([]);
   const [activeMarkdownTabId, setActiveMarkdownTabId] = useState<string>();
   const [eventDraft, setEventDraft] = useState<EventDraft>();
+  const [manualInspectorDrafts, setManualInspectorDrafts] = useState<
+    Record<string, ManualInspectorDraft>
+  >({});
   const [storyOutlineTab, setStoryOutlineTab] =
     useState<StoryOutlineTab>("sequence");
   const [activeScope, setActiveScopeState] = useState<CanvasScope>();
@@ -8864,6 +9441,7 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
       setRedoStack([]);
       setActionHistory([]);
       setEventDraft(undefined);
+      setManualInspectorDrafts({});
       setMarkdownTabs(savedSession.markdownTabs ?? []);
       setActiveMarkdownTabId(savedSession.activeMarkdownTabId);
       setCanonOpen(
@@ -8988,7 +9566,7 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
       const mutationResult = "project" in result ? result : { project: result };
 
       if (!currentProject) {
-        return;
+        return false;
       }
 
       const changed = mutationResult.project !== currentProject;
@@ -8999,7 +9577,7 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
         if (mutationResult.message) {
           setMessage(mutationResult.message);
         }
-        return;
+        return true;
       }
 
       const snapshot = {
@@ -9027,6 +9605,7 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
       try {
         await persistProjectRef.current?.();
         setMessage(mutationResult.message ?? `${label} saved.`);
+        return true;
       } catch (commitError) {
         restoreStructuralSnapshot(snapshot);
         setError(
@@ -9034,6 +9613,7 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
             ? commitError.message
             : String(commitError),
         );
+        return false;
       }
     },
     [applyProject, redoStack, restoreStructuralSnapshot, undoStack],
@@ -9070,6 +9650,55 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
     },
     [commitCanvasAction],
   );
+
+  const updateManualInspectorDraft = useCallback(
+    (
+      selection: ManualInspectorDraft["selection"],
+      update: (project: BranchingProject) => BranchingProject,
+    ) => {
+      const key = manualInspectorDraftKey(selection);
+      if (!key) return;
+      setManualInspectorDrafts((current) => {
+        const base = current[key]?.project ?? projectRef.current;
+        if (!base) return current;
+        return {
+          ...current,
+          [key]: {
+            selection,
+            project: update(base),
+            dirty: true,
+          },
+        };
+      });
+    },
+    [],
+  );
+
+  const saveManualInspectorDraft = useCallback(
+    async (key: string) => {
+      const draft = manualInspectorDrafts[key];
+      const currentProject = projectRef.current;
+      if (!draft?.dirty || !currentProject) return false;
+      const saved = await commitStructuralAction(
+        "Saved inspector changes",
+        mergeManualInspectorDraft(currentProject, draft),
+      );
+      if (saved) {
+        setManualInspectorDrafts((current) => {
+          const next = { ...current };
+          delete next[key];
+          return next;
+        });
+      }
+      return saved;
+    },
+    [commitStructuralAction, manualInspectorDrafts],
+  );
+
+  const saveActiveManualInspectorDraft = useCallback(async () => {
+    const key = manualInspectorDraftKey(selectionRef.current);
+    return key ? saveManualInspectorDraft(key) : false;
+  }, [saveManualInspectorDraft]);
 
   const createCanonWorkingCopy = useCallback(
     async (ref: CanonRef) => {
@@ -9308,22 +9937,17 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
 
   const updateLocalExplorerEntity = useCallback(
     (id: string, updates: Partial<LocalExplorerEntity>) => {
-      const currentProject = projectRef.current;
-      if (!currentProject) return;
-      void commitStructuralAction("Updated local Explorer entity", {
-        project: {
-          ...currentProject,
-          localExplorerEntities: (
-            currentProject.localExplorerEntities ?? []
-          ).map((entity) =>
+      updateManualInspectorDraft({ type: "explorerEntity", id }, (project) => ({
+        ...project,
+        localExplorerEntities: (project.localExplorerEntities ?? []).map(
+          (entity) =>
             entity.id === id
               ? { ...entity, ...updates, updatedAt: new Date().toISOString() }
               : entity,
-          ),
-        },
-      });
+        ),
+      }));
     },
-    [commitStructuralAction],
+    [updateManualInspectorDraft],
   );
 
   const createExplorerEntity = useCallback(
@@ -9362,6 +9986,14 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
       );
       if (!currentProject || !entity) return;
       if (!window.confirm(`Delete local entity \"${entity.name}\"?`)) return;
+      const draftKey = manualInspectorDraftKey({ type: "explorerEntity", id });
+      if (draftKey) {
+        setManualInspectorDrafts((current) => {
+          const next = { ...current };
+          delete next[draftKey];
+          return next;
+        });
+      }
       void commitStructuralAction("Deleted local Explorer entity", {
         project: {
           ...currentProject,
@@ -9413,45 +10045,41 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
 
   const updateLocalExplorerType = useCallback(
     (id: string, updates: Partial<LocalExplorerType>) => {
-      const currentProject = projectRef.current;
-      if (!currentProject) return;
-      void commitStructuralAction("Updated local Explorer type", {
-        project: {
-          ...currentProject,
-          localExplorerTypes: (currentProject.localExplorerTypes ?? []).map(
-            (type) =>
-              type.id === id
-                ? { ...type, ...updates, updatedAt: new Date().toISOString() }
-                : type,
+      updateManualInspectorDraft(
+        { type: "explorerType", id, source: "local" },
+        (project) => ({
+          ...project,
+          localExplorerTypes: (project.localExplorerTypes ?? []).map((type) =>
+            type.id === id
+              ? { ...type, ...updates, updatedAt: new Date().toISOString() }
+              : type,
           ),
-        },
-      });
+        }),
+      );
     },
-    [commitStructuralAction],
+    [updateManualInspectorDraft],
   );
 
   const updateLocalExplorerProperty = useCallback(
     (id: string, updates: Partial<LocalExplorerProperty>) => {
-      const currentProject = projectRef.current;
-      if (!currentProject) return;
-      void commitStructuralAction("Updated local Explorer property", {
-        project: {
-          ...currentProject,
-          localExplorerProperties: (
-            currentProject.localExplorerProperties ?? []
-          ).map((property) =>
-            property.id === id
-              ? {
-                  ...property,
-                  ...updates,
-                  updatedAt: new Date().toISOString(),
-                }
-              : property,
+      updateManualInspectorDraft(
+        { type: "explorerProperty", id, source: "local" },
+        (project) => ({
+          ...project,
+          localExplorerProperties: (project.localExplorerProperties ?? []).map(
+            (property) =>
+              property.id === id
+                ? {
+                    ...property,
+                    ...updates,
+                    updatedAt: new Date().toISOString(),
+                  }
+                : property,
           ),
-        },
-      });
+        }),
+      );
     },
-    [commitStructuralAction],
+    [updateManualInspectorDraft],
   );
 
   const updateLogicPropertyOverride = useCallback(
@@ -9460,28 +10088,37 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
       source: "canon" | "local",
       changes: Partial<LogicPropertyOverride>,
     ) => {
-      const currentProject = projectRef.current;
-      if (!currentProject) return;
-      const current = (currentProject.logicPropertyOverrides ?? []).find(
-        (item) => item.propertyId === propertyId && item.source === source,
-      ) ?? { propertyId, source };
-      void commitStructuralAction("Updated property capabilities", {
-        project: {
-          ...currentProject,
-          logicPropertyOverrides: [
-            ...(currentProject.logicPropertyOverrides ?? []).filter(
-              (item) => item.propertyId !== propertyId || item.source !== source,
-            ),
-            { ...current, ...changes },
-          ],
+      updateManualInspectorDraft(
+        { type: "explorerProperty", id: propertyId, source },
+        (project) => {
+          const current = (project.logicPropertyOverrides ?? []).find(
+            (item) => item.propertyId === propertyId && item.source === source,
+          ) ?? { propertyId, source };
+          const normalizedChanges = changes.entityPresentable === false
+            ? { ...changes, dialogueTrigger: false }
+            : changes;
+          return {
+            ...project,
+            logicPropertyOverrides: [
+              ...(project.logicPropertyOverrides ?? []).filter(
+                (item) => item.propertyId !== propertyId || item.source !== source,
+              ),
+              { ...current, ...normalizedChanges },
+            ],
+          };
         },
-      });
+      );
     },
-    [commitStructuralAction],
+    [updateManualInspectorDraft],
   );
 
   const publishLocalExplorerEntity = useCallback(
     async (id: string) => {
+      const draftKey = manualInspectorDraftKey({ type: "explorerEntity", id });
+      if (draftKey && manualInspectorDrafts[draftKey]?.dirty) {
+        const saved = await saveManualInspectorDraft(draftKey);
+        if (!saved) return;
+      }
       const currentProject = projectRef.current;
       const currentWorkspace = workspaceRef.current;
       const universePath = fileStateRef.current.universePath;
@@ -9546,7 +10183,7 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
         );
       }
     },
-    [commitStructuralAction],
+    [commitStructuralAction, manualInspectorDrafts, saveManualInspectorDraft],
   );
 
   const editCanonRefInBranch = useCallback((ref: CanonRef) => {
@@ -10132,10 +10769,20 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
     if (!universePath) {
       throw new Error("Open a universe before saving its customization.");
     }
+    const primaryLocale = canonicalLocale(profile.localization?.primaryLocale ?? machineLocale());
+    const locales = normalizeLocaleList(
+      profile.localization?.primaryLocale ?? machineLocale(),
+      profile.localization?.locales ?? [],
+    );
     const normalizedProfile: UniverseProfile = {
       ...fileStateRef.current.universeProfile,
       name: profile.name?.trim() || undefined,
       icon: profile.icon,
+      localization: {
+        primaryLocale,
+        locales,
+        localeNames: normalizeLocaleNames(profile.localization?.localeNames, locales),
+      },
     };
     const result = await saveUniverseTextFile(
       universePath,
@@ -10156,8 +10803,12 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
       workspaceRef.current = next;
       return next;
     });
+    const currentProject = projectRef.current;
+    if (currentProject) {
+      updateProject(normalizeLocalizationCatalog(currentProject, normalizedProfile.localization!.primaryLocale));
+    }
     setMessage("Universe customization saved.");
-  }, []);
+  }, [updateProject]);
 
   const persistProject = useCallback((options: { manual?: boolean } = {}) => {
     const run = async () => {
@@ -10641,6 +11292,23 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
     [exportPreviewMode, project],
   );
 
+  const importTwine = useCallback(
+    (source: string, fileName: string) => {
+      const currentProject = projectRef.current;
+      if (!currentProject) return;
+      if (!window.confirm(`Import ${fileName} as a new sequence? Your existing sequences, branches, canon, assets, and project settings will be kept.`)) return;
+      try {
+        const imported = importTwineHtml(source, currentProject);
+        const sequenceId = imported.canvas?.activeSequenceId;
+        const entryEventId = imported.sequences.find((sequence) => sequence.id === sequenceId)?.entryEventId;
+        void commitStructuralAction(`Imported Twine story ${fileName}`, imported, entryEventId ? { type: "node", id: entryEventId } : undefined);
+      } catch (importError) {
+        setError(importError instanceof Error ? importError.message : String(importError));
+      }
+    },
+    [commitStructuralAction],
+  );
+
   const openRecentProject = useCallback(
     async (path: string) => {
       if (fileState.universePath === path) {
@@ -10774,7 +11442,9 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
       }
       if (shortcutMatches(event, "Mod+S")) {
         event.preventDefault();
-        flushProjectAutosave();
+        void saveActiveManualInspectorDraft().then((saved) => {
+          if (!saved) flushProjectAutosave();
+        });
       }
       if (shortcutMatches(event, "Mod+R")) {
         event.preventDefault();
@@ -10792,6 +11462,7 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
     flushProjectAutosave,
     openProject,
     redoProject,
+    saveActiveManualInspectorDraft,
     suiteChrome,
     undoProject,
   ]);
@@ -11048,7 +11719,7 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
     setConfirmDialog({
       kind: "deleteSequence",
       title: "Delete Sequence",
-      message: `Delete "${sequence.name}"? This is blocked if it is the entry sequence or still contains events.`,
+      message: `Delete "${sequence.name}" and its ${sequence.eventIds.length} event${sequence.eventIds.length === 1 ? "" : "s"}? Links to those events will be removed.`,
     });
   }, []);
 
@@ -11173,35 +11844,9 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
         ? activeSequenceId(currentProject)
         : undefined;
       if (currentProject && sequenceId) {
-        const sequence = findSequence(currentProject, sequenceId);
-        if (!sequence) return;
-        if (
-          currentProject.entrySequenceId === sequence.id ||
-          sequence.eventIds.length > 0
-        ) {
-          setMessage(
-            "Sequence deletion is blocked while it is entry or still contains events.",
-          );
-          return;
-        }
-        const nextSequences = currentProject.sequences.filter(
-          (item) => item.id !== sequence.id,
-        );
-        updateProject(
-          {
-            ...currentProject,
-            sequences: nextSequences,
-            canvas: {
-              ...currentProject.canvas,
-              activeSequenceId:
-                currentProject.canvas?.activeSequenceId === sequence.id
-                  ? nextSequences[0]?.id
-                  : currentProject.canvas?.activeSequenceId,
-            },
-          },
-          nextSequences[0]
-            ? { type: "node", id: nextSequences[0].id }
-            : undefined,
+        runCanvasMutation(
+          mutations.deleteSequence(currentProject, sequenceId),
+          "Deleted sequence",
         );
       }
       return;
@@ -11701,7 +12346,7 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
   );
 
   const createDecision = useCallback(
-    (eventId: string) => {
+    (eventId: string, dialogueId?: string) => {
       const currentProject = projectRef.current;
       if (!currentProject) {
         return;
@@ -11710,12 +12355,12 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
         const draftProject = applyEventDraftToProject(currentProject, eventDraft);
         setEventDraft(undefined);
         runCanvasMutation(
-          mutations.createDecision(draftProject, eventId),
+          mutations.createDecision(draftProject, eventId, dialogueId),
           "Created decision",
         );
         return;
       }
-      runCanvasMutation(mutations.createDecision(currentProject, eventId));
+      runCanvasMutation(mutations.createDecision(currentProject, eventId, dialogueId));
     },
     [eventDraft, runCanvasMutation],
   );
@@ -11841,25 +12486,28 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
   );
 
   const updateCharacterCategories = useCallback((categories: string[]) => {
-    if (!project) return;
     const mappingId = "pathbranching:additional-characters";
-    const mappings = project.integrationConfigOverride?.mappings ?? [];
-    const nextMappings = categories.length
-      ? [...mappings.filter((mapping) => mapping.id !== mappingId), {
-        id: mappingId,
-        classId: "class:Speaker",
-        worldnotionTypes: categories,
-        roles: ["speaker", "presentation"],
-      }]
-      : mappings.filter((mapping) => mapping.id !== mappingId);
-    runMutation({
-      project: {
+    const selection = selectionRef.current;
+    if (selection?.type !== "explorerProperty") return;
+    updateManualInspectorDraft(selection, (project) => {
+      const mappings = project.integrationConfigOverride?.mappings ?? [];
+      const nextMappings = categories.length
+        ? [
+            ...mappings.filter((mapping) => mapping.id !== mappingId),
+            {
+              id: mappingId,
+              classId: "class:Speaker",
+              worldnotionTypes: categories,
+              roles: ["speaker", "presentation"],
+            },
+          ]
+        : mappings.filter((mapping) => mapping.id !== mappingId);
+      return {
         ...project,
         integrationConfigOverride: { specVersion: "0.1", mappings: nextMappings },
-      },
-      message: "Updated character categories.",
+      };
     });
-  }, [project, runMutation]);
+  }, [updateManualInspectorDraft]);
 
   // Script blocks edited through Assets are content assets and save immediately.
   // The same blocks edited from a canvas Speech Beat belong to that canvas edit
@@ -11873,6 +12521,18 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
       );
     },
     [project, runCanvasMutation],
+  );
+
+  const updateCanvasLocalizedText = useCallback(
+    (textKey: string, locale: string, value: string) => {
+      const currentProject = projectRef.current;
+      if (!currentProject) return;
+      const primaryLocale = fileStateRef.current.universeProfile?.localization?.primaryLocale ?? machineLocale();
+      runCanvasMutation({
+        project: updateLocalizedEntry(currentProject, textKey, locale, value, primaryLocale),
+      });
+    },
+    [runCanvasMutation],
   );
 
   const createScriptDocument = useCallback(() => {
@@ -12716,6 +13376,14 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
         }
         return;
       }
+      if (selectedNode?.data.kind === "dialogueStart" && typeof selectedNode.data.details?.eventId === "string") {
+        const start = selectedNode.data.details.start as { id?: string } | undefined;
+        if (start?.id) {
+          runCanvasMutation(mutations.deleteDialogueStart(currentProject, selectedNode.data.details.eventId, start.id));
+          setSelection(undefined);
+        }
+        return;
+      }
       if (
         selectedNode?.data.kind === "dialogue" &&
         typeof selectedNode.data.details?.eventId === "string"
@@ -12931,6 +13599,12 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
               : mutations.deleteEventDialogueBeat(nextProject, eventId, beat.id)).project;
             deletedCount += 1;
           }
+        } else if (node.data.kind === "dialogueStart" && typeof eventId === "string") {
+          const start = node.data.details?.start as { id?: string } | undefined;
+          if (start?.id) {
+            nextProject = mutations.deleteDialogueStart(nextProject, eventId, start.id).project;
+            deletedCount += 1;
+          }
         } else if (node.data.kind === "dialogue" && typeof eventId === "string") {
           const dialogue = node.data.details?.dialogue as { id?: string } | undefined;
           if (dialogue?.id) {
@@ -13013,6 +13687,52 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
     },
     [closeDeletedNodeInspector, commitCanvasAction, nodes],
   );
+
+  const groupDialogueMembers = useCallback((nodeIds: string[]) => {
+    const currentProject = projectRef.current;
+    if (!currentProject) return;
+    const selectedNodes = nodes.filter((node) => nodeIds.includes(node.id));
+    const selectedMembers = canvasDialogueMembers(nodes, nodeIds);
+    const eventIds = new Set(selectedMembers.map(({ eventId }) => eventId));
+    if (selectedMembers.length !== nodeIds.length || selectedMembers.length !== selectedNodes.length || eventIds.size !== 1) {
+      setMessage("Dialogue members must belong to the same event.");
+      return;
+    }
+    runCanvasMutation(mutations.groupDialogueMembers(currentProject, Array.from(eventIds)[0], selectedMembers.map(({ member }) => member)));
+  }, [nodes, runCanvasMutation]);
+
+  const detachDialogueMembers = useCallback((nodeIds: string[]) => {
+    const currentProject = projectRef.current;
+    if (!currentProject || activeScope?.kind !== "dialogue") return;
+    const members: DialogueMemberRef[] = [];
+    nodes.filter((node) => nodeIds.includes(node.id)).forEach((node) => {
+      if (node.data.kind === "speechBeat" || node.data.kind === "directionBeat") {
+        const beat = node.data.details?.beat as { id?: string } | undefined;
+        if (beat?.id) members.push({ kind: "beat", id: beat.id });
+        return;
+      }
+      if (node.data.kind === "decision") {
+        const decision = node.data.details?.decision as { id?: string } | undefined;
+        if (decision?.id) members.push({ kind: "decision", id: decision.id });
+      }
+    });
+    runCanvasMutation(mutations.detachDialogueMembers(currentProject, activeScope.eventId, activeScope.id, members));
+  }, [activeScope, nodes, runCanvasMutation]);
+
+  const dissolveDialogue = useCallback((eventId: string, dialogueId: string) => {
+    const currentProject = projectRef.current;
+    if (!currentProject) return;
+    runCanvasMutation(mutations.detachDialogueMembers(currentProject, eventId, dialogueId));
+    if (activeScope?.kind === "dialogue" && activeScope.id === dialogueId) {
+      navigateCanvasScope({ kind: "event", id: eventId });
+    }
+  }, [activeScope, navigateCanvasScope, runCanvasMutation]);
+
+  const createDialogueStart = useCallback((eventId: string) => {
+    const currentProject = projectRef.current;
+    if (!currentProject) return;
+    runCanvasMutation(mutations.createDialogueStart(currentProject, eventId));
+  }, [runCanvasMutation]);
 
   useEffect(() => {
     if (suiteChrome && !suiteChrome.active) return;
@@ -13179,10 +13899,10 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
           void openProject();
           break;
         case "pb:file:save":
-          flushProjectAutosave();
-          break;
         case "pb:file:save-as":
-          flushProjectAutosave();
+          void saveActiveManualInspectorDraft().then((saved) => {
+            if (!saved) flushProjectAutosave();
+          });
           break;
         case "pb:file:export-runtime":
           void exportRuntime("runtime");
@@ -13301,6 +14021,7 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
     redoProject,
     resetLayout,
     flushProjectAutosave,
+    saveActiveManualInspectorDraft,
     settings.worldnotionBridge.connected,
     toggleCanon,
     toggleFiles,
@@ -13423,6 +14144,11 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
       />
     </>
   );
+
+  const activeManualInspectorDraft = (() => {
+    const key = manualInspectorDraftKey(selection);
+    return key ? manualInspectorDrafts[key] : undefined;
+  })();
 
   if (error) {
     return (
@@ -13609,7 +14335,27 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
             onNavigatePathNode={navigatePathTreeNode}
             onContextMenu={openPanelContextMenu}
           /> : null}
-          <StoryCanvas
+          {eventScriptWorkspace ? (
+            <EventScriptWorkspace
+              project={project}
+              eventId={eventScriptWorkspace.eventId}
+              primaryLocale={fileState.universeProfile?.localization?.primaryLocale ?? machineLocale()}
+              locales={fileState.universeProfile?.localization?.locales ?? [machineLocale()]}
+              localeNames={fileState.universeProfile?.localization?.localeNames}
+              focusedTextKey={eventScriptWorkspace.textKey}
+              breadcrumb={canvasBreadcrumb(project, { kind: "event", id: eventScriptWorkspace.eventId }).map((crumb) => ({
+                label: crumb.label,
+                onClick: () => {
+                  setEventScriptWorkspace(undefined);
+                  navigateCanvasScope(crumb.scope, { type: "node", id: crumb.scope.id });
+                },
+              }))}
+              onClose={() => setEventScriptWorkspace(undefined)}
+              onUpdateEvent={updateEvent}
+              onUpdateText={updateCanvasLocalizedText}
+              onUpdateBlock={updateCanvasScriptBlock}
+            />
+          ) : <StoryCanvas
             project={project}
             propertiesConfig={workspace?.canonIndex.propertiesConfig}
             files={files}
@@ -13620,12 +14366,17 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
             message={message}
             showStatusMessages={settings.showStatusMessages}
             activeScope={activeScope}
+            primaryLocale={fileState.universeProfile?.localization?.primaryLocale ?? machineLocale()}
+            locales={fileState.universeProfile?.localization?.locales ?? [machineLocale()]}
+            localeNames={fileState.universeProfile?.localization?.localeNames}
             exportOpen={exportOpen}
             exportPreviewMode={exportPreviewMode}
             dataOpen={dataOpen}
             markdownTabs={markdownTabs}
             activeMarkdownTabId={activeMarkdownTabId}
             eventDraft={eventDraft}
+            manualInspectorDraft={activeManualInspectorDraft}
+            manualInspectorEnabled={Boolean(manualInspectorDraftKey(selection))}
             eventInspector={eventInspector}
             eventInspectorTabGroups={eventInspectorTabGroups}
             inspectorTabs={inspectorTabs}
@@ -13638,7 +14389,10 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
             onConnect={handleConnect}
             onNodeDragStop={handleNodeDragStop}
             onSelect={selectWithEventDraftGuard}
+            onCanvasSelect={setSelection}
+            onOpenCanvasInspector={selectWithEventDraftGuard}
             onNavigateScope={navigateCanvasScope}
+            onOpenEventScript={(eventId, textKey) => setEventScriptWorkspace({ eventId, textKey })}
             onExportPreviewModeChange={setExportPreviewMode}
             onToggleData={() => setDataOpen((open) => !open)}
             onCreateEvent={createEvent}
@@ -13657,6 +14411,7 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
             onUpdateDialogueBeat={updateDialogueBeat}
             onUpdateEventDialogueBeat={updateEventDialogueBeat}
             onUpdateScriptBlock={updateCanvasScriptBlock}
+            onUpdateLocalizedText={updateCanvasLocalizedText}
             onDeleteDialogueBeat={deleteDialogueBeat}
             onDeleteEventDialogueBeat={deleteEventDialogueBeat}
             onDeleteDecision={deleteDecision}
@@ -13698,6 +14453,10 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
             onUpdateEdgeLabel={updateEdgeLabel}
             onDeleteSelection={deleteSelection}
             onDeleteNodeSelections={deleteNodeSelections}
+            onGroupDialogueMembers={groupDialogueMembers}
+            onDetachDialogueMembers={detachDialogueMembers}
+            onDissolveDialogue={dissolveDialogue}
+            onCreateDialogueStart={createDialogueStart}
             onOpenRule={openLogicRule}
             onActivateMarkdownTab={setActiveMarkdownTabId}
             onCloseMarkdownTab={closeMarkdownTab}
@@ -13726,7 +14485,10 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
             }}
             onDisableInspectorDebug={() => changeInspectorDebugEnabled(false)}
             onToggleInspectorMaximized={() => setInspectorMaximized((current) => !current)}
-          />
+            onSaveManualInspector={() => {
+              void saveActiveManualInspectorDraft();
+            }}
+          />}
           {panelVisibility.player ? <PlayerPanel
             project={project}
             collapsed={panelCollapsed.player}
@@ -13740,6 +14502,8 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
             onCollapsedChange={(collapsed) => setPanelCollapsedState("export", collapsed)}
             onContextMenu={openPanelContextMenu}
             onExport={(mode) => void exportRuntime(mode)}
+            onImportTwine={importTwine}
+            onUpdate={(nextProject) => updateProject(nextProject)}
           /> : null}
           {panelVisibility.connect ? <ConnectPanel
             collapsed={panelCollapsed.connect}

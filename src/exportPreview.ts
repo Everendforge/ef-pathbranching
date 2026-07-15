@@ -1,8 +1,9 @@
 import type { BranchingProject, RuntimePackage } from "./domain.js";
 import { exportInkProject, exportSinpoGameData, type InkProjectExport, type SinpoGameDataExport } from "./exportFormats.js";
 import { exportRuntimePackage } from "./exportRuntime.js";
+import { exportTwineHtml } from "./twineFormat.js";
 
-export type ExportPreviewMode = "runtime" | "ink" | "gameData";
+export type ExportPreviewMode = "runtime" | "ink" | "gameData" | "twine";
 
 export type ExportPreviewBundle = {
   mode: ExportPreviewMode;
@@ -38,6 +39,17 @@ export function buildExportPreview(project: BranchingProject, mode: ExportPrevie
       gameDataExport,
       content: `${JSON.stringify(gameDataExport, null, 2)}\n`,
       defaultName: "sinpo-game-data.json",
+    };
+  }
+
+  if (mode === "twine") {
+    return {
+      mode,
+      runtimePackage,
+      inkExport,
+      gameDataExport,
+      content: exportTwineHtml(project),
+      defaultName: "story.twine.html",
     };
   }
 

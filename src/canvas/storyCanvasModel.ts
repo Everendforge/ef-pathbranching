@@ -26,6 +26,7 @@ export type StoryCanvasNodeKind =
   | "event"
   | "decision"
   | "dialogue"
+  | "dialogueStart"
   | "speechBeat"
   | "directionBeat"
   | "outcome"
@@ -738,10 +739,11 @@ function addSubcanvasWorkspace(
       scope,
       autoPosition: true,
       draggable: false,
-      // React Flow disables pointer events entirely for nodes that are neither
-      // draggable nor selectable. Keep it selectable so the resize handle can
-      // receive pointer events; the canvas ignores selection for this node.
-      selectable: true,
+      // The working area is a visual guide, not a canvas item. Keeping it out
+      // of React Flow's selectable set prevents marquee selection from
+      // selecting the whole area when the user drags over its contents. The
+      // resize handles opt back into pointer events in the node component.
+      selectable: false,
       width: bounds.width,
       height: bounds.height,
       zIndex: 0,
@@ -1008,7 +1010,7 @@ function buildEventScopeModel(
 
   // Decisions and narrative beats are peers on the event canvas. `dialogueId`
   // remains readable for old files, but no longer changes where a decision lives.
-  eventNode.decisions?.forEach((decision, index) => {
+  eventNode.decisions?.filter((decision) => !decision.dialogueId).forEach((decision, index) => {
     const decisionId = `decision:${eventNode.id}:${decision.id}`;
     pushNode(
       project,
@@ -1041,33 +1043,21 @@ function buildEventScopeModel(
       script.blocks.map((block) => [`${script.id}:${block.id}`, block] as const),
     ),
   );
-  const eventBeats = [
-    ...(eventNode.dialogueBeats ?? [])
-      .filter((beat) => beat.kind === "speech")
-      .map((beat) => ({ beat, dialogueId: undefined })),
-    // Surface existing grouped beats here too, so older projects do not require
-    // entering a dialogue canvas just to edit their narrative.
-    ...(eventNode.dialogues ?? []).flatMap((dialogue) =>
-      (dialogue.beats ?? [])
-        .filter((beat) => beat.kind === "speech")
-        .map((beat) => ({ beat, dialogueId: dialogue.id })),
-    ),
-  ];
+  const eventBeats = (eventNode.dialogueBeats ?? []).map((beat) => ({ beat, dialogueId: undefined }));
   eventBeats.forEach(({ beat, dialogueId }, index) => {
     const block = scriptBlocks.get(`${beat.blockRef.scriptId}:${beat.blockRef.blockId}`);
-    const nodeId = dialogueId
-      ? `beat:${eventNode.id}:${dialogueId}:${beat.id}`
-      : `beat:${eventNode.id}:${beat.id}`;
-    const speaker = block?.speakerRef
-      ? project.canonRefs.find((ref) => ref.id === block.speakerRef)?.label ?? block.speakerRef
+    const nodeId = `beat:${eventNode.id}:${beat.id}`;
+    const characterRef = block?.characterRef ?? block?.speakerRef;
+    const speaker = characterRef
+      ? project.canonRefs.find((ref) => ref.id === characterRef)?.label ?? characterRef
       : undefined;
     pushNode(
       project,
       nodes,
       nodeId,
-      "speechBeat",
-      block?.content.trim().slice(0, 80) || "New speech",
-      speaker ?? "Narrador",
+      beat.kind === "speech" ? "speechBeat" : "directionBeat",
+      block?.content.trim().slice(0, 80) || (beat.kind === "speech" ? "New speech" : "New direction"),
+      beat.kind === "speech" ? speaker ?? "Narrador" : "Stage direction",
       740,
       420 + index * 168,
       logicBadges(beat.displayCondition, beat.ruleSets?.length ?? 0),
@@ -1084,12 +1074,34 @@ function buildEventScopeModel(
       dialogueId,
       "dialogue",
       dialogue.title,
-      `${dialogue.beats?.length ?? 0} beats`,
+      `${dialogue.members?.length ?? dialogue.beats?.length ?? 0} items`,
       690,
       420 + index * 168,
       dialogueBadges(project, dialogue),
       { eventId: eventNode.id, dialogue },
       { nodeColors: options.nodeColors, scope },
+    );
+  });
+
+  (eventNode.dialogueStarts ?? []).forEach((start, index) => {
+    const sourceLabel = start.source?.kind === "canonRef"
+      ? project.canonRefs.find((ref) => ref.id === start.source?.id)?.label ?? start.source.id
+      : start.source?.kind === "dataObject"
+        ? project.projectDataObjects?.find((item) => item.id === start.source?.id)?.name ?? start.source.id
+        : undefined;
+    const nodeId = `dialogue-start:${eventNode.id}:${start.id}`;
+    pushNode(
+      project,
+      nodes,
+      nodeId,
+      "dialogueStart",
+      "Dialogue Trigger",
+      sourceLabel ?? "Choose an interactable source",
+      410,
+      250 + index * 120,
+      logicBadges(start.availability, 0),
+      { eventId: eventNode.id, start },
+      { nodeColors: options.nodeColors, scope, width: 210, height: 88 },
     );
   });
 
@@ -1187,12 +1199,20 @@ function buildEventScopeModel(
     },
   );
 
+  const dialogueOwnerByMember = new Map<string, string>();
+  (eventNode.dialogues ?? []).forEach((dialogue) => {
+    const containerId = `dialogue:${eventNode.id}:${dialogue.id}`;
+    (dialogue.beats ?? []).forEach((beat) => dialogueOwnerByMember.set(`beat:${eventNode.id}:${beat.id}`, containerId));
+    (eventNode.decisions ?? []).filter((decision) => decision.dialogueId === dialogue.id).forEach((decision) => dialogueOwnerByMember.set(`decision:${eventNode.id}:${decision.id}`, containerId));
+  });
+
   eventNode.boundaryBindings?.forEach((binding) => {
-    if (!nodes.some((node) => node.id === binding.portId) || !nodes.some((node) => node.id === binding.nodeId)) {
+    const projectedNodeId = dialogueOwnerByMember.get(binding.nodeId) ?? binding.nodeId;
+    if (!nodes.some((node) => node.id === binding.portId) || !nodes.some((node) => node.id === projectedNodeId)) {
       return;
     }
-    const source = binding.direction === "input" ? binding.portId : binding.nodeId;
-    const target = binding.direction === "input" ? binding.nodeId : binding.portId;
+    const source = binding.direction === "input" ? binding.portId : projectedNodeId;
+    const target = binding.direction === "input" ? projectedNodeId : binding.portId;
     if (
       eventNode.transitions?.some(
         (transition) => transition.from === source && transition.to === target,
@@ -1206,8 +1226,15 @@ function buildEventScopeModel(
   const nodeIds = new Set(nodes.map((node) => node.id));
   eventNode.transitions?.forEach((transition) => {
     const source = visualTransitionSource(eventNode, transition);
-    if (nodeIds.has(source.nodeId) && nodeIds.has(transition.to)) {
-      edges.push(transitionEdge(eventNode, transition));
+    const projectedSource = dialogueOwnerByMember.get(source.nodeId) ?? source.nodeId;
+    const projectedTarget = dialogueOwnerByMember.get(transition.to) ?? transition.to;
+    if (projectedSource === projectedTarget) return;
+    if (nodeIds.has(projectedSource) && nodeIds.has(projectedTarget)) {
+      edges.push(transitionEdge(eventNode, {
+        ...transition,
+        from: projectedSource === source.nodeId ? transition.from : projectedSource,
+        to: projectedTarget,
+      }));
     }
   });
 
@@ -1244,24 +1271,42 @@ function buildDialogueScopeModel(
       script.blocks.map((block) => [`${script.id}:${block.id}`, block] as const),
     ),
   );
-  (dialogue.beats ?? []).filter((beat) => beat.kind === "speech").forEach((beat, index) => {
+  (dialogue.beats ?? []).forEach((beat, index) => {
     const block = scriptBlocks.get(`${beat.blockRef.scriptId}:${beat.blockRef.blockId}`);
-    const nodeId = `beat:${eventNode.id}:${dialogue.id}:${beat.id}`;
-    const speaker = block?.speakerRef
-      ? project.canonRefs.find((ref) => ref.id === block.speakerRef)?.label ?? block.speakerRef
+    const nodeId = `beat:${eventNode.id}:${beat.id}`;
+    const characterRef = block?.characterRef ?? block?.speakerRef;
+    const speaker = characterRef
+      ? project.canonRefs.find((ref) => ref.id === characterRef)?.label ?? characterRef
       : undefined;
     pushNode(
       project,
       nodes,
       nodeId,
-      "speechBeat",
-      block?.content.trim().slice(0, 80) || "New speech",
-      speaker ?? "Narrador",
+      beat.kind === "speech" ? "speechBeat" : "directionBeat",
+      block?.content.trim().slice(0, 80) || (beat.kind === "speech" ? "New speech" : "New direction"),
+      beat.kind === "speech" ? speaker ?? "Narrador" : "Stage direction",
       330 + (index % 2) * 310,
       90 + Math.floor(index / 2) * 175,
       logicBadges(beat.displayCondition, beat.ruleSets?.length ?? 0),
       { eventId: eventNode.id, dialogueId: dialogue.id, beat, block },
       { nodeColors: options.nodeColors, scope },
+    );
+  });
+
+  (eventNode.decisions ?? []).filter((decision) => decision.dialogueId === dialogue.id).forEach((decision, index) => {
+    const decisionId = `decision:${eventNode.id}:${decision.id}`;
+    pushNode(
+      project,
+      nodes,
+      decisionId,
+      "decision",
+      decision.name,
+      decision.description ?? decision.id,
+      340 + (index % 2) * 320,
+      460 + Math.floor(index / 2) * 180,
+      [decision.type, `${decision.outcomes.length} outcomes`, ...logicBadges(decision.availability, decision.ruleSets?.length ?? 0)],
+      { eventId: eventNode.id, dialogueId: dialogue.id, decision, options: decisionOptions(eventNode.id, decision) },
+      { nodeColors: options.nodeColors, scope, width: 300, height: Math.max(126, 74 + decision.outcomes.length * 44) },
     );
   });
 
@@ -1317,7 +1362,7 @@ function buildDialogueScopeModel(
   );
 
   const entryBeat = dialogue.entryBeatId
-    ? `beat:${eventNode.id}:${dialogue.id}:${dialogue.entryBeatId}`
+    ? `beat:${eventNode.id}:${dialogue.entryBeatId}`
     : undefined;
   if (entryBeat && nodes.some((node) => node.id === entryBeat)) {
     edges.push(edge(`edge:dialogue-entry:${dialogue.id}`, inputId, entryBeat, "boundary", "enters"));
@@ -1325,8 +1370,15 @@ function buildDialogueScopeModel(
   const nodeIds = new Set(nodes.map((node) => node.id));
   (eventNode.transitions ?? []).forEach((transition) => {
     const source = visualTransitionSource(eventNode, transition);
-    if (!nodeIds.has(source.nodeId) || !nodeIds.has(transition.to)) return;
-    edges.push(transitionEdge(eventNode, transition));
+    const sourceInside = nodeIds.has(source.nodeId);
+    const targetInside = nodeIds.has(transition.to);
+    if (sourceInside && targetInside) {
+      edges.push(transitionEdge(eventNode, transition));
+    } else if (sourceInside && !targetInside) {
+      edges.push(transitionEdge(eventNode, { ...transition, to: outputId }));
+    } else if (!sourceInside && targetInside && transition.to !== entryBeat) {
+      edges.push(transitionEdge(eventNode, { ...transition, from: inputId }));
+    }
   });
 
   insertRouteGates(project, nodes, edges, scope, options);

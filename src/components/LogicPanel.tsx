@@ -1,8 +1,12 @@
-import { ChevronDown, ChevronRight, ChevronUp, CircleDot, Plus, Trash2 } from "lucide-react";
+import { Boxes, ChevronDown, ChevronRight, ChevronUp, CircleDot, Plus, Trash2 } from "lucide-react";
 import { useMemo, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import type { Selection } from "../appTypes.js";
 import type { BranchingProject, LogicVariable, LogicVariableGroup, LogicVariableType } from "../domain.js";
-import { canonExplorerProperties, type CanonExplorerProperty } from "../explorerSchema.js";
+import {
+  canonExplorerPropertyTypes,
+  canonExplorerTypeProperty,
+  type CanonExplorerProperty,
+} from "../explorerSchema.js";
 import { WorkspaceSidePanel } from "./WorkspaceSidePanel.js";
 
 const types: LogicVariableType[] = ["text", "number", "boolean", "list", "canonRef"];
@@ -14,8 +18,9 @@ export function LogicPanel({ project, propertiesConfig, collapsed, onCollapsedCh
 }) {
   const [tab, setTab] = useState<"properties" | "variables">("properties");
   const [collapsedSources, setCollapsedSources] = useState<Set<"canon" | "local">>(() => new Set());
+  const [collapsedCanonTypes, setCollapsedCanonTypes] = useState<Set<string>>(() => new Set());
   const groups = [...(project.logicVariableGroups ?? [])].sort((a, b) => a.order - b.order);
-  const canonProperties = useMemo(() => canonExplorerProperties(propertiesConfig), [propertiesConfig]);
+  const canonPropertyTypes = useMemo(() => canonExplorerPropertyTypes(propertiesConfig), [propertiesConfig]);
   const localProperties = project.localExplorerProperties ?? [];
   const updateGroups = (next: LogicVariableGroup[]) => onUpdate({ ...project, logicVariableGroups: next });
   const updateVariables = (next: LogicVariable[]) => onUpdate({ ...project, logicVariables: next });
@@ -24,9 +29,11 @@ export function LogicPanel({ project, propertiesConfig, collapsed, onCollapsedCh
   const variableValue = (variable: LogicVariable) => variable.type === "list" && Array.isArray(variable.value) ? variable.value.join(", ") : String(variable.value);
   const updateVariable = (id: string, changes: Partial<LogicVariable>) => updateVariables((project.logicVariables ?? []).map((variable) => variable.id === id ? { ...variable, ...changes } : variable));
   const toggleSource = (source: "canon" | "local") => setCollapsedSources((current) => { const next = new Set(current); if (next.has(source)) next.delete(source); else next.add(source); return next; });
+  const toggleCanonType = (typeId: string) => setCollapsedCanonTypes((current) => { const next = new Set(current); if (next.has(typeId)) next.delete(typeId); else next.add(typeId); return next; });
   const propertySelected = (id: string, source: "canon" | "local") => selected?.type === "explorerProperty" && selected.id === id && selected.source === source;
+  const propertyCount = (properties: CanonExplorerProperty[]): number => properties.reduce((count, property) => count + 1 + propertyCount(property.children), 0);
   const renderCanonProperty = (property: CanonExplorerProperty, depth = 0): ReactNode => <div className="logic-property-tree-node" key={property.id} style={{ "--property-depth": depth } as CSSProperties}>
-    <button type="button" className={`explorer-entity-open logic-property-row ${propertySelected(property.id, "canon") ? "active" : ""}`} onClick={() => onSelect({ type: "explorerProperty", id: property.id, source: "canon" })}><CircleDot size={14} /><span className="explorer-entity-name">{property.label}</span><em className="explorer-origin canon">{property.valueType}</em></button>
+    <button type="button" className={`explorer-entity-open logic-property-row ${propertySelected(property.id, "canon") ? "active" : ""}`} onClick={() => onSelect({ type: "explorerProperty", id: property.id, source: "canon" })}>{property.valueType === "group" ? <Boxes size={14} /> : <CircleDot size={14} />}<span className="explorer-entity-name">{property.label}</span><em className="explorer-origin canon">{property.valueType}</em></button>
     {property.children.length ? <div className="logic-property-children">{property.children.map((child) => renderCanonProperty(child, depth + 1))}</div> : null}
   </div>;
 
@@ -40,11 +47,23 @@ export function LogicPanel({ project, propertiesConfig, collapsed, onCollapsedCh
       <p className="inspector-connection-hint">Select a property to edit its schema and Pathbranching capabilities in the inspector.</p>
       <div className="explorer-tree logic-property-tree">
         {(["canon", "local"] as const).map((source) => {
-          const properties = source === "canon" ? canonProperties : localProperties;
+          const properties = source === "canon" ? canonPropertyTypes.flatMap((type) => type.properties) : localProperties;
           const expanded = !collapsedSources.has(source);
           return <section className="explorer-type-group" key={source}>
             <button type="button" className="explorer-type-heading" onClick={() => toggleSource(source)}>{expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}<CircleDot size={14} /><strong>{source === "canon" ? "Canon properties" : "Local properties"}</strong><span>{properties.length}</span></button>
-            {expanded ? source === "canon" ? canonProperties.map((property) => renderCanonProperty(property)) : properties.map((property) => <button type="button" key={property.id} className={`explorer-entity-open logic-property-row ${propertySelected(property.id, source) ? "active" : ""}`} onClick={() => onSelect({ type: "explorerProperty", id: property.id, source })}><CircleDot size={14} /><span className="explorer-entity-name">{property.label}</span><em className={`explorer-origin ${source}`}>{property.valueType}</em></button>) : null}
+            {expanded ? source === "canon" ? canonPropertyTypes.map((type) => {
+              const typeExpanded = !collapsedCanonTypes.has(type.id);
+              const count = propertyCount(type.properties);
+              const typeProperty = canonExplorerTypeProperty(type);
+              return <section className="logic-canon-type-group" key={type.id}>
+                <div className="logic-canon-type-heading">
+                  <button type="button" className="logic-canon-type-toggle" aria-label={`${typeExpanded ? "Collapse" : "Expand"} ${type.label}`} onClick={() => toggleCanonType(type.id)}>{typeExpanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}</button>
+                  <button type="button" className={`explorer-entity-open logic-property-row logic-canon-type-row ${propertySelected(typeProperty.id, "canon") ? "active" : ""}`} onClick={() => onSelect({ type: "explorerProperty", id: typeProperty.id, source: "canon" })}><CircleDot size={13} /><span className="explorer-entity-name">{type.label}</span><em className="explorer-origin canon">{typeProperty.valueType}</em><span className="logic-canon-type-count">{count}</span></button>
+                </div>
+                {typeExpanded && type.properties.map((property) => renderCanonProperty(property))}
+                {typeExpanded && !type.properties.length ? <span className="empty-line">No properties for this type.</span> : null}
+              </section>;
+            }) : properties.map((property) => <button type="button" key={property.id} className={`explorer-entity-open logic-property-row ${propertySelected(property.id, source) ? "active" : ""}`} onClick={() => onSelect({ type: "explorerProperty", id: property.id, source })}><CircleDot size={14} /><span className="explorer-entity-name">{property.label}</span><em className={`explorer-origin ${source}`}>{property.valueType}</em></button>) : null}
             {expanded && properties.length === 0 ? <span className="empty-line">No {source} properties.</span> : null}
           </section>;
         })}
