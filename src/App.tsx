@@ -233,6 +233,12 @@ import {
   type UniverseProfile,
 } from "./pathBranchingWorkspace.js";
 import {
+  VAULT_APPEARANCE_SETTINGS_PATH,
+  applyVaultAppearanceSettings,
+  serializeVaultAppearance,
+  serializeVaultAppearanceSettings,
+} from "./vaultAppearanceSettings.js";
+import {
   THEMES,
   isDarkTheme,
   normalizeThemeId,
@@ -10482,6 +10488,8 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
   const projectRef = useRef<BranchingProject | undefined>(undefined);
   const workspaceRef = useRef<PathBranchingWorkspace | undefined>(undefined);
   const fileStateRef = useRef<ProjectFileState>({ dirty: false });
+  /** Serialized appearance last known to match `.everend/.pathbranching/settings.json` on disk. */
+  const vaultAppearanceOnDiskRef = useRef<string | undefined>(undefined);
   const selectionRef = useRef<Selection | undefined>(undefined);
   const canvasClipboardRef = useRef<CanvasClipboard | undefined>(undefined);
   const canvasPasteOffsetRef = useRef(0);
@@ -10589,6 +10597,18 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
 
   const applyWorkspace = useCallback(
     (nextWorkspace: PathBranchingWorkspace, universePath: string) => {
+      if (fileStateRef.current.universePath !== universePath) {
+        // Track what's on disk for this universe so the appearance-save effect
+        // doesn't immediately re-write the file it just loaded, but does seed
+        // `.everend/.pathbranching/settings.json` the first time a universe
+        // without one opens.
+        vaultAppearanceOnDiskRef.current = nextWorkspace.vaultAppearanceSettings
+          ? serializeVaultAppearance(nextWorkspace.vaultAppearanceSettings)
+          : undefined;
+        setSettings((current) =>
+          applyVaultAppearanceSettings(current, nextWorkspace.vaultAppearanceSettings),
+        );
+      }
       const savedSession = normalizeWorkspaceSession(
         settingsRef.current.workspaceSessions?.[universePath],
       );
@@ -11655,6 +11675,22 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
     document.documentElement.dataset.theme = suiteChrome?.suiteSettings?.style ?? settings.theme;
     saveSettings({ ...settings, lastView: view });
   }, [settings, suiteChrome?.suiteSettings?.style, view]);
+
+  useEffect(() => {
+    const universePath = fileState.universePath;
+    if (!universePath) return;
+    const content = serializeVaultAppearanceSettings(settings);
+    if (vaultAppearanceOnDiskRef.current === content) return;
+    const timer = setTimeout(() => {
+      vaultAppearanceOnDiskRef.current = content;
+      void saveUniverseTextFile(universePath, VAULT_APPEARANCE_SETTINGS_PATH, content).catch(() => {
+        if (vaultAppearanceOnDiskRef.current === content) {
+          vaultAppearanceOnDiskRef.current = undefined;
+        }
+      });
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [settings, fileState.universePath]);
 
   useEffect(() => {
     const currentProject = projectRef.current;

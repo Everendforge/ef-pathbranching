@@ -16,6 +16,10 @@ import {
   parseIntegrationConfigYaml,
   serializeIntegrationConfigYaml,
 } from "./integrationConfig.js";
+import {
+  parseVaultAppearanceSettings,
+  type PathBranchingVaultAppearanceSettings,
+} from "./vaultAppearanceSettings.js";
 
 export const pathBranchingMetadataPaths = {
   root: ".everend/.pathbranching",
@@ -63,6 +67,7 @@ export type PathBranchingManifest = {
 export type PathBranchingWorkspace = {
   manifest: PathBranchingManifest;
   universeProfile?: UniverseProfile;
+  vaultAppearanceSettings?: PathBranchingVaultAppearanceSettings;
   canonIndex: WorldNotionBridgeIndex;
   files: UniverseFile[];
   activeStory?: PathBranchingStoryManifestEntry;
@@ -508,6 +513,7 @@ export function loadPathBranchingWorkspace(
   const canonIndex = indexWorldNotionVaultFiles(files);
   const universeProfile = parseUniverseProfile(files);
   const loadWarnings: string[] = [];
+  const vaultAppearanceSettings = parseVaultAppearanceSettings(files, loadWarnings);
   const parsedManifest = parseManifest(files, loadWarnings);
   const fallbackStoryId = defaultStoryId(files);
   const now = new Date().toISOString();
@@ -556,6 +562,7 @@ export function loadPathBranchingWorkspace(
       activeStoryId: activeStory?.id,
     },
     universeProfile,
+    vaultAppearanceSettings,
     canonIndex,
     files: [...files],
     activeStory,
