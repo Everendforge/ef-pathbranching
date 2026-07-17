@@ -43,7 +43,7 @@ export function canonVariantsForRef(
   }
   const base = variants.find((variant) => variant.id === BASE_VARIANT_ID);
   return [
-    base ?? { id: BASE_VARIANT_ID, label: "Base" },
+    base ?? { id: BASE_VARIANT_ID, label: "Base variant" },
     ...variants.filter((variant) => variant.id !== BASE_VARIANT_ID),
   ];
 }
