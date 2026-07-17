@@ -15,7 +15,6 @@ import {
   type OnConnectEnd,
   type ReactFlowInstance,
 } from "@xyflow/react";
-import { convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import {
   canonMarkdownDraft,
@@ -305,6 +304,7 @@ import {
   type SubcanvasWorkspaceBounds,
 } from "./canvas/storyCanvasModel.js";
 import { isTauriRuntime, shortcutMatches } from "./utils/appEnvironment.js";
+import { resolveUniverseAssetUrl } from "./utils/assetUrl.js";
 
 function groupCanon(project: BranchingProject) {
   return project.canonRefs.reduce<Record<string, typeof project.canonRefs>>(
@@ -377,12 +377,7 @@ function universeAssetUrl(
   project: Pick<BranchingProject, "universeRootPath">,
   relativePath: string,
 ): string | undefined {
-  if (!isTauriRuntime() || !project.universeRootPath) return undefined;
-  const normalizedPath = relativePath.replace(/\\/g, "/").replace(/^\/+/, "");
-  if (!normalizedPath || normalizedPath.split("/").includes("..")) return undefined;
-  return convertFileSrc(
-    `${project.universeRootPath.replace(/[\\/]$/, "")}/${normalizedPath}`,
-  );
+  return resolveUniverseAssetUrl(project.universeRootPath, relativePath);
 }
 
 function eventCoverImageForNode(
@@ -8151,6 +8146,7 @@ type CanvasContextMenu = {
   flowX: number;
   flowY: number;
   sourceNodeId?: string;
+  sourceHandleId?: string;
   routeSourceId?: string;
   nodeIds?: string[];
   contextNodeId?: string;
@@ -8599,17 +8595,20 @@ function StoryCanvas({
     sourceNodeId: string,
     type: EventType,
     position: { x: number; y: number },
+    sourceHandleId?: string,
   ) => void;
   onCreateConnectedNarrativeNode: (
     scope: Extract<CanvasScope, { kind: "event" | "dialogue" }>,
     sourceNodeId: string,
     kind: ConnectedNarrativeNodeKind,
     position: CanvasPoint,
+    sourceHandleId?: string,
   ) => void;
   onCreateConnectedEvent: (
     sourceNodeId: string,
     type: EventType,
     position: { x: number; y: number },
+    sourceHandleId?: string,
   ) => void;
   onUpdateSequence: (id: string, updates: Partial<Sequence>) => void;
   onUpdateBranch: (id: string, updates: Partial<Branch>) => void;
@@ -9531,6 +9530,7 @@ function StoryCanvas({
       setContextMenu({
         kind: "connect-create",
         sourceNodeId: connectionState.fromNode.id,
+        sourceHandleId: connectionState.fromHandle?.id ?? undefined,
         ...clampFloatingMenuPosition(
           point.clientX - (shellRect?.left ?? 0),
           point.clientY - (shellRect?.top ?? 0),
@@ -10023,6 +10023,7 @@ function StoryCanvas({
                             { x: contextMenu.flowX, y: contextMenu.flowY },
                             "event",
                           ),
+                          contextMenu.sourceHandleId,
                         );
                       } else {
                         onCreateConnectedEvent(
@@ -10032,6 +10033,7 @@ function StoryCanvas({
                             { x: contextMenu.flowX, y: contextMenu.flowY },
                             "event",
                           ),
+                          contextMenu.sourceHandleId,
                         );
                       }
                     }
@@ -10058,6 +10060,7 @@ function StoryCanvas({
                           { x: contextMenu.flowX, y: contextMenu.flowY },
                           nodeKind,
                         ),
+                        contextMenu.sourceHandleId,
                       );
                       setContextMenu(undefined);
                     };
@@ -13324,6 +13327,7 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
       sourceNodeId: string,
       type: EventType = "normal",
       position?: { x: number; y: number },
+      sourceHandleId?: string,
     ) => {
       if (!isTauriRuntime()) {
         setMessage(
@@ -13357,7 +13361,7 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
       const route = mutations.createInternalTransition(
         created.project,
         parentEventId,
-        sourceNodeId,
+        sourceHandleId ?? sourceNodeId,
         targetEventId,
       );
       runCanvasMutation(route, "Created connected nested event");
@@ -13371,6 +13375,7 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
       sourceNodeId: string,
       kind: ConnectedNarrativeNodeKind,
       position: CanvasPoint,
+      sourceHandleId?: string,
     ) => {
       if (!isTauriRuntime()) {
         setMessage(
@@ -13442,7 +13447,7 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
         mutations.createInternalTransition(
           positioned.project,
           eventId,
-          sourceNodeId,
+          sourceHandleId ?? sourceNodeId,
           targetNodeId,
         ),
         "Created connected narrative node",
@@ -13599,6 +13604,7 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
       sourceNodeId: string,
       type: EventType,
       position: { x: number; y: number },
+      sourceHandleId?: string,
     ) => {
       if (!isTauriRuntime()) {
         setMessage(
@@ -13622,6 +13628,10 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
       }
 
       const sourceKind = sourceNode.data.kind;
+      if (sourceKind === "decision" && !sourceHandleId) {
+        setMessage("Create the connection from a decision option port (A, B, C…).");
+        return;
+      }
       const branchId =
         sourceKind === "branch" ? nodeStoryId(sourceNode) : undefined;
       const snap = settingsRef.current.canvasBackground;
@@ -13724,11 +13734,6 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
         return;
       }
 
-      if (sourceKind === "decision") {
-        setMessage("Create the connection from a decision option port (A, B, C…).");
-        return;
-      }
-
       const sourceEventId = ownerEventIdForNode(sourceNode);
       const sourceEvent = sourceEventId
         ? findEvent(nextProject, sourceEventId)
@@ -13747,11 +13752,11 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
         sourceKind === "routeGate" &&
         typeof sourceNode.data.details?.routeSourceId === "string"
           ? sourceNode.data.details.routeSourceId
-          : sourceNode.id;
+          : sourceHandleId ?? sourceNode.id;
       const transitionId = transitionFrom(routeSourceId, targetEventId, sourceEvent.transitions);
       const transition: Transition = {
         id: transitionId,
-        from: sourceNode.data.kind === "outcome" ? sourceNode.id : routeSourceId === sourceNode.id ? sourceEventId : routeSourceId,
+        from: routeSourceId === sourceNode.id ? sourceEventId : routeSourceId,
         to: targetEventId,
         source: "graph",
       };
