@@ -1,6 +1,6 @@
 [package]
 name = "everend-pathbranching"
-version = "0.1.2"
+version = "0.1.3"
 description = "Pathbranching desktop authoring app."
 authors = ["Everend Forge"]
 edition = "2021"
