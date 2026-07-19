@@ -510,24 +510,11 @@ export function loadPathBranchingWorkspace(
   const loadWarnings: string[] = [];
   const parsedManifest = parseManifest(files, loadWarnings);
   const fallbackStoryId = defaultStoryId(files);
-  const now = new Date().toISOString();
-  const hasPersistedManifest = Boolean(parsedManifest?.stories.length);
-  const manifest =
-    parsedManifest && parsedManifest.stories.length
-      ? parsedManifest
-      : {
-          version: "0.1" as const,
-          activeStoryId: fallbackStoryId,
-          stories: [
-            {
-              id: fallbackStoryId,
-              name: "Branching Story",
-              path: storyPath(fallbackStoryId),
-              createdAt: now,
-              updatedAt: now,
-            },
-          ],
-        };
+  const manifest = parsedManifest ?? {
+    version: "0.1" as const,
+    activeStoryId: undefined,
+    stories: [],
+  };
 
   const activeStory =
     manifest.stories.find((story) => story.id === manifest.activeStoryId) ??
@@ -536,7 +523,7 @@ export function loadPathBranchingWorkspace(
     ? (parseModularStoryProject(files, activeStory, activeStory.id) ??
       parseLegacyStoryProject(files, activeStory, activeStory.id))
     : undefined;
-  if (hasPersistedManifest && activeStory && !loadedStory) {
+  if (parsedManifest && activeStory && !loadedStory) {
     loadWarnings.push(
       `Could not load PathBranching story "${activeStory.name}" from ${activeStory.path}.`,
     );
@@ -561,7 +548,7 @@ export function loadPathBranchingWorkspace(
     activeStory,
     activeProject: normalizeLocalizationCatalog(normalizeProject({
       ...activeProject,
-      storyId: activeStory?.id ?? fallbackStoryId,
+      storyId: activeStory?.id,
       integrationConfig:
         parseIntegrationConfigFile(files, pathBranchingMetadataPaths.config) ??
         activeProject.integrationConfig ??
@@ -573,7 +560,7 @@ export function loadPathBranchingWorkspace(
       canonRefs: mergeCanonRefs(canonIndex, activeProject),
     }), universeProfile?.localization?.primaryLocale ?? machineLocale()),
     storyModifiedMs: loadedStory?.modifiedMs,
-    createdDefaultStory: !hasPersistedManifest,
+    createdDefaultStory: !activeStory,
     loadWarnings: loadWarnings.length ? loadWarnings : undefined,
   };
 }

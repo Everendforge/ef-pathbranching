@@ -8,6 +8,7 @@ import type {
 } from "./appTypes.js";
 import type { CanvasScope } from "./domain.js";
 import type { StoryOutlineTab } from "./storyOutlineModel.js";
+import { normalizeLocalePreference, type LocalePreference } from "./i18n.js";
 
 export const SETTINGS_KEY = "pathbranching.settings.v1";
 export const DEFAULT_PANEL_WIDTH = 282;
@@ -41,8 +42,8 @@ export const DEFAULT_WORKSPACE_PANEL_VISIBILITY: WorkspacePanelState = {
 };
 
 export const DEFAULT_WORKSPACE_PANEL_COLLAPSED: WorkspacePanelState = {
-  outline: false,
-  assets: false,
+  outline: true,
+  assets: true,
   logic: true,
   player: true,
   export: true,
@@ -164,6 +165,8 @@ export type PathBranchingWorkspaceSession = {
 };
 
 export type AppSettings = {
+  /** Interface language only; story localization remains in the project catalog. */
+  localePreference: LocalePreference;
   theme: ThemeId;
   recentProjects: string[];
   lastOpenedProject?: string;
@@ -334,6 +337,7 @@ export function loadSettings(): AppSettings {
         ? parsed.workspaceSessions
         : {};
     return {
+      localePreference: normalizeLocalePreference(parsed.localePreference),
       theme: normalizeThemeId(parsed.theme),
       recentProjects: Array.isArray(parsed.recentProjects)
         ? parsed.recentProjects.filter(
@@ -377,6 +381,7 @@ export function loadSettings(): AppSettings {
     };
   } catch {
     return {
+      localePreference: "system",
       theme: "worldnotion-light",
       recentProjects: [],
       lastView: "home",

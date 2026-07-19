@@ -35,6 +35,7 @@ import { MarkdownEditorDock } from "./components/MarkdownEditorDock.js";
 import { editableCanvasEdgeTypes } from "./components/EditableCanvasEdge.js";
 import { nodeTypes } from "./components/StoryNode.js";
 import { Topbar } from "./components/Topbar.js";
+import { FeedbackModal } from "./components/FeedbackModal.js";
 import { UniverseIconFrame } from "./components/UniverseIconFrame.js";
 import {
   createLocalExplorerEntity,
@@ -88,6 +89,7 @@ import {
   MousePointerClick,
   Minimize2,
   Moon,
+  MessageSquareText,
   OctagonAlert,
   RefreshCw,
   SearchCheck,
@@ -252,6 +254,9 @@ import {
   rootSequenceScope,
 } from "./storySelection.js";
 import type { SuiteChrome, SuiteSettings } from "./suiteChrome.js";
+import { BrandLoadingScreen } from "./components/BrandLoadingScreen.js";
+import { StoryCreationEmptyState } from "./components/StoryCreationEmptyState.js";
+import { OnboardingGuide } from "./components/OnboardingGuide.js";
 import {
   buildPathTree,
   buildSequenceConnectionPreview,
@@ -291,6 +296,7 @@ import {
   type WorkspacePanelId,
   type WorkspacePanelState,
 } from "./workspaceSettings.js";
+import { applyInterfaceLocale, interfaceLocaleCopy, pathbranchingSettingsCopy, resolveInterfaceLocale } from "./i18n.js";
 import { validateProject } from "./validate.js";
 import {
   buildStoryCanvasModel,
@@ -348,6 +354,7 @@ const WORKSPACE_PANEL_LABELS: Record<WorkspacePanelId, string> = {
   export: "Export",
   connect: "Connect",
 };
+const PATHBRANCHING_ONBOARDING_KEY = "pathbranching.onboarding.v1";
 
 type CanonTreeNode = {
   kind: "folder" | "ref";
@@ -2455,6 +2462,7 @@ function HomeDashboard({
   onOpenRecentProject,
   onRemoveRecentProject,
   onExportRuntime,
+  onFeedback,
 }: {
   project?: BranchingProject;
   workspace?: PathBranchingWorkspace;
@@ -2470,6 +2478,7 @@ function HomeDashboard({
   onOpenRecentProject: (path: string) => void;
   onRemoveRecentProject: (path: string) => void;
   onExportRuntime: () => void;
+  onFeedback: () => void;
 }) {
   const activeSequence =
     project?.sequences.find(
@@ -2510,8 +2519,18 @@ function HomeDashboard({
           <button
             type="button"
             className="dock-icon-button"
+            onClick={onFeedback}
+            title="Enviar feedback"
+            aria-label="Enviar feedback"
+          >
+            <MessageSquareText size={15} />
+          </button>
+          <button
+            type="button"
+            className="dock-icon-button"
             onClick={onToggleTheme}
             title={`Toggle theme (${themeById(theme).label})`}
+            aria-label="Toggle theme"
           >
             {isDarkTheme(theme) ? <Sun size={15} /> : <Moon size={15} />}
           </button>
@@ -2521,7 +2540,7 @@ function HomeDashboard({
       <section className="home-panel">
         <div className="home-hero">
           <div className="home-copy">
-            <p className="eyebrow">Dashboard</p>
+            <p className="eyebrow">Home</p>
             <h2>Open a universe</h2>
             <p>
               Pathbranching reads the same universe folder as Worldnotion,
@@ -2781,7 +2800,8 @@ type PathBranchingSettingsSection =
   | "markdown"
   | "bridge"
   | "workspace"
-  | "recents";
+  | "recents"
+  | "tutorials";
 
 const primaryFontOptions = [
   ["sans", "Sans serif"],
@@ -2954,6 +2974,7 @@ function PathBranchingSettingsModal({
   onCollapseInspectorTabOnCanvasClickChange,
   onInspectorDebugEnabledChange,
   onShowStatusMessagesChange,
+  onLocalePreferenceChange,
   onConnectBridge,
   onVerifyBridge,
   onDisconnectBridge,
@@ -2961,6 +2982,7 @@ function PathBranchingSettingsModal({
   onOpenRecentUniverse,
   onRemoveRecentUniverse,
   onSaveUniverseProfile,
+  onResetOnboarding,
   onClose,
   suiteSettings,
 }: {
@@ -2981,6 +3003,7 @@ function PathBranchingSettingsModal({
   onCollapseInspectorTabOnCanvasClickChange: (value: boolean) => void;
   onInspectorDebugEnabledChange: (value: boolean) => void;
   onShowStatusMessagesChange: (value: boolean) => void;
+  onLocalePreferenceChange: (value: AppSettings["localePreference"]) => void;
   onConnectBridge: () => void;
   onVerifyBridge: () => void;
   onDisconnectBridge: () => void;
@@ -2988,11 +3011,18 @@ function PathBranchingSettingsModal({
   onOpenRecentUniverse: (path: string) => void;
   onRemoveRecentUniverse: (path: string) => void;
   onSaveUniverseProfile: (profile: UniverseProfile) => Promise<void>;
+  onResetOnboarding: () => void;
   onClose: () => void;
   suiteSettings?: SuiteSettings;
 }) {
   const [activeSection, setActiveSection] =
     useState<PathBranchingSettingsSection>(project ? "overview" : "workspace");
+  const interfaceCopy = interfaceLocaleCopy(
+    resolveInterfaceLocale(suiteSettings?.localePreference ?? settings.localePreference),
+  );
+  const settingsText = pathbranchingSettingsCopy(
+    resolveInterfaceLocale(suiteSettings?.localePreference ?? settings.localePreference),
+  );
   const errorCount = findings.filter(
     (finding) => finding.severity === "error",
   ).length;
@@ -3033,7 +3063,7 @@ function PathBranchingSettingsModal({
         <header className="settings-header">
           <div>
             <p className="eyebrow">
-              {project ? "Universe settings" : "Application settings"}
+              {project ? `${settingsText.universe} settings` : `${settingsText.application} settings`}
             </p>
             <h2>{project ? universeName : "Everend PathBranching"}</h2>
           </div>
@@ -3046,14 +3076,14 @@ function PathBranchingSettingsModal({
           <nav className="settings-nav">
             {suiteSettings ? (
               <div className="settings-nav-group">
-                <p>Forge</p>
+              <p>{settingsText.forge}</p>
                 <button
                   className={activeSection === "suite" ? "active" : ""}
                   onClick={() => setActiveSection("suite")}
                   type="button"
                 >
                   <Settings size={14} />
-                  Suite
+                  {settingsText.suite}
                 </button>
                 <button
                   className={activeSection === "update" ? "active" : ""}
@@ -3061,19 +3091,19 @@ function PathBranchingSettingsModal({
                   type="button"
                 >
                   <RefreshCw size={14} />
-                  Update
+                  {settingsText.update}
                 </button>
               </div>
             ) : null}
             <div className="settings-nav-group">
-              <p>Universe</p>
+              <p>{settingsText.universe}</p>
               <button
                 className={activeSection === "overview" ? "active" : ""}
                 onClick={() => setActiveSection("overview")}
                 type="button"
               >
                 <Settings size={14} />
-                Overview
+                {settingsText.overview}
               </button>
               <button
                 className={activeSection === "authoring" ? "active" : ""}
@@ -3081,7 +3111,7 @@ function PathBranchingSettingsModal({
                 type="button"
               >
                 <GitBranch size={14} />
-                Branching
+                {settingsText.authoring}
               </button>
               <button
                 className={activeSection === "markdown" ? "active" : ""}
@@ -3097,19 +3127,19 @@ function PathBranchingSettingsModal({
                 type="button"
               >
                 <Link size={14} />
-                Bridge
+                {settingsText.bridge}
               </button>
             </div>
 
             <div className="settings-nav-group app-settings-group">
-              <p>Application</p>
+              <p>{settingsText.application}</p>
               <button
                 className={activeSection === "workspace" ? "active" : ""}
                 onClick={() => setActiveSection("workspace")}
                 type="button"
               >
                 <Home size={14} />
-                Workspace
+                {settingsText.workspace}
               </button>
               <button
                 className={activeSection === "recents" ? "active" : ""}
@@ -3117,7 +3147,15 @@ function PathBranchingSettingsModal({
                 type="button"
               >
                 <FolderOpen size={14} />
-                Recents
+                {settingsText.recents}
+              </button>
+              <button
+                className={activeSection === "tutorials" ? "active" : ""}
+                onClick={() => setActiveSection("tutorials")}
+                type="button"
+              >
+                <RefreshCw size={14} />
+                {settingsText.tutorials}
               </button>
             </div>
           </nav>
@@ -3126,12 +3164,23 @@ function PathBranchingSettingsModal({
             {activeSection === "suite" && suiteSettings ? (
               <div className="settings-panel">
                 <div className="settings-page-title">
-                  <h3>Everend Forge Suite</h3>
-                  <p>Shared preferences applied to every app in this Suite.</p>
+                  <h3>{settingsText.suiteTitle}</h3>
+                  <p>{settingsText.suiteDescription}</p>
                 </div>
                 <div className="settings-grid">
                   <label>
-                    <span>Style</span>
+                    <span>{interfaceCopy.interfaceLanguage}</span>
+                    <select
+                      value={suiteSettings.localePreference}
+                      onChange={(event) => suiteSettings.onLocalePreferenceChange(event.target.value as "system" | "en" | "es")}
+                    >
+                      <option value="system">{interfaceCopy.system}</option>
+                      <option value="en">English</option>
+                      <option value="es">Español</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span>{settingsText.style}</span>
                     <select
                       value={suiteSettings.style}
                       onChange={(event) => suiteSettings.onStyleChange(event.target.value)}
@@ -3144,7 +3193,7 @@ function PathBranchingSettingsModal({
                     </select>
                   </label>
                   <label>
-                    <span>Primary typeface</span>
+                    <span>{settingsText.typeface}</span>
                     <select
                       value={suiteSettings.primaryFont}
                       onChange={(event) => suiteSettings.onPrimaryFontChange(event.target.value)}
@@ -3162,24 +3211,24 @@ function PathBranchingSettingsModal({
             {activeSection === "update" && suiteSettings ? (
               <div className="settings-panel forge-update-panel">
                 <div className="settings-page-title">
-                  <h3>Everend Forge Update</h3>
-                  <p>Check, download, and install signed updates for the Suite.</p>
+                  <h3>{settingsText.updateTitle}</h3>
+                  <p>{settingsText.updateDescription}</p>
                 </div>
                 <div className="settings-grid">
-                  <label><span>Installed version</span><input value={suiteSettings.update.currentVersion} readOnly /></label>
-                  <label><span>Platform</span><input value={suiteSettings.update.platform} readOnly /></label>
-                  <label><span>Application ID</span><input value={suiteSettings.update.identifier} readOnly /></label>
+                  <label><span>{settingsText.installedVersion}</span><input value={suiteSettings.update.currentVersion} readOnly /></label>
+                  <label><span>{settingsText.platform}</span><input value={suiteSettings.update.platform} readOnly /></label>
+                  <label><span>{settingsText.applicationId}</span><input value={suiteSettings.update.identifier} readOnly /></label>
                 </div>
                 <div className={`forge-update-status ${suiteSettings.update.status}`} role="status">
                   <RefreshCw size={18} className={suiteSettings.update.status === "checking" || suiteSettings.update.status === "downloading" ? "spinning" : ""} />
                   <div>
-                    <strong>{suiteSettings.update.status === "checking" ? "Checking for updates..." : suiteSettings.update.status === "available" ? `Version ${suiteSettings.update.availableVersion} is ready` : suiteSettings.update.status === "downloading" ? `Installing Everend Forge ${suiteSettings.update.availableVersion}...` : suiteSettings.update.status === "up-to-date" ? "You are up to date" : suiteSettings.update.status === "error" ? "Update check failed" : "Ready to check for updates"}</strong>
-                    <p>{suiteSettings.update.error ?? "The updater is ready to contact the release server."}</p>
+                    <strong>{suiteSettings.update.status === "checking" ? settingsText.checking : suiteSettings.update.status === "available" ? settingsText.available.replace("{{version}}", suiteSettings.update.availableVersion ?? "") : suiteSettings.update.status === "downloading" ? settingsText.downloading.replace("{{version}}", suiteSettings.update.availableVersion ?? "") : suiteSettings.update.status === "up-to-date" ? settingsText.upToDate : suiteSettings.update.status === "error" ? settingsText.failed : settingsText.ready}</strong>
+                    <p>{suiteSettings.update.error ?? settingsText.updaterReady}</p>
                   </div>
                 </div>
                 <div className="settings-action-list forge-update-actions">
-                  <button type="button" onClick={suiteSettings.update.onCheck} disabled={suiteSettings.update.status === "checking" || suiteSettings.update.status === "downloading"}><RefreshCw size={14} /> Check for updates</button>
-                  {suiteSettings.update.status === "available" ? <button type="button" onClick={suiteSettings.update.onInstall}>Download and install</button> : null}
+                  <button type="button" onClick={suiteSettings.update.onCheck} disabled={suiteSettings.update.status === "checking" || suiteSettings.update.status === "downloading"}><RefreshCw size={14} /> {settingsText.check}</button>
+                  {suiteSettings.update.status === "available" ? <button type="button" onClick={suiteSettings.update.onInstall}>{settingsText.install}</button> : null}
                 </div>
               </div>
             ) : null}
@@ -3459,6 +3508,17 @@ function PathBranchingSettingsModal({
                 </div>
                 <div className="settings-grid">
                   <label>
+                    <span>{interfaceCopy.interfaceLanguage}</span>
+                    <select
+                      value={settings.localePreference}
+                      onChange={(event) => onLocalePreferenceChange(event.target.value as "system" | "en" | "es")}
+                    >
+                      <option value="system">{interfaceCopy.system}</option>
+                      <option value="en">English</option>
+                      <option value="es">Español</option>
+                    </select>
+                  </label>
+                  <label>
                     <span>Active style</span>
                     <select
                       value={theme}
@@ -3669,6 +3729,18 @@ function PathBranchingSettingsModal({
                 </div>
               </div>
             ) : null}
+            {activeSection === "tutorials" ? (
+              <div className="settings-panel">
+                <div className="settings-page-title">
+                  <h3>Tutoriales</h3>
+                  <p>Vuelve a mostrar la guía básica de PathBranching para este universo.</p>
+                </div>
+                <button type="button" onClick={onResetOnboarding}>
+                  <RefreshCw size={15} />
+                  Reiniciar tutorial
+                </button>
+              </div>
+            ) : null}
           </section>
         </div>
       </div>
@@ -3686,6 +3758,7 @@ function PanelShell({
   onResetWidth,
   onResizeStateChange,
   onContextMenu,
+  dataOnboardingTarget,
   children,
 }: {
   title: string;
@@ -3697,6 +3770,7 @@ function PanelShell({
   onResetWidth?: () => void;
   onResizeStateChange?: (resizing: boolean) => void;
   onContextMenu?: (event: ReactMouseEvent<HTMLElement>) => void;
+  dataOnboardingTarget?: string;
   children: ReactNode;
 }) {
   const startResize = (event: ReactPointerEvent<HTMLButtonElement>) => {
@@ -3725,7 +3799,7 @@ function PanelShell({
 
   if (!open) {
     return (
-      <aside className="side-rail" onContextMenu={onContextMenu}>
+      <aside className="side-rail" data-onboarding-target={dataOnboardingTarget} onContextMenu={onContextMenu}>
         <button type="button" title={`Open ${title}`} onClick={onToggle}>
           <span>{railLabel}</span>
         </button>
@@ -3734,7 +3808,7 @@ function PanelShell({
   }
 
   return (
-    <aside className="side-panel" onContextMenu={onContextMenu}>
+    <aside className="side-panel" data-onboarding-target={dataOnboardingTarget} onContextMenu={onContextMenu}>
       <div className="panel-title">
         <div>
           <strong>{title}</strong>
@@ -4462,6 +4536,7 @@ function FilesPanel({
   return (
     <PanelShell
       title="Stories"
+      dataOnboardingTarget="pathbranching.stories-panel"
       open={open}
       railLabel="Stories"
       onToggle={onToggle}
@@ -4475,27 +4550,21 @@ function FilesPanel({
         <label>
           <span>Story</span>
           <select
-            value={activeStoryId ?? project.storyId ?? ""}
+            data-onboarding-target="pathbranching.story-selector"
+            value={activeStoryId ?? ""}
             onChange={(event) => onStoryChange(event.target.value)}
             aria-label="Select active story"
           >
+            <option value="">None</option>
             {stories.map((story) => (
               <option key={story.id} value={story.id}>
                 {story.name}
               </option>
             ))}
-            {stories.length === 0 ? (
-              <option value="">
-                {storyName ??
-                  project.name ??
-                  project.storyId ??
-                  "Branching Story"}
-              </option>
-            ) : null}
           </select>
         </label>
         <div className="toolbar-button-row">
-          <button type="button" onClick={onCreateStory} title="Create story">
+          <button type="button" data-onboarding-target="pathbranching.create-story" onClick={onCreateStory} title="Create story" aria-label="Create story">
             <FilePlus2 size={13} />
           </button>
           <button
@@ -4516,10 +4585,11 @@ function FilesPanel({
           </button>
         </div>
       </div>
-      <div className="stories-sequence-toolbar story-management-toolbar">
+      {activeStoryId ? <div className="stories-sequence-toolbar story-management-toolbar">
         <label>
           <span>Sequence</span>
           <select
+            data-onboarding-target="pathbranching.sequence-selector"
             value={currentSequenceId}
             onChange={(event) => {
               if (event.target.value === NEW_SEQUENCE_SELECT_VALUE) {
@@ -4543,6 +4613,7 @@ function FilesPanel({
         <div className="toolbar-button-row">
           <button
             type="button"
+            data-onboarding-target="pathbranching.create-sequence"
             onClick={onCreateSequence}
             title="Create sequence"
             disabled={!activeStoryId}
@@ -4572,8 +4643,8 @@ function FilesPanel({
             : "No sequence loaded"}
           {totalItems ? ` / ${totalItems} files` : ""}
         </p>
-      </div>
-      <div className="panel-scroll">
+      </div> : null}
+      {activeStoryId && activeSequence ? <div className="panel-scroll">
         <div
           className="story-outline-tabs"
           role="tablist"
@@ -4631,7 +4702,7 @@ function FilesPanel({
         {totalItems === 0 ? (
           <span className="empty-line">No story objects yet.</span>
         ) : null}
-      </div>
+      </div> : null}
     </PanelShell>
   );
 }
@@ -10369,9 +10440,14 @@ function StoryCanvas({
   );
 }
 
+const STARTUP_LOADER_MIN_MS = 700;
+
 export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
   const desktopRuntime = isTauriRuntime();
   const [settings, setSettings] = useState<AppSettings>(() => loadSettings());
+  useEffect(() => {
+    applyInterfaceLocale(suiteChrome?.suiteSettings?.localePreference ?? settings.localePreference);
+  }, [settings.localePreference, suiteChrome?.suiteSettings?.localePreference]);
   const activeTheme = (suiteChrome?.suiteSettings?.style ?? settings.theme) as ThemeId;
   const [view, setView] = useState<AppView>(
     () => loadSettings().lastView ?? "home",
@@ -10380,7 +10456,9 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
   const appShellRef = useRef<HTMLDivElement | null>(null);
   const [initialLoading, setInitialLoading] = useState(true);
   const [showSettings, setShowSettings] = useState(false);
+  const [showFeedback, setShowFeedback] = useState(false);
   const [workspace, setWorkspace] = useState<PathBranchingWorkspace>();
+  const [onboardingDismissed, setOnboardingDismissed] = useState(false);
   const [project, setProject] = useState<BranchingProject>();
   const [fileState, setFileState] = useState<ProjectFileState>({
     dirty: false,
@@ -10495,6 +10573,15 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
     scopeKey: string;
     selection: Selection;
   } | undefined>(undefined);
+
+  useEffect(() => {
+    const universePath = fileState.universePath;
+    setOnboardingDismissed(
+      universePath
+        ? window.localStorage.getItem(`${PATHBRANCHING_ONBOARDING_KEY}:${universePath}`) === "dismissed"
+        : false,
+    );
+  }, [fileState.universePath]);
 
   useEffect(() => {
     if (!settings.inspectorDebugEnabled || !selection || !project) {
@@ -10656,12 +10743,25 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
         ...DEFAULT_WORKSPACE_PANEL_VISIBILITY,
         ...savedSession.panelVisibility,
       });
-      setPanelCollapsed({
-        ...DEFAULT_WORKSPACE_PANEL_COLLAPSED,
-        assets: savedSession.panelCollapsed?.assets ?? !(savedSession.canonOpen ?? activeProject.panels?.canonOpen ?? true),
-        outline: !(savedSession.filesOpen ?? activeProject.panels?.filesOpen ?? true),
-        ...savedSession.panelCollapsed,
-      });
+      const isFirstTutorialRun =
+        !settingsRef.current.workspaceSessions?.[universePath] && nextWorkspace.createdDefaultStory;
+      setPanelCollapsed(
+        isFirstTutorialRun
+          ? {
+              assets: true,
+              logic: true,
+              player: true,
+              outline: true,
+              export: true,
+              connect: true,
+            }
+          : {
+              ...DEFAULT_WORKSPACE_PANEL_COLLAPSED,
+              assets: savedSession.panelCollapsed?.assets ?? !(savedSession.canonOpen ?? activeProject.panels?.canonOpen ?? true),
+              outline: !(savedSession.filesOpen ?? activeProject.panels?.filesOpen ?? true),
+              ...savedSession.panelCollapsed,
+            },
+      );
       setCanonWidth(clampExplorerWidth(savedSession.canonWidth));
       setStoriesWidth(clampPanelWidth(savedSession.storiesWidth));
       setExportOpen(savedSession.exportOpen ?? false);
@@ -11608,6 +11708,20 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
 
   useEffect(() => {
     let disposed = false;
+    let readyTimer: number | undefined;
+    const startupStartedAt = Date.now();
+    const finishInitialLoading = () => {
+      const remaining = suiteChrome
+        ? 0
+        : Math.max(
+            0,
+            STARTUP_LOADER_MIN_MS - (Date.now() - startupStartedAt),
+          );
+      readyTimer = window.setTimeout(() => {
+        if (!disposed) setInitialLoading(false);
+      }, remaining);
+    };
+
     async function loadInitialProject() {
       if (settings.worldnotionBridge.connected && settings.lastOpenedProject) {
         try {
@@ -11628,7 +11742,7 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
             },
           }));
           setView("workspace");
-          setInitialLoading(false);
+          finishInitialLoading();
           return;
         } catch {
           setMissingRecentProjects((current) =>
@@ -11640,11 +11754,12 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
       setWorkspace(undefined);
       setFileState({ dirty: false });
       setView("home");
-      setInitialLoading(false);
+      finishInitialLoading();
     }
     void loadInitialProject();
     return () => {
       disposed = true;
+      if (readyTimer !== undefined) window.clearTimeout(readyTimer);
     };
     // Initial load only. The settings object is persisted separately after startup.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -11960,10 +12075,12 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
         setView("workspace");
         setError(undefined);
         setMessage(workspaceLoadWarningMessage(opened.workspace) ?? `Opened ${projectFileName(opened.path)}.`);
+        suiteChrome?.onReady?.();
       })
       .catch((openError) => {
         if (!disposed) {
           setError(openError instanceof Error ? openError.message : String(openError));
+          suiteChrome?.onReady?.();
         }
       });
 
@@ -16188,6 +16305,7 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
       }
       onInspectorDebugEnabledChange={changeInspectorDebugEnabled}
       onShowStatusMessagesChange={changeShowStatusMessages}
+      onLocalePreferenceChange={(localePreference) => setSettings((current) => ({ ...current, localePreference }))}
       onConnectBridge={connectBridge}
       onVerifyBridge={verifyBridge}
       onDisconnectBridge={disconnectBridge}
@@ -16195,6 +16313,10 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
       onOpenRecentUniverse={openRecentProject}
       onRemoveRecentUniverse={removeRecentProject}
       onSaveUniverseProfile={saveUniverseProfile}
+      onResetOnboarding={() => {
+        if (fileState.universePath) window.localStorage.removeItem(`${PATHBRANCHING_ONBOARDING_KEY}:${fileState.universePath}`);
+        setOnboardingDismissed(false);
+      }}
       onClose={() => setShowSettings(false)}
       suiteSettings={suiteChrome?.suiteSettings}
     />
@@ -16232,6 +16354,25 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
     return key ? manualInspectorDrafts[key] : undefined;
   })();
 
+  const pathBranchingOnboardingSteps = [
+    { id: "open-stories", title: "Abrir Stories", description: "Abre el panel Stories desde el rail o View.", complete: Boolean(panelVisibility.outline && !panelCollapsed.outline) },
+    { id: "create-story", title: "Crear una historia", description: "Una Story reúne las secuencias de tu narrativa.", complete: Boolean(workspace?.activeStory?.id) },
+    { id: "create-sequence", title: "Crear una secuencia", description: "Una Sequence define la primera parte de la historia.", complete: Boolean(project && activeSequenceId(project)) },
+    { id: "show-canvas", title: "Llegar al canvas", description: "El canvas aparece cuando existe una secuencia seleccionada.", complete: Boolean(project && activeSequenceId(project)) },
+  ];
+  const openStoriesForOnboarding = () => {
+    setPanelVisibility((current) => ({ ...current, outline: true }));
+    setPanelCollapsedState("outline", false);
+  };
+  const dismissPathBranchingOnboarding = () => {
+    if (fileState.universePath) window.localStorage.setItem(`${PATHBRANCHING_ONBOARDING_KEY}:${fileState.universePath}`, "dismissed");
+    setOnboardingDismissed(true);
+  };
+  const restartPathBranchingOnboarding = () => {
+    if (fileState.universePath) window.localStorage.removeItem(`${PATHBRANCHING_ONBOARDING_KEY}:${fileState.universePath}`);
+    setOnboardingDismissed(false);
+  };
+
   if (error) {
     return (
       <>
@@ -16245,6 +16386,7 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
             onToggleTheme={toggleTheme}
             onExportRuntime={exportRuntime}
             onHome={() => setView("home")}
+            onFeedback={() => setShowFeedback(true)}
             onUndo={undoProject}
             onRedo={redoProject}
             canUndo={undoStack.length > 0}
@@ -16260,6 +16402,10 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
     );
   }
 
+  if (initialLoading && !suiteChrome) {
+    return <BrandLoadingScreen message={settings.lastOpenedProject ? "Opening your universe…" : "Preparing your dashboard…"} />;
+  }
+
   if (initialLoading) {
     return (
       <>
@@ -16273,6 +16419,7 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
             onToggleTheme={toggleTheme}
             onExportRuntime={exportRuntime}
             onHome={() => setView("home")}
+            onFeedback={() => setShowFeedback(true)}
             onUndo={undoProject}
             onRedo={redoProject}
             canUndo={undoStack.length > 0}
@@ -16310,6 +16457,7 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
           onOpenRecentProject={openRecentProject}
           onRemoveRecentProject={removeRecentProject}
           onExportRuntime={exportRuntime}
+          onFeedback={() => setShowFeedback(true)}
         />
         {webPreviewBanner}
         {settingsModal}
@@ -16331,6 +16479,7 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
           onToggleTheme={toggleTheme}
           onExportRuntime={exportRuntime}
           onHome={() => setView("home")}
+          onFeedback={() => setShowFeedback(true)}
           onUndo={undoProject}
           onRedo={redoProject}
           canUndo={undoStack.length > 0}
@@ -16452,6 +16601,10 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
               onUpdateTransition={updateTransition}
               onDeleteTransition={deleteTransition}
             />
+          ) : !workspace?.activeStory?.id ? (
+            <StoryCreationEmptyState kind="story" onOpenStories={openStoriesForOnboarding} />
+          ) : !activeSequenceId(project) ? (
+            <StoryCreationEmptyState kind="sequence" />
           ) : <StoryCanvas
             project={project}
             propertiesConfig={workspace?.canonIndex.propertiesConfig}
@@ -16635,8 +16788,17 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
           </div>
         ) : null}
       </div>
+      {!onboardingDismissed ? (
+        <OnboardingGuide
+          steps={pathBranchingOnboardingSteps}
+          onDismiss={dismissPathBranchingOnboarding}
+          onRestart={restartPathBranchingOnboarding}
+          onOpenStories={openStoriesForOnboarding}
+        />
+      ) : null}
       {settingsModal}
       {appDialogs}
+      {showFeedback ? <FeedbackModal screen="workspace" onClose={() => setShowFeedback(false)} onOpenExternal={(url) => { window.open(url, "_blank", "noopener,noreferrer"); }} /> : null}
     </>
   );
 }

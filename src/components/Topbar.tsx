@@ -5,6 +5,7 @@ import {
   Home,
   History,
   Moon,
+  MessageSquareText,
   Settings,
   Sun,
 } from "lucide-react";
@@ -13,6 +14,7 @@ import { Check, Eye } from "lucide-react";
 import forgeLogoOnDark from "../assets/everend-forge-logo-on-dark.png";
 import forgeLogoOnLight from "../assets/everend-forge-logo-on-light.png";
 import type { BranchingProject } from "../domain.js";
+import { feedbackUrl } from "../feedback.js";
 import { projectFileName, type ProjectFileState } from "../projectPersistence.js";
 import type { SuiteChrome } from "../suiteChrome.js";
 import { isDarkTheme, themeById, type ThemeId } from "../themes.js";
@@ -55,6 +57,7 @@ export function Topbar({
   onToggleTheme,
   onExportRuntime,
   onHome,
+  onFeedback,
   onUndo,
   onRedo,
   canUndo,
@@ -73,6 +76,7 @@ export function Topbar({
   onToggleTheme: () => void;
   onExportRuntime: () => void;
   onHome: () => void;
+  onFeedback?: () => void;
   onUndo: () => void;
   onRedo: () => void;
   canUndo: boolean;
@@ -151,6 +155,9 @@ export function Topbar({
               </button>
               <button type="button" onClick={() => openExternalUrl(BUY_SUITE_URL)}>
                 Buy Suite
+              </button>
+              <button type="button" onClick={() => onFeedback ? onFeedback() : openExternalUrl(feedbackUrl("workspace"))}>
+                Enviar feedback
               </button>
             </div>
             <button
@@ -243,7 +250,12 @@ export function Topbar({
           </button>
         </div>
 
-        <button type="button" className="dock-icon-button" onClick={onToggleTheme} title={`Toggle theme (${themeById(theme).label})`}>
+        {onFeedback ? (
+          <button type="button" className="dock-icon-button" onClick={onFeedback} title="Enviar feedback" aria-label="Enviar feedback">
+            <MessageSquareText size={15} />
+          </button>
+        ) : null}
+        <button type="button" className="dock-icon-button" onClick={onToggleTheme} title={`Toggle theme (${themeById(theme).label})`} aria-label="Toggle theme">
           {isDarkTheme(theme) ? <Sun size={15} /> : <Moon size={15} />}
         </button>
       </div>

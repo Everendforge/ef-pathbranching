@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import type { LocalePreference } from "./i18n";
 
 export type SuiteLicenseStatus = "idle" | "activating" | "active" | "inactive" | "error";
 
@@ -28,6 +29,9 @@ export type SuiteLicenseControls = {
 };
 
 export type SuiteSettings = {
+  localePreference: LocalePreference;
+  locale: "en" | "es";
+  onLocalePreferenceChange: (preference: LocalePreference) => void;
   primaryFont: string;
   onPrimaryFontChange: (font: string) => void;
   style: string;
@@ -65,6 +69,7 @@ export type SuiteUpdateControls = {
 export type SuiteChrome = {
   active: boolean;
   sharedUniversePath?: string;
+  onReady?: () => void;
   onHome?: () => void;
   onReload?: () => void;
   renderAppSwitcher: () => ReactNode;

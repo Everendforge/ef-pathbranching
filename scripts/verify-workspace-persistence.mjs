@@ -32,11 +32,12 @@ const initialStoryManifest = {
   ...initialWorkspace.manifest,
   version: "0.2",
   activeStoryId: initialStoryId,
-  stories: initialWorkspace.manifest.stories.map((story) =>
-    story.id === initialStoryId
-      ? { ...story, name: "Named Story", path: storyPath(initialStoryId), updatedAt: "2026-07-02T00:00:00.000Z" }
-      : story,
-  ),
+  stories: [{
+    id: initialStoryId,
+    name: "Named Story",
+    path: storyPath(initialStoryId),
+    updatedAt: "2026-07-02T00:00:00.000Z",
+  }],
 };
 const initialStoryProject = {
   ...initialWorkspace.activeProject,
@@ -77,10 +78,10 @@ const savedProject = {
 };
 
 const manifest = {
-  ...initialWorkspace.manifest,
+  ...initialStoryManifest,
   version: "0.2",
   activeStoryId: storyId,
-  stories: initialWorkspace.manifest.stories.map((story) =>
+  stories: initialStoryManifest.stories.map((story) =>
     story.id === storyId ? { ...story, name: "Renamed Story", path: storyPath(storyId), updatedAt: "2026-07-02T00:00:00.000Z" } : story,
   ),
 };

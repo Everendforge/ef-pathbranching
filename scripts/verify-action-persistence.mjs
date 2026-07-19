@@ -1,6 +1,7 @@
 import {
   applyEventDraftToProject,
   createEventDraftFromSelection,
+  defaultStoryId,
   loadPathBranchingWorkspace,
   serializeModularStoryFiles,
   serializePathBranchingManifest,
@@ -23,10 +24,12 @@ const universeFiles = [
 ];
 
 const initialWorkspace = loadPathBranchingWorkspace(universeFiles);
+const initialStoryId = initialWorkspace.activeStory?.id ?? defaultStoryId(universeFiles);
 const story = {
   ...(initialWorkspace.activeStory ?? initialWorkspace.manifest.stories[0]),
+  id: initialStoryId,
   name: "Action Story",
-  path: storyPath(initialWorkspace.activeStory?.id ?? initialWorkspace.manifest.activeStoryId),
+  path: storyPath(initialStoryId),
   updatedAt: "2026-07-06T00:00:00.000Z",
 };
 

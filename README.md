@@ -20,6 +20,10 @@ Everend PathBranching is the visual branching narrative editor for Everend Forge
 
 PathBranching references canon entities by stable IDs from WorldNotion-compatible vaults, but it does not replace the canon vault.
 
+## Product direction
+
+PathBranching is the narrative structure and branching layer of Everend Forge. Its direction covers connected story creation for video games, roleplaying, and literature, with WorldNotion as canon and Compendium as a reading/publication surface. See [docs/PRODUCT_DIRECTION.md](docs/PRODUCT_DIRECTION.md) for the milestones and PathBranching's role in each one.
+
 ## Current Status
 
 This repository currently contains design documentation, runtime examples, a TypeScript core, a React + React Flow story canvas, and a Tauri desktop shell. The UI opens the same universe folder used by WorldNotion, previews Markdown canon as references, stores branching metadata under `.everend/.pathbranching`, keeps the narrative canvas always open, validates modular conditions and rules, and previews runtime export.
