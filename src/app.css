@@ -8015,3 +8015,153 @@ button:disabled {
     gap: 8px;
   }
 }
+
+/* --- Evpath (Path tab) editor ------------------------------------------- */
+
+.evpath-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.evpath-editor-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.evpath-editor-status {
+  font-size: 11.5px;
+  color: var(--wn-muted);
+}
+
+.evpath-editor-status.dirty {
+  color: var(--wn-warning);
+}
+
+.evpath-editor-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.evpath-editor-surface {
+  position: relative;
+  height: 420px;
+  border: 1px solid var(--wn-border);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--wn-editor-bg);
+}
+
+.evpath-editor-backdrop,
+.evpath-editor-input {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  padding: 10px 12px;
+  font-family: ui-monospace, SFMono-Regular, "Cascadia Code", Consolas, Menlo, monospace;
+  font-size: 12.5px;
+  line-height: 1.6;
+  tab-size: 4;
+  white-space: pre;
+  overflow: auto;
+  box-sizing: border-box;
+}
+
+.evpath-editor-backdrop {
+  color: var(--wn-editor-text);
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.evpath-editor-input {
+  color: transparent;
+  caret-color: var(--wn-editor-text);
+  background: transparent;
+  border: none;
+  outline: none;
+  resize: none;
+}
+
+.evpath-editor-input::selection {
+  background: color-mix(in srgb, var(--wn-accent) 25%, transparent);
+}
+
+.evpath-hl-anchor {
+  opacity: 0.35;
+}
+
+.evpath-hl-header {
+  color: var(--wn-accent);
+  font-weight: 700;
+}
+
+.evpath-hl-section {
+  color: var(--pb-sequence);
+  font-weight: 600;
+}
+
+.evpath-hl-decision {
+  color: var(--pb-decision);
+  font-weight: 600;
+}
+
+.evpath-hl-option {
+  color: var(--pb-outcome);
+}
+
+.evpath-hl-divert {
+  color: var(--pb-action);
+}
+
+.evpath-hl-consequence {
+  color: var(--pb-knowledge);
+}
+
+.evpath-hl-direction {
+  color: var(--wn-muted);
+  font-style: italic;
+}
+
+.evpath-hl-note {
+  color: var(--wn-muted);
+  font-style: italic;
+}
+
+.evpath-hl-meta {
+  color: var(--wn-muted);
+}
+
+.evpath-hl-speaker {
+  color: var(--pb-event);
+  font-weight: 600;
+}
+
+.evpath-hl-cond {
+  color: var(--pb-ink);
+}
+
+.evpath-editor-errors,
+.evpath-editor-warnings {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+}
+
+.evpath-editor-errors {
+  border: 1px solid color-mix(in srgb, var(--wn-danger) 45%, transparent);
+  color: var(--wn-danger);
+  background: color-mix(in srgb, var(--wn-danger) 7%, transparent);
+}
+
+.evpath-editor-warnings {
+  border: 1px solid color-mix(in srgb, var(--wn-warning) 45%, transparent);
+  color: var(--wn-warning);
+  background: color-mix(in srgb, var(--wn-warning) 7%, transparent);
+}

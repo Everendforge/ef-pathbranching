@@ -8,7 +8,7 @@ import type {
 } from "./appTypes.js";
 import type { CanvasScope } from "./domain.js";
 import type { StoryOutlineTab } from "./storyOutlineModel.js";
-import { normalizeLocalePreference, type LocalePreference } from "./i18n.js";
+import { normalizeLocalePreference, type LocalePreference } from "./localePreference.js";
 
 export const SETTINGS_KEY = "pathbranching.settings.v1";
 export const DEFAULT_PANEL_WIDTH = 282;

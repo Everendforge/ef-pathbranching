@@ -80,6 +80,7 @@ Until WorldNotion and PathBranching reach beta-quality integration surfaces, Eve
 ## Implementation Starting Point
 
 - [Docs Index](docs/README.md): recommended reading order.
+- [Evpath Format](docs/EVPATH_FORMAT.md): the native `.evpath` text projection of events, editable from the inspector's Path tab.
 - [Integration Architecture](docs/INTEGRATION_ARCHITECTURE.md): communication contracts between WorldNotion, PathBranching, and engine adapters.
 - [Ontology and Projection Reanalysis](docs/ONTOLOGY_PROJECTION_REANALYSIS.md): revised model separating WorldNotion canon, PathBranching data classes, and engine runtime projections.
 - [MVP](docs/MVP.md): first build boundary.

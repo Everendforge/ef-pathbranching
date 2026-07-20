@@ -3,6 +3,24 @@
   "compilerOptions": {
     "noEmit": false,
     "outDir": "lib",
+    "rootDir": "src",
     "declaration": true
-  }
+  },
+  // Core-only build consumed by scripts/verify-*.mjs and suite integrations.
+  // UI entries (App, components, the i18n bridge) stay out so the program
+  // never crosses the package root; `rootDir` keeps the flat lib/<module>.js
+  // layout those scripts import.
+  "include": [
+    "src/index.ts",
+    "src/projectMutations.ts",
+    "src/eventScriptModel.ts",
+    "src/eventInspectorState.ts",
+    "src/twineFormat.ts",
+    "src/canonChanges.ts",
+    "src/speakerRoles.ts",
+    "src/worldnotionVariants.ts",
+    "src/explorerEntities.ts",
+    "src/explorerSchema.ts",
+    "src/evpathFormat.ts"
+  ]
 }

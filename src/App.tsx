@@ -21,6 +21,8 @@ import {
   markdownFormatTemplate,
 } from "./canonWorkingCopy.js";
 import { changeSetPath, createCanonChangeSet } from "./canonChanges.js";
+import { applyEvpathToEvent } from "./evpathFormat.js";
+import { EvpathEditor, type EvpathApplyOutcome } from "./components/EvpathEditor.js";
 import { CanonWorkingCopyEditor } from "./components/CanonWorkingCopyEditor.js";
 import { DataDrawer } from "./components/DataDrawer.js";
 import { ReferencePicker } from "./components/ReferencePicker.js";
@@ -5622,6 +5624,7 @@ function Inspector({
   onUpdateBranch,
   onCreateEventInBranch,
   onUpdateEvent,
+  onApplyEvpath,
   onCreateDecision,
   onUpdateDecision,
   onUpdateDialogue,
@@ -5680,6 +5683,7 @@ function Inspector({
   onUpdateBranch: (id: string, updates: Partial<Branch>) => void;
   onCreateEventInBranch: (branchId: string, type?: EventType) => void;
   onUpdateEvent: (id: string, updates: Partial<EventNode>) => void;
+  onApplyEvpath: (eventId: string, text: string) => EvpathApplyOutcome;
   onCreateDecision: (eventId: string, dialogueId?: string) => void;
   onUpdateDecision: (
     eventId: string,
@@ -6318,7 +6322,7 @@ function Inspector({
 
         {event ? (
           <>
-            <InspectorContentTabs value={objectInspectorTab} onChange={setObjectInspectorTab} tabs={[{ id: "overview", label: "Overview" }, { id: "connections", label: "Connections" }, { id: "logic", label: "Logic" }, { id: "choices", label: "Choices" }]} />
+            <InspectorContentTabs value={objectInspectorTab} onChange={setObjectInspectorTab} tabs={[{ id: "overview", label: "Overview" }, { id: "path", label: "Path" }, { id: "connections", label: "Connections" }, { id: "logic", label: "Logic" }, { id: "choices", label: "Choices" }]} />
             {objectInspectorTab === "overview" ? <>
             <section className="inspector-section">
               <div className="event-inspector-overview-preview">
@@ -6381,6 +6385,12 @@ function Inspector({
               </label>
             </section>
             </> : null}
+            {objectInspectorTab === "path" ? (
+              <section className="inspector-section">
+                <h2>Path</h2>
+                <EvpathEditor project={project} eventId={event.id} onApply={onApplyEvpath} />
+              </section>
+            ) : null}
             {objectInspectorTab === "connections" ? <>
             <section className="inspector-section">
               <h2>Connections</h2>
@@ -8525,6 +8535,7 @@ function StoryCanvas({
   onUpdateBranch,
   onCreateEventInBranch,
   onUpdateEvent,
+  onApplyEvpath,
   onCreateDecision,
   onCreateDialogue,
   onCreateDialogueBeat,
@@ -8685,6 +8696,7 @@ function StoryCanvas({
   onUpdateBranch: (id: string, updates: Partial<Branch>) => void;
   onCreateEventInBranch: (branchId: string, type?: EventType) => void;
   onUpdateEvent: (id: string, updates: Partial<EventNode>) => void;
+  onApplyEvpath: (eventId: string, text: string) => EvpathApplyOutcome;
   onCreateDecision: (eventId: string, dialogueId?: string, position?: CanvasPoint) => void;
   onCreateDialogue: (eventId: string, position?: CanvasPoint) => void;
   onCreateDialogueBeat: (eventId: string, dialogueId: string, kind: DialogueBeat["kind"], position?: CanvasPoint) => void;
@@ -10397,6 +10409,7 @@ function StoryCanvas({
           onUpdateBranch={onUpdateBranch}
           onCreateEventInBranch={onCreateEventInBranch}
           onUpdateEvent={onUpdateEvent}
+          onApplyEvpath={onApplyEvpath}
           onCreateDecision={onCreateDecision}
           onUpdateDecision={onUpdateDecision}
           onUpdateDialogue={onUpdateDialogue}
@@ -13959,6 +13972,24 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
     [eventDraft?.eventId, mutateEventDraft, runCanvasMutation],
   );
 
+  const applyEvpath = useCallback(
+    (eventId: string, text: string): EvpathApplyOutcome => {
+      const currentProject = projectRef.current;
+      if (!currentProject) {
+        return { errors: [{ line: 1, message: "No hay un proyecto abierto." }], warnings: [] };
+      }
+      const result = applyEvpathToEvent(currentProject, eventId, text);
+      if (!result.errors.length && result.changed) {
+        runCanvasMutation(
+          { project: result.project, message: result.message },
+          "Applied Path edit",
+        );
+      }
+      return { errors: result.errors, warnings: result.warnings };
+    },
+    [runCanvasMutation],
+  );
+
   const createDecision = useCallback(
     (eventId: string, dialogueId?: string, position?: CanvasPoint) => {
       const currentProject = projectRef.current;
@@ -16655,6 +16686,7 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
             onUpdateBranch={updateBranch}
             onCreateEventInBranch={createEventInBranch}
             onUpdateEvent={updateEvent}
+            onApplyEvpath={applyEvpath}
             onCreateDecision={createDecision}
             onCreateDialogue={createDialogue}
             onCreateDialogueBeat={createDialogueBeat}

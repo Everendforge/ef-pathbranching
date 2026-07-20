@@ -4,6 +4,7 @@ export * from "./canvas/storyCanvasModel.js";
 export * from "./canonWorkingCopy.js";
 export * from "./exportRuntime.js";
 export * from "./exportFormats.js";
+export * from "./evpathFormat.js";
 export * from "./exportPreview.js";
 export * from "./eventDraft.js";
 export * from "./documentController.js";
