@@ -453,7 +453,8 @@ export function serializeEventEvpathDetailed(
         transitionPayloadFree(first)
       ) {
         registry.set(first.id, { kind: "transition", from: first.from, to: first.to });
-        lines.push("");
+        // No blank line here: a blank breaks implicit adjacency on parse, and
+        // this edge (beat → dialogue) must survive the round-trip.
         renderChain(first.to, level, containerId);
         return;
       }
@@ -865,8 +866,18 @@ export function applyEvpathToEvent(
     }
   };
 
+  let previousLineNumber: number | undefined;
   for (const parsedLine of parsedDocument.lines) {
     const { indent, kind, anchor } = parsedLine;
+    // A blank (or comment-only) line between two content lines breaks implicit
+    // adjacency: the next line starts a fresh chain instead of continuing the
+    // previous one. This is what keeps two independent top-level roots from
+    // being wired together, while a deletion that closes the gap still bridges.
+    if (previousLineNumber !== undefined && parsedLine.line > previousLineNumber + 1) {
+      chainTip.clear();
+      lastSpeechRef = undefined;
+    }
+    previousLineNumber = parsedLine.line;
     if (kind !== "note" && kind !== "img" && kind !== "consequence") {
       popScopesTo(indent);
     }

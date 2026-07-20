@@ -263,4 +263,114 @@ assert.ok(unknownSpeaker.warnings.some((warning) => warning.includes("Persona In
 const keptBlock = unknownSpeaker.project.scriptDocuments[0].blocks.find((block) => block.id === "block:b1");
 assert.equal(keptBlock.characterRef, "kaelen");
 
+// --- Multi-root events round-trip without inventing an edge ----------------
+// Two independent chains leave the event; a blank line separates their roots
+// and must not be reinterpreted as an edge between them.
+function multiRootProject() {
+  return {
+    specVersion: "0.1",
+    projectId: "multi-root",
+    canonRefs: [],
+    sequences: [{ id: "seq", name: "S", entryEventId: "e1", eventIds: ["e1"] }],
+    branches: [],
+    scripts: [],
+    externalFunctions: [],
+    variables: {},
+    assets: [],
+    eventCategories: [{ id: "normal", label: "Normal" }],
+    localizationCatalog: {
+      primaryLocale: "es-419",
+      locales: ["es-419"],
+      entries: {
+        "script.s.b1": { values: { "es-419": "Rama A" } },
+        "script.s.b2": { values: { "es-419": "Rama B" } },
+      },
+    },
+    scriptDocuments: [
+      {
+        id: "s",
+        name: "S",
+        format: "forge-script",
+        blocks: [
+          { id: "b1", kind: "speech", textKey: "script.s.b1", content: "Rama A" },
+          { id: "b2", kind: "speech", textKey: "script.s.b2", content: "Rama B" },
+        ],
+      },
+    ],
+    events: [
+      {
+        id: "e1",
+        name: "Bifurcación",
+        type: "normal",
+        dialogueBeats: [
+          { id: "beat:a", kind: "speech", blockRef: { scriptId: "s", blockId: "b1" } },
+          { id: "beat:b", kind: "speech", blockRef: { scriptId: "s", blockId: "b2" } },
+        ],
+        transitions: [
+          { id: "t1", from: "e1", to: "beat:e1:beat:a", order: 0 },
+          { id: "t2", from: "e1", to: "beat:e1:beat:b", order: 1 },
+        ],
+      },
+    ],
+  };
+}
+const multiRoot = multiRootProject();
+const multiRootText = serializeEventEvpath(multiRoot, "e1");
+const multiRootRound = applyEvpathToEvent(multiRoot, "e1", multiRootText);
+assert.equal(multiRootRound.errors.length, 0);
+assert.equal(multiRootRound.changed, false, `multi-root round-trip changed the project: ${multiRootRound.warnings.join(" | ")}`);
+const multiRootEvent = multiRootRound.project.events.find((event) => event.id === "e1");
+assert.ok(
+  !(multiRootEvent.transitions ?? []).some(
+    (transition) => transition.from === "beat:e1:beat:a" && transition.to === "beat:e1:beat:b",
+  ),
+  "a blank line between roots must not create an a → b edge",
+);
+
+// --- A blank line breaks implicit adjacency (disconnects a new chain) ------
+const brokenChain = multiRootText.replace(
+  "Rama A #^beat:a",
+  "Rama A #^beat:a\nRama B #^beat:b",
+);
+// After collapsing beat:b into beat:a's chain (no blank), the two are linked.
+const glued = applyEvpathToEvent(multiRoot, "e1", brokenChain.replace(/\n\nRama B #\^beat:b\n?/, "\n"));
+assert.equal(glued.errors.length, 0);
+const gluedEvent = glued.project.events.find((event) => event.id === "e1");
+assert.ok(
+  (gluedEvent.transitions ?? []).some(
+    (transition) => transition.from === "beat:e1:beat:a" && transition.to === "beat:e1:beat:b",
+  ),
+  "adjacent lines with no blank must link a → b",
+);
+
+// --- Deleting a middle beat bridges the surrounding beats ------------------
+function threeBeatProject() {
+  const base = multiRootProject();
+  base.localizationCatalog.entries["script.s.b3"] = { values: { "es-419": "Rama C" } };
+  base.scriptDocuments[0].blocks.push({ id: "b3", kind: "speech", textKey: "script.s.b3", content: "Rama C" });
+  base.events[0].dialogueBeats.push({ id: "beat:c", kind: "speech", blockRef: { scriptId: "s", blockId: "b3" } });
+  base.events[0].transitions = [
+    { id: "t1", from: "e1", to: "beat:e1:beat:a", order: 0 },
+    { id: "t2", from: "beat:e1:beat:a", to: "beat:e1:beat:b", order: 0 },
+    { id: "t3", from: "beat:e1:beat:b", to: "beat:e1:beat:c", order: 0 },
+  ];
+  return base;
+}
+const threeBeat = threeBeatProject();
+const threeBeatText = serializeEventEvpath(threeBeat, "e1");
+const middleRemoved = applyEvpathToEvent(
+  threeBeat,
+  "e1",
+  threeBeatText.split("\n").filter((line) => !line.includes("#^beat:b")).join("\n"),
+);
+assert.equal(middleRemoved.errors.length, 0);
+const bridgedEvent = middleRemoved.project.events.find((event) => event.id === "e1");
+assert.equal(bridgedEvent.dialogueBeats.length, 2);
+assert.ok(
+  (bridgedEvent.transitions ?? []).some(
+    (transition) => transition.from === "beat:e1:beat:a" && transition.to === "beat:e1:beat:c",
+  ),
+  "deleting the middle beat must bridge a → c",
+);
+
 console.log("evpath format verification passed");

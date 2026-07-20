@@ -63,6 +63,12 @@ Kaelen: ¿Dónde escondiste la reliquia? #^beat:speech-1
 - **Adyacencia implícita:** dos líneas de contenido consecutivas al mismo nivel
   crean la transición entre ellas. Una línea tras un divert inicia una cadena
   nueva.
+- **Las líneas en blanco separan cadenas:** un renglón vacío entre dos líneas de
+  contenido rompe la adyacencia implícita, así que el siguiente bloque arranca
+  una cadena independiente (no queda conectado a la anterior). Por eso un evento
+  con varias entradas se serializa con sus raíces separadas por un blanco, y al
+  reaplicarlo no se inventa una transición entre ellas. Para conectar dos
+  bloques, escríbelos en renglones seguidos sin blanco (o usa un `->`).
 - **Escapes:** `\n` para saltos de línea dentro de un texto, `\#^` para el
   literal `#^`, y `\` inicial cuando el texto empieza como un marcador
   estructural o parece un prefijo de hablante.
