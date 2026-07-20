@@ -7,17 +7,33 @@ traducciones, lógica ni assets asociados.
 
 ## Rol dentro de PathBranching
 
-- **Fase actual:** `BranchingProject` sigue siendo la fuente de verdad. Evpath
-  es una *proyección editable*: el tab **Path** del inspector de eventos
-  serializa el evento a texto, y el botón **Apply** parsea el texto y aplica
-  las diferencias como mutaciones sobre el documento.
-- **Migración automática:** como el texto se genera desde el modelo, cualquier
-  historia existente gana la vista Path al abrirse. No hay conversión de datos
-  ni riesgo de pérdida.
-- **Fase futura:** cuando el round-trip esté maduro, el almacenamiento en
-  `.everend/.pathbranching` podrá emitir `.evpath` como archivo canónico de la
-  narrativa (con sidecars JSON para canvas, data objects y catálogos). Los
-  exports (Ink, Twine, GameData) partirán de este centro condensado.
+- **Modelo en memoria:** `BranchingProject` sigue siendo la fuente de verdad
+  mientras editas. Evpath es una *proyección editable*: el tab **Path** del
+  inspector de eventos serializa el evento a texto, y el botón **Apply** parsea
+  el texto y aplica las diferencias como mutaciones sobre el documento.
+- **Almacenamiento (storage 0.3):** al guardar, cada evento escribe un archivo
+  `<evento>.evpath` **canónico** junto a su `<evento>.json` sidecar dentro de
+  `.everend/.pathbranching/stories/<story>/sequences/<seq>/events/`. El `.evpath`
+  es autoritativo para la narrativa que sabe expresar (texto, hablantes,
+  variantes, notas, escenas, decisiones, condiciones/consecuencias simples,
+  estructura de transiciones); el JSON preserva todo lo que el texto no captura
+  (lógica compleja, layout del canvas, bindings de frontera, rule sets).
+- **Carga:** tras reconstruir el proyecto del JSON, cada evento con `.evpath`
+  se reconcilia aplicando el texto sobre el modelo. Es **estrictamente no
+  destructivo**: el texto se adopta solo si parsea sin errores y llega a un
+  punto fijo estable al re-serializar; si el `.evpath` coincide con el JSON
+  (caso normal tras guardar) es un no-op, y si no se puede aplicar con
+  seguridad se conserva el JSON y se registra un warning. Así una edición
+  externa del `.evpath` gana, pero un caso límite del reconciliador nunca puede
+  corromper una historia en silencio al abrir.
+- **Migración automática:** las historias 0.2 (solo JSON, sin `.evpath`) cargan
+  intactas y se actualizan a 0.3 en el siguiente guardado. No hay conversión ni
+  riesgo de pérdida.
+- **Exports:** Ink, Twine y GameData se generan desde el modelo, que en carga ya
+  quedó reconciliado con el `.evpath`, así que parten de ese centro condensado.
+- **Límite de la fase 2:** el `.evpath` edita eventos existentes; crear eventos,
+  secuencias o triggers completos nuevos solo por archivo de texto (sin su JSON)
+  aún no se soporta —eso se hace desde el canvas o el tab Path dentro de la app.
 
 ## Sintaxis
 
@@ -108,7 +124,17 @@ original y se emite un warning.
 - `applyEvpathToEvent(project, eventId, text)` — reconcilia y devuelve
   `{ project, errors, warnings, changed }`.
 
-`scripts/verify-evpath-format.mjs` cubre el round-trip (forma serializada,
-idempotencia, edición de texto/hablante/variante/condición, altas y bajas de
-beats y outcomes, y errores de parseo). Corre dentro de `npm run verify:core`
-o solo con `npm run verify:evpath`.
+`src/pathBranchingWorkspace.ts` integra el almacenamiento: `eventEvpathPath()`
+resuelve la ruta del archivo, `serializeModularStoryFiles()` emite los `.evpath`
+al guardar (storage `STORAGE_VERSION = "0.3"`), y la carga los reconcilia sobre
+el JSON con la guarda de punto fijo.
+
+Verificación (dentro de `npm run verify:core`, o solo con `npm run verify:evpath`):
+
+- `scripts/verify-evpath-format.mjs` — round-trip a nivel de evento (forma
+  serializada, idempotencia, edición de texto/hablante/variante/condición,
+  altas y bajas de beats y outcomes, multi-root, líneas en blanco, errores).
+- `scripts/verify-evpath-storage.mjs` — round-trip a través de disco vía
+  `loadPathBranchingWorkspace`: emisión de `.evpath` + storage 0.3, ausencia de
+  drift en carga, edición externa honrada, migración 0.2, y `.evpath` malformado
+  que conserva el JSON.

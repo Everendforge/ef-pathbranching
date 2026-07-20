@@ -16,6 +16,14 @@ import {
   parseIntegrationConfigYaml,
   serializeIntegrationConfigYaml,
 } from "./integrationConfig.js";
+import { applyEvpathToEvent, serializeEventEvpath } from "./evpathFormat.js";
+
+/**
+ * Modular story storage version. 0.3 adds a canonical `.evpath` narrative file
+ * next to each event's JSON sidecar; 0.2 stories (JSON only) still load and are
+ * upgraded to 0.3 on the next save.
+ */
+export const STORAGE_VERSION = "0.3";
 
 export const pathBranchingMetadataPaths = {
   root: ".everend/.pathbranching",
@@ -130,6 +138,19 @@ export function eventPath(
   eventId: string,
 ): string {
   return `${sequenceDirectory(storyId, sequenceId)}/events/${slugify(eventId) || eventId}.json`;
+}
+
+/**
+ * Canonical `.evpath` narrative file for an event, written next to its JSON
+ * sidecar. The text is authoritative for the narrative it can express; the
+ * JSON preserves everything evpath omits (complex logic, layout, bindings).
+ */
+export function eventEvpathPath(
+  storyId: string,
+  sequenceId: string,
+  eventId: string,
+): string {
+  return `${sequenceDirectory(storyId, sequenceId)}/events/${slugify(eventId) || eventId}.evpath`;
 }
 
 export function branchPath(
@@ -345,6 +366,7 @@ function parseModularStoryProject(
   files: UniverseFile[],
   story: PathBranchingStoryManifestEntry,
   storyId: string,
+  loadWarnings?: string[],
 ): { project: BranchingProject; modifiedMs?: number } | undefined {
   const modularPath = story.path.endsWith("/story.json")
     ? story.path
@@ -354,6 +376,7 @@ function parseModularStoryProject(
   if (!storyFile || !parsedStory) return undefined;
   if (
     parsedStory.storageVersion !== "0.2" &&
+    parsedStory.storageVersion !== "0.3" &&
     !Array.isArray(parsedStory.sequenceIds)
   )
     return undefined;
@@ -430,43 +453,91 @@ function parseModularStoryProject(
     panels?: BranchingProject["panels"];
   }>(files.find((file) => file.relativePath === authoringCanvasPath(storyId)));
 
+  const baseProject = normalizeProject({
+    specVersion: parsedStory.specVersion ?? "0.1",
+    projectId: parsedStory.projectId ?? `pathbranching:${storyId}`,
+    storyId,
+    universeRootPath: parsedStory.universeRootPath,
+    name: parsedStory.name ?? story.name,
+    sourceVault: parsedStory.sourceVault,
+    dataClasses: parsedStory.dataClasses,
+    projectDataObjects: parsedStory.projectDataObjects,
+    assets: parsedStory.assets ?? [],
+    canonEditSuggestions: parsedStory.canonEditSuggestions,
+    projectionRules: parsedStory.projectionRules,
+    graphModules: parsedStory.graphModules,
+    canvas: authoring?.canvas,
+    panels: authoring?.panels,
+    entrySequenceId: parsedStory.entrySequenceId,
+    eventCategories: parsedStory.eventCategories,
+    canonRefs: parsedStory.canonRefs ?? [],
+    sequences,
+    branches,
+    events,
+    scripts: parsedStory.scripts ?? [],
+    scriptDocuments: parsedStory.scriptDocuments ?? [],
+    integrationConfig:
+      parseIntegrationConfigFile(files, pathBranchingMetadataPaths.config) ??
+      DEFAULT_INTEGRATION_CONFIG,
+    integrationConfigOverride: parseIntegrationConfigFile(
+      files,
+      storyIntegrationConfigPath(storyId),
+    ),
+    externalFunctions: parsedStory.externalFunctions ?? [],
+    variables: parsedStory.variables ?? {},
+    engineTargets: parsedStory.engineTargets,
+  });
+
   return {
     modifiedMs: storyFile.modifiedMs,
-    project: normalizeProject({
-      specVersion: parsedStory.specVersion ?? "0.1",
-      projectId: parsedStory.projectId ?? `pathbranching:${storyId}`,
-      storyId,
-      universeRootPath: parsedStory.universeRootPath,
-      name: parsedStory.name ?? story.name,
-      sourceVault: parsedStory.sourceVault,
-      dataClasses: parsedStory.dataClasses,
-      projectDataObjects: parsedStory.projectDataObjects,
-      assets: parsedStory.assets ?? [],
-      canonEditSuggestions: parsedStory.canonEditSuggestions,
-      projectionRules: parsedStory.projectionRules,
-      graphModules: parsedStory.graphModules,
-      canvas: authoring?.canvas,
-      panels: authoring?.panels,
-      entrySequenceId: parsedStory.entrySequenceId,
-      eventCategories: parsedStory.eventCategories,
-      canonRefs: parsedStory.canonRefs ?? [],
-      sequences,
-      branches,
-      events,
-      scripts: parsedStory.scripts ?? [],
-      scriptDocuments: parsedStory.scriptDocuments ?? [],
-      integrationConfig:
-        parseIntegrationConfigFile(files, pathBranchingMetadataPaths.config) ??
-        DEFAULT_INTEGRATION_CONFIG,
-      integrationConfigOverride: parseIntegrationConfigFile(
-        files,
-        storyIntegrationConfigPath(storyId),
-      ),
-      externalFunctions: parsedStory.externalFunctions ?? [],
-      variables: parsedStory.variables ?? {},
-      engineTargets: parsedStory.engineTargets,
-    }),
+    project: reconcileEventEvpathFiles(baseProject, files, storyId, loadWarnings),
   };
+}
+
+/**
+ * Honors the canonical `.evpath` narrative for each event over its JSON
+ * sidecar. Applying is strictly non-destructive: an event's text is adopted
+ * only when it parses cleanly and reconciles to a stable fixed point (so a
+ * reconciler edge case can never silently drift a story on load). When the
+ * `.evpath` matches the JSON (the common case, right after a save) it is a
+ * no-op; when it can't be applied safely the JSON is kept and a warning is
+ * recorded.
+ */
+function reconcileEventEvpathFiles(
+  project: BranchingProject,
+  files: UniverseFile[],
+  storyId: string,
+  loadWarnings?: string[],
+): BranchingProject {
+  let current = project;
+  for (const event of project.events) {
+    const sequenceId = ownerSequenceIdForEvent(current, event.id);
+    if (!sequenceId) continue;
+    const evpathFile = files.find(
+      (file) => file.relativePath === eventEvpathPath(storyId, sequenceId, event.id),
+    );
+    if (!evpathFile) continue;
+    const applied = applyEvpathToEvent(current, event.id, evpathFile.content);
+    if (applied.errors.length) {
+      loadWarnings?.push(
+        `No se pudo leer el texto de "${event.name}"; se conserva la versión guardada (${applied.errors[0].message}).`,
+      );
+      continue;
+    }
+    if (!applied.changed) continue;
+    // The `.evpath` diverged from the JSON (an external edit). Adopt it only if
+    // re-serializing the applied event reaches a fixed point.
+    const reserialized = serializeEventEvpath(applied.project, event.id);
+    const settle = applyEvpathToEvent(applied.project, event.id, reserialized);
+    if (settle.errors.length || settle.changed) {
+      loadWarnings?.push(
+        `El texto editado de "${event.name}" no se pudo aplicar de forma estable; se conserva la versión guardada.`,
+      );
+      continue;
+    }
+    current = applied.project;
+  }
+  return current;
 }
 
 function parseLegacyStoryProject(
@@ -520,7 +591,7 @@ export function loadPathBranchingWorkspace(
     manifest.stories.find((story) => story.id === manifest.activeStoryId) ??
     manifest.stories[0];
   const loadedStory = activeStory
-    ? (parseModularStoryProject(files, activeStory, activeStory.id) ??
+    ? (parseModularStoryProject(files, activeStory, activeStory.id, loadWarnings) ??
       parseLegacyStoryProject(files, activeStory, activeStory.id))
     : undefined;
   if (parsedManifest && activeStory && !loadedStory) {
@@ -616,7 +687,7 @@ export function serializeModularStoryFiles(
     name: projectInput.name ?? story.name,
   });
   const storyMetadata: ModularStoryFile = {
-    storageVersion: "0.2",
+    storageVersion: STORAGE_VERSION,
     specVersion: project.specVersion,
     projectId: project.projectId,
     storyId: story.id,
@@ -647,7 +718,7 @@ export function serializeModularStoryFiles(
     },
     {
       relativePath: authoringCanvasPath(story.id),
-      content: `${JSON.stringify({ storageVersion: "0.2", storyId: story.id, canvas: project.canvas, panels: project.panels }, null, 2)}\n`,
+      content: `${JSON.stringify({ storageVersion: STORAGE_VERSION, storyId: story.id, canvas: project.canvas, panels: project.panels }, null, 2)}\n`,
     },
   ];
 
@@ -661,7 +732,7 @@ export function serializeModularStoryFiles(
   project.sequences.forEach((sequence) => {
     files.push({
       relativePath: sequencePath(story.id, sequence.id),
-      content: `${JSON.stringify({ storageVersion: "0.2", storyId: story.id, sequence }, null, 2)}\n`,
+      content: `${JSON.stringify({ storageVersion: STORAGE_VERSION, storyId: story.id, sequence }, null, 2)}\n`,
     });
   });
 
@@ -670,7 +741,12 @@ export function serializeModularStoryFiles(
     if (!sequenceId) return;
     files.push({
       relativePath: eventPath(story.id, sequenceId, event.id),
-      content: `${JSON.stringify({ storageVersion: "0.2", storyId: story.id, sequenceId, event }, null, 2)}\n`,
+      content: `${JSON.stringify({ storageVersion: STORAGE_VERSION, storyId: story.id, sequenceId, event }, null, 2)}\n`,
+    });
+    // Canonical narrative projection alongside the JSON sidecar.
+    files.push({
+      relativePath: eventEvpathPath(story.id, sequenceId, event.id),
+      content: serializeEventEvpath(project, event.id),
     });
   });
 
@@ -679,7 +755,7 @@ export function serializeModularStoryFiles(
     if (!sequenceId) return;
     files.push({
       relativePath: branchPath(story.id, sequenceId, branch.id),
-      content: `${JSON.stringify({ storageVersion: "0.2", storyId: story.id, sequenceId, branch }, null, 2)}\n`,
+      content: `${JSON.stringify({ storageVersion: STORAGE_VERSION, storyId: story.id, sequenceId, branch }, null, 2)}\n`,
     });
   });
 
