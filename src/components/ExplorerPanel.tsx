@@ -180,8 +180,8 @@ export function ExplorerPanel({
     "all",
   );
   const [newType, setNewType] = useState("concept");
-  const [explorerView, setExplorerView] = useState<"items" | "schema">(
-    "items",
+  const [explorerView, setExplorerView] = useState<"entities" | "schema">(
+    "entities",
   );
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(
     () => new Set(),
@@ -303,11 +303,11 @@ export function ExplorerPanel({
         <button
           type="button"
           role="tab"
-          aria-selected={explorerView === "items"}
-          className={explorerView === "items" ? "active" : ""}
-          onClick={() => setExplorerView("items")}
+          aria-selected={explorerView === "entities"}
+          className={explorerView === "entities" ? "active" : ""}
+          onClick={() => setExplorerView("entities")}
         >
-          Items
+          Entities
         </button>
         <button
           type="button"
@@ -319,7 +319,7 @@ export function ExplorerPanel({
           Properties
         </button>
       </div>
-      {explorerView === "items" ? <div
+      {explorerView === "entities" ? <div
         className="explorer-filter-row"
         role="tablist"
         aria-label="Explorer origin filter"
@@ -348,7 +348,7 @@ export function ExplorerPanel({
         </button>
       </div> : null}
       <div className="explorer-tree">
-        {explorerView === "items" ? groups.map(([group, groupRows]) => {
+        {explorerView === "entities" ? groups.map(([group, groupRows]) => {
           const isExpanded = !collapsedGroups.has(group);
           const Icon = iconForType(group);
           return (
@@ -469,9 +469,9 @@ export function ExplorerPanel({
             );
           })}
         </section> : null}
-        {explorerView === "items" && groups.length === 0 ? (
+        {explorerView === "entities" && groups.length === 0 ? (
           <span className="empty-line">
-            No Explorer items match this search.
+            No entities match this search.
           </span>
         ) : null}
       </div>

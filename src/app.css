@@ -5351,9 +5351,9 @@ button:disabled {
 
 .logic-property-children,
 .asset-explorer-tree-children {
-  margin-left: 12px;
-  padding-left: 4px;
-  border-left: 1px solid color-mix(in srgb, var(--wn-border) 72%, transparent);
+  margin-left: 14px;
+  padding-left: 6px;
+  border-left: 1px solid color-mix(in srgb, var(--wn-border) 50%, transparent);
 }
 
 .logic-property-tree-node > .logic-property-row {
@@ -5364,6 +5364,20 @@ button:disabled {
   display: flex;
   min-width: 0;
   align-items: stretch;
+  margin: 0 2px;
+  border-radius: 5px;
+  border: 1px solid transparent;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.logic-property-row-shell:hover {
+  border-color: var(--wn-border);
+  background: color-mix(in srgb, var(--wn-accent) 4%, transparent);
+}
+
+.logic-property-row-shell:has(> .logic-property-row.active) {
+  border-color: color-mix(in srgb, var(--wn-accent) 40%, var(--wn-border));
+  background: color-mix(in srgb, var(--wn-accent) 10%, var(--wn-card));
 }
 
 .logic-property-row-shell > .logic-property-row {
@@ -5460,6 +5474,120 @@ button:disabled {
 .logic-property-protection.canon {
   border-color: color-mix(in srgb, var(--wn-success) 45%, var(--wn-border));
   background: color-mix(in srgb, var(--wn-success) 8%, var(--wn-panel));
+}
+
+/* Create-entity / create-property anchored popovers.
+   `.modal-body` defines inputs/selects with `--wn-input-bg` (never defined),
+   so the controls render with no background and lose contrast on dark themes.
+   Force them to use the editor palette which is defined for every theme. */
+.explorer-create-menu .modal-body {
+  padding: 4px 4px 8px;
+  display: grid;
+  gap: 10px;
+}
+.explorer-create-menu .field-label {
+  color: var(--wn-muted);
+}
+.explorer-create-menu .field-label > span {
+  color: var(--wn-muted);
+  font-size: 0.66rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+.explorer-create-menu .field-label input,
+.explorer-create-menu .field-label textarea,
+.explorer-create-menu input,
+.explorer-create-menu textarea,
+.explorer-create-menu select {
+  background: var(--wn-editor-bg);
+  color: var(--wn-editor-text);
+  border: 1px solid var(--wn-border);
+  border-radius: 5px;
+  padding: 6px 8px;
+  font-size: 0.78rem;
+  font-weight: 500;
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+.explorer-create-menu select {
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: linear-gradient(45deg, transparent 50%, var(--wn-muted) 50%),
+    linear-gradient(135deg, var(--wn-muted) 50%, transparent 50%);
+  background-position: calc(100% - 14px) 50%, calc(100% - 9px) 50%;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+  padding-right: 26px;
+  cursor: pointer;
+}
+.explorer-create-menu input::placeholder,
+.explorer-create-menu textarea::placeholder {
+  color: var(--wn-muted);
+  opacity: 1;
+}
+.explorer-create-menu input:focus,
+.explorer-create-menu select:focus,
+.explorer-create-menu textarea:focus {
+  border-color: var(--wn-accent);
+  outline: 2px solid var(--wn-accent-soft);
+  outline-offset: 0;
+}
+.explorer-create-menu select option {
+  background: var(--wn-panel);
+  color: var(--wn-text);
+}
+.explorer-create-menu .modal-footer {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  padding: 8px 4px 4px;
+  margin-top: 4px;
+  border-top: 1px solid var(--wn-border);
+  background: transparent;
+}
+.explorer-create-menu .modal-footer button {
+  padding: 6px 12px;
+  border-radius: 5px;
+  font-size: 0.74rem;
+  font-weight: 600;
+  cursor: pointer;
+  border: 1px solid var(--wn-border);
+  background: var(--wn-panel-2);
+  color: var(--wn-text);
+}
+.explorer-create-menu .modal-footer button:hover {
+  background: color-mix(in srgb, var(--wn-accent) 14%, var(--wn-panel-2));
+  border-color: color-mix(in srgb, var(--wn-accent) 40%, var(--wn-border));
+}
+.explorer-create-menu .modal-footer button.primary {
+  background: var(--wn-accent);
+  border-color: var(--wn-accent);
+  color: #fff;
+}
+.explorer-create-menu .modal-footer button.primary:hover {
+  filter: brightness(1.08);
+}
+.explorer-create-menu .modal-footer button.primary:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  filter: none;
+}
+.explorer-create-menu .logic-property-checkbox {
+  color: var(--wn-text);
+  font-size: 0.74rem;
+  font-weight: 500;
+  text-transform: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.explorer-create-menu .logic-property-checkbox input {
+  width: auto;
+  min-width: 0;
+  padding: 0;
+  margin: 0;
 }
 
 .logic-property-editor-fields,
@@ -5644,14 +5772,25 @@ button:disabled {
 }
 
 .logic-canon-type-group {
-  margin: 4px 0 6px 8px;
-  border-left: 1px solid color-mix(in srgb, var(--wn-border) 72%, transparent);
+  margin: 0 6px 2px;
 }
 
 .logic-canon-type-heading {
   display: flex;
   align-items: center;
   width: 100%;
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  padding: 2px 0;
+  border-radius: 6px;
+  background: var(--wn-panel);
+}
+
+.explorer-type-group > .logic-canon-type-heading > .explorer-entity-row {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
 }
 
 .logic-canon-type-toggle {
@@ -5675,18 +5814,18 @@ button:disabled {
   padding-left: 0;
 }
 
-.logic-canon-type-row .explorer-origin {
-  margin-left: 2px;
-}
-
 .logic-canon-type-row .logic-property-lock {
   margin: 0 2px 0 0;
 }
 
 .logic-canon-type-count {
   margin-left: auto;
+  font-size: 0.6rem;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--wn-accent) 12%, var(--wn-card));
   color: var(--wn-muted);
-  font-size: 0.72rem;
 }
 
 .asset-explorer-tree-node > .explorer-entity-row .explorer-entity-open {
@@ -8141,6 +8280,8 @@ button:disabled {
 
 /* Explorer and manual Canon working copies */
 .explorer-panel {
+  display: flex;
+  flex-direction: column;
   min-width: 300px;
   overflow: hidden;
 }
@@ -8153,20 +8294,86 @@ button:disabled {
 }
 .explorer-view-tabs {
   display: flex;
-  gap: 4px;
-  padding: 6px 8px;
+  gap: 0;
+  padding: 0 8px;
   border-bottom: 1px solid var(--wn-border);
 }
 .explorer-view-tabs button {
   flex: 1;
-  padding: 4px 6px;
+  padding: 7px 6px 6px;
   color: var(--wn-muted);
-  font-size: 0.7rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  border-bottom: 2px solid transparent;
+  transition: color 0.15s, border-color 0.15s;
+}
+.explorer-view-tabs button:hover {
+  color: var(--wn-text);
 }
 .explorer-view-tabs button.active {
   color: var(--wn-text);
-  border-color: var(--wn-accent);
-  background: color-mix(in srgb, var(--wn-accent) 12%, var(--wn-card));
+  border-bottom-color: var(--wn-accent);
+  background: transparent;
+}
+.logic-view-tabs {
+  align-items: stretch;
+}
+.logic-view-tab-slot {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-width: 0;
+  border-bottom: 2px solid transparent;
+}
+.logic-view-tab-slot.active {
+  border-bottom-color: var(--wn-accent);
+}
+.logic-view-tab-slot > button {
+  flex: 0 1 auto;
+  border-bottom: none;
+}
+.logic-view-tab-slot.active > button {
+  color: var(--wn-text);
+}
+.logic-tab-info-trigger {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  color: var(--wn-muted);
+  cursor: help;
+}
+.logic-view-tab-slot.active .logic-tab-info-trigger {
+  color: color-mix(in srgb, var(--wn-text) 72%, var(--wn-muted));
+}
+.logic-tab-info-trigger:hover,
+.logic-tab-info-trigger:focus-visible {
+  color: var(--wn-text);
+}
+.logic-tab-info-tooltip {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(260px, calc(100vw - 32px));
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--wn-border);
+  background: var(--wn-card);
+  color: var(--wn-text);
+  font-size: 0.72rem;
+  font-weight: 500;
+  line-height: 1.45;
+  white-space: normal;
+  text-align: left;
+  z-index: 1000;
+  pointer-events: none;
+  box-shadow: 0 10px 28px color-mix(in srgb, var(--wn-shadow) 18%, transparent);
 }
 .explorer-schema-actions {
   display: flex;
@@ -8221,7 +8428,11 @@ button:disabled {
 }
 .explorer-tree {
   overflow: auto;
-  padding: 5px 0 12px;
+  flex: 1 1 0;
+  padding: 4px 0 12px;
+}
+.explorer-type-group {
+  margin: 0 6px 2px;
 }
 .explorer-type-heading,
 .explorer-entity-row {
@@ -8233,25 +8444,64 @@ button:disabled {
   text-align: left;
 }
 .explorer-type-heading {
-  padding: 7px 10px;
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  padding: 6px 8px;
+  border-radius: 6px;
   color: var(--wn-muted);
-  font-size: 0.72rem;
+  font-size: 0.7rem;
+  background: var(--wn-panel);
+}
+.explorer-type-heading:hover {
+  background: color-mix(in srgb, var(--wn-accent) 6%, var(--wn-panel));
 }
 .explorer-type-heading strong {
   flex: 1;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  color: var(--wn-text);
+  font-size: 0.72rem;
 }
 .explorer-type-heading span {
-  font-size: 0.64rem;
-}
-.explorer-entity-row {
-  padding: 6px 10px 6px 29px;
+  font-size: 0.6rem;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--wn-accent) 12%, var(--wn-card));
+  color: var(--wn-muted);
 }
 .explorer-entity-row {
   position: relative;
   padding: 0;
+  margin: 0 2px;
+  border-radius: 5px;
+  border: 1px solid transparent;
+  transition: border-color 0.15s, background 0.15s;
+}
+.explorer-entity-row:hover {
+  border-color: var(--wn-border);
+  background: color-mix(in srgb, var(--wn-accent) 4%, transparent);
+}
+.explorer-entity-row.active {
+  border-color: color-mix(in srgb, var(--wn-accent) 40%, var(--wn-border));
+  background: color-mix(in srgb, var(--wn-accent) 10%, var(--wn-card));
+}
+.explorer-entity-open {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 6px 8px;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  border-radius: 5px;
 }
 .explorer-entity-open.logic-canon-type-row {
   padding-left: 8px;
@@ -8267,22 +8517,25 @@ button:disabled {
   position: relative;
   display: flex;
   align-items: center;
-  padding-right: 5px;
+  padding-right: 4px;
+  flex: 0 0 auto;
 }
 .explorer-row-actions .icon-only {
   min-width: 24px;
   padding: 3px;
+  border-radius: 4px;
+}
+.explorer-row-actions .icon-only:hover {
+  background: color-mix(in srgb, var(--wn-accent) 12%, transparent);
 }
 .explorer-row-menu {
-  position: absolute;
-  z-index: 8;
-  top: calc(100% + 2px);
-  right: 4px;
+  position: fixed;
+  z-index: 100;
   display: grid;
-  min-width: 152px;
+  min-width: 160px;
   padding: 4px;
   border: 1px solid var(--wn-border);
-  border-radius: 6px;
+  border-radius: 8px;
   background: var(--wn-panel);
   box-shadow: 0 10px 24px color-mix(in srgb, var(--wn-shadow) 24%, transparent);
 }
@@ -8290,8 +8543,12 @@ button:disabled {
   display: flex;
   align-items: center;
   gap: 5px;
-  padding: 5px 6px;
+  padding: 5px 8px;
   text-align: left;
+  border-radius: 4px;
+}
+.explorer-row-menu button:hover {
+  background: color-mix(in srgb, var(--wn-accent) 8%, transparent);
 }
 .explorer-schema-list {
   display: grid;

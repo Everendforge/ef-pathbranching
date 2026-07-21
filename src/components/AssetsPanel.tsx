@@ -102,14 +102,15 @@ export function AssetsPanel({
   const [query, setQuery] = useState("");
   const [kind, setKind] = useState<AssetKind | "all">("all");
   const [origin, setOrigin] = useState<"all" | ProjectAsset["origin"]>("all");
-  const [view, setView] = useState<"items" | "files">("items");
+  const [view, setView] = useState<"entities" | "files">("entities");
   const [itemFilter, setItemFilter] = useState<"all" | "canon" | "local" | "data">("all");
   const [newEntityType, setNewEntityType] = useState("concept");
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(() => new Set());
-  const [actionsForId, setActionsForId] = useState<string>();
+  const [actionsForId, setActionsForId] = useState<{ id: string; top: number; left: number } | undefined>();
   const [isInitialized, setIsInitialized] = useState(false);
-  const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
+  const [createEntityMenu, setCreateEntityMenu] = useState<{ top: number; left: number } | undefined>();
   const [newEntityName, setNewEntityName] = useState("");
+  const createEntityRef = useRef<HTMLDivElement | null>(null);
   const pendingInspectorClickRef = useRef<{ rowId: string; timer: number } | undefined>(undefined);
   const deferredQuery = useDeferredValue(query.trim().toLowerCase());
   const assets = useMemo(
@@ -169,6 +170,47 @@ export function AssetsPanel({
     }
   }, [explorerGroups, isInitialized]);
 
+  useEffect(() => {
+    if (!createEntityMenu) return;
+    const closeOnOutsidePointer = (event: PointerEvent) => {
+      if (event.target instanceof Node && !createEntityRef.current?.contains(event.target)) {
+        setCreateEntityMenu(undefined);
+      }
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setCreateEntityMenu(undefined);
+    };
+    document.addEventListener("pointerdown", closeOnOutsidePointer);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnOutsidePointer);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [createEntityMenu]);
+
+  useEffect(() => {
+    if (!actionsForId) return;
+    const closeOnOutsidePointer = (event: PointerEvent) => {
+      const target = event.target as Node | null;
+      if (!target) return;
+      // Don't close if clicking inside the menu itself or the trigger button
+      const actionsBtns = document.querySelectorAll(".explorer-row-actions .icon-only");
+      const isTrigger = Array.from(actionsBtns).some((btn) => btn.contains(target));
+      const menuEl = document.querySelector(".explorer-row-menu");
+      const isMenu = menuEl?.contains(target);
+      if (!isTrigger && !isMenu) setActionsForId(undefined);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setActionsForId(undefined);
+    };
+    document.addEventListener("pointerdown", closeOnOutsidePointer);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnOutsidePointer);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [actionsForId]);
+
   const expandAllAssets = () => setCollapsedGroups(new Set());
   const collapseAllAssets = () => setCollapsedGroups(new Set(explorerGroups.map(([group]) => group)));
 
@@ -176,7 +218,7 @@ export function AssetsPanel({
     const trimmedName = newEntityName.trim();
     if (!trimmedName) return;
     onCreateEntity(newEntityType, trimmedName);
-    setIsCreateModalOpen(false);
+    setCreateEntityMenu(undefined);
     setNewEntityName("");
   };
 
@@ -207,18 +249,32 @@ export function AssetsPanel({
   return (
     <WorkspaceSidePanel title="Assets" side="left" collapsed={collapsed} onCollapsedChange={onCollapsedChange} onContextMenu={onContextMenu}>
       <div className="explorer-view-tabs" role="tablist" aria-label="Asset views">
-        <button type="button" className={view === "items" ? "active" : ""} onClick={() => setView("items")}>Items</button>
+        <button type="button" className={view === "entities" ? "active" : ""} onClick={() => setView("entities")}>Entities</button>
         <button type="button" className={view === "files" ? "active" : ""} onClick={() => setView("files")}>Files</button>
       </div>
-      {view === "items" ? (
+      {view === "entities" ? (
         <>
           <div className="explorer-toolbar">
-            <label className="explorer-search"><Search size={14} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search items" /></label>
-            <button type="button" title="New local entity" onClick={() => setIsCreateModalOpen(true)}><Plus size={15} /></button>
-            <button type="button" title="Expand all items" onClick={expandAllAssets}><ChevronDown size={15} /></button>
-            <button type="button" title="Collapse all items" onClick={collapseAllAssets}><ChevronRight size={15} /></button>
+            <label className="explorer-search"><Search size={14} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search entities" /></label>
+            <button type="button" title="New local entity" onClick={(event) => {
+              if (createEntityMenu) {
+                setCreateEntityMenu(undefined);
+                return;
+              }
+              const rect = event.currentTarget.getBoundingClientRect();
+              const width = 300;
+              const height = 220;
+              const viewportWidth = typeof window === "undefined" ? width + 24 : window.innerWidth;
+              const viewportHeight = typeof window === "undefined" ? height + 24 : window.innerHeight;
+              setCreateEntityMenu({
+                top: Math.max(8, Math.min(rect.bottom + 4, viewportHeight - height - 8)),
+                left: Math.max(8, Math.min(rect.right - width, viewportWidth - width - 8)),
+              });
+            }}><Plus size={15} /></button>
+            <button type="button" title="Expand all entities" onClick={expandAllAssets}><ChevronDown size={15} /></button>
+            <button type="button" title="Collapse all entities" onClick={collapseAllAssets}><ChevronRight size={15} /></button>
           </div>
-          <div className="explorer-filter-row" role="tablist" aria-label="Item origin filter">
+          <div className="explorer-filter-row" role="tablist" aria-label="Entity origin filter">
             {(["all", "canon", "local", "data"] as const).map((value) => <button key={value} type="button" className={itemFilter === value ? "active" : ""} onClick={() => setItemFilter(value)}>{value === "all" ? "All" : value === "data" ? "Data" : value === "canon" ? "Canon" : "Local"}</button>)}
           </div>
           <div className="explorer-tree asset-explorer-tree">
@@ -244,11 +300,23 @@ export function AssetsPanel({
                           </button>
                           {row.kind === "local" ? (
                             <div className="explorer-row-actions">
-                              <button type="button" className="icon-only" title={`Actions for ${row.label}`} onClick={() => setActionsForId((current) => current === row.id ? undefined : row.id)}>
+                              <button type="button" className="icon-only" title={`Actions for ${row.label}`} onClick={(event) => {
+                                if (actionsForId?.id === row.id) { setActionsForId(undefined); return; }
+                                const rect = event.currentTarget.getBoundingClientRect();
+                                const width = 180;
+                                const height = 80;
+                                const viewportWidth = typeof window === "undefined" ? width + 24 : window.innerWidth;
+                                const viewportHeight = typeof window === "undefined" ? height + 24 : window.innerHeight;
+                                setActionsForId({
+                                  id: row.id,
+                                  top: Math.max(8, Math.min(rect.bottom + 4, viewportHeight - height - 8)),
+                                  left: Math.max(8, Math.min(rect.right - width, viewportWidth - width - 8)),
+                                });
+                              }}>
                                 <MoreHorizontal size={15} />
                               </button>
-                              {actionsForId === row.id ? (
-                                <div className="explorer-row-menu">
+                              {actionsForId?.id === row.id ? (
+                                <div className="explorer-row-menu" style={{ top: actionsForId.top, left: actionsForId.left }}>
                                   <button type="button" onClick={() => { onOpenInspector(explorerSelection(row)); setActionsForId(undefined); }}>Open inspector</button>
                                   <button type="button" className="danger" onClick={() => { onDeleteEntity(row.id); setActionsForId(undefined); }}>
                                     <Trash2 size={13} /> Delete local entity
@@ -291,43 +359,41 @@ export function AssetsPanel({
                 </button>
               </div>
             ) : explorerGroups.length === 0 ? (
-              <span className="empty-line">No items match this search.</span>
+              <span className="empty-line">No entities match this search.</span>
             ) : null}
           </div>
-          {isCreateModalOpen ? (
-            <div className="modal-overlay" onClick={() => setIsCreateModalOpen(false)}>
-              <div className="modal-content" onClick={(e) => e.stopPropagation()}>
-                <header className="modal-header">
-                  <h3>Create New Entity</h3>
-                  <button type="button" className="icon-only" onClick={() => setIsCreateModalOpen(false)}><X size={16} /></button>
-                </header>
-                <div className="modal-body">
-                  <label>
-                    <span>Name</span>
-                    <input
-                      type="text"
-                      value={newEntityName}
-                      onChange={(e) => setNewEntityName(e.target.value)}
-                      placeholder="Entity name"
-                      autoFocus
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") handleCreateEntity();
-                        if (e.key === "Escape") setIsCreateModalOpen(false);
-                      }}
-                    />
-                  </label>
-                  <label>
-                    <span>Type</span>
+          {createEntityMenu ? (
+            <div ref={createEntityRef} className="logic-property-editor explorer-create-menu" style={{ top: createEntityMenu.top, left: createEntityMenu.left }} role="dialog" aria-label="Create new entity">
+              <header className="logic-property-editor-header">
+                <span className="logic-property-editor-icon"><Plus size={15} /></span>
+                <div><strong>New entity</strong><small>Declare type and name</small></div>
+                <button type="button" className="icon-only" aria-label="Close create entity menu" onClick={() => setCreateEntityMenu(undefined)}><X size={15} /></button>
+              </header>
+              <div className="modal-body">
+                <label className="field-label">
+                  <span>Name</span>
+                  <input
+                    type="text"
+                    value={newEntityName}
+                    onChange={(e) => setNewEntityName(e.target.value)}
+                    placeholder="Entity name"
+                    autoFocus
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") handleCreateEntity();
+                    }}
+                  />
+                </label>
+                <label className="field-label">
+                  <span>Type</span>
                   <select value={newEntityType} onChange={(event) => setNewEntityType(event.target.value)}>
-                      {explorerTypes.map((type) => <option key={type} value={type}>{propertyTypeMap.get(type) || displayType(type)}</option>)}
-                    </select>
-                  </label>
-                </div>
-                <footer className="modal-footer">
-                  <button type="button" onClick={() => setIsCreateModalOpen(false)}>Cancel</button>
-                  <button type="button" className="primary" onClick={handleCreateEntity} disabled={!newEntityName.trim()}>Create</button>
-                </footer>
+                    {explorerTypes.map((type) => <option key={type} value={type}>{propertyTypeMap.get(type) || displayType(type)}</option>)}
+                  </select>
+                </label>
               </div>
+              <footer className="modal-footer">
+                <button type="button" onClick={() => setCreateEntityMenu(undefined)}>Cancel</button>
+                <button type="button" className="primary" onClick={handleCreateEntity} disabled={!newEntityName.trim()}>Create</button>
+              </footer>
             </div>
           ) : null}
         </>
