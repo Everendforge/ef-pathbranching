@@ -19,11 +19,11 @@ import {
 import { applyEvpathToEvent, serializeEventEvpath } from "./evpathFormat.js";
 
 /**
- * Modular story storage version. 0.3 adds a canonical `.evpath` narrative file
- * next to each event's JSON sidecar; 0.2 stories (JSON only) still load and are
- * upgraded to 0.3 on the next save.
+ * Modular story storage version. 0.4 adds unified logic moments and explicit
+ * flow/route transition roles. Older stories are normalized on load and are
+ * upgraded to 0.4 on the next save.
  */
-export const STORAGE_VERSION = "0.3";
+export const STORAGE_VERSION = "0.4";
 
 export const pathBranchingMetadataPaths = {
   root: ".everend/.pathbranching",
@@ -382,6 +382,7 @@ function parseModularStoryProject(
   if (
     parsedStory.storageVersion !== "0.2" &&
     parsedStory.storageVersion !== "0.3" &&
+    parsedStory.storageVersion !== "0.4" &&
     !Array.isArray(parsedStory.sequenceIds)
   )
     return undefined;

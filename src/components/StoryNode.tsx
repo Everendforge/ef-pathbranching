@@ -6,6 +6,7 @@ import type { Outcome, SceneImageAttachment } from "../domain.js";
 import type { LocaleNames } from "../localization.js";
 import { UNKNOWN_SPEAKER_REF, speakerLabel } from "../speakerRoles.js";
 import { SpeakerSelector } from "./SpeakerSelector.js";
+import { LogicBands } from "./LogicComposer.js";
 
 function badgeText(value: string) {
   return value.length > 22 ? `${value.slice(0, 19)}...` : value;
@@ -494,6 +495,20 @@ function StoryNode({ id, data, selected }: NodeProps<StoryCanvasNode>) {
     : [];
   const detailBadges = nodeData.badges.filter((badge) => !/^\d+ decisions?$/.test(badge));
   const infoBadges = Array.isArray(nodeData.infoBadges) ? nodeData.infoBadges : [];
+  const logicSummary = nodeData.logicSummary;
+  const openLogicPart = typeof nodeData.onOpenLogicPart === "function"
+    ? nodeData.onOpenLogicPart as (part: "conditions" | "consequences") => void
+    : undefined;
+  const logicBands = logicSummary ? <LogicBands
+    when={logicSummary.when}
+    then={logicSummary.then}
+    whenItems={logicSummary.whenItems}
+    thenItems={logicSummary.thenItems}
+    warningCount={logicSummary.warningCount}
+    expanded={selected}
+    onOpenWhen={() => openLogicPart?.("conditions")}
+    onOpenThen={() => openLogicPart?.("consequences")}
+  /> : null;
   const eventOtherBadges = detailBadges.filter((badge) =>
     badge !== eventTypeBadge && badge !== eventTypeBadgeCandidate,
   );
@@ -503,12 +518,30 @@ function StoryNode({ id, data, selected }: NodeProps<StoryCanvasNode>) {
     "--node-type": typeof nodeData.details?.typeColor === "string" ? nodeData.details.typeColor : undefined,
   } as CSSProperties;
 
+  if (nodeData.kind === "routeGate") {
+    const split = nodeData.details?.junctionPresentation === "split";
+    return <div
+      className={`story-node route-junction ${split ? "split" : "gate"}${selected ? " selected" : ""}`}
+      aria-label={split ? `Branch point · ${nodeData.subtitle ?? "multiple routes"}` : `Logic Gate · ${nodeData.subtitle ?? "multiple routes"}`}
+      style={colorStyle}
+    >
+      <Handle type="target" position={Position.Left} />
+      {split ? <span className="route-junction-dot" aria-hidden="true" /> : <>
+        <div className="route-gate-kicker"><GitBranch size={11} /> LOGIC GATE</div>
+        <div className="node-title">{nodeData.subtitle}</div>
+        <div className="route-gate-order">First valid route wins</div>
+      </>}
+      <Handle type="source" position={Position.Right} />
+    </div>;
+  }
+
   if (nodeData.isContainer) {
     return (
       <div className={`story-node branch-container${focusClass}${inspectorFocusClass} ${selected ? "selected" : ""}`} style={colorStyle}>
         {canReceive ? <Handle type="target" position={Position.Left} /> : null}
         <div className="node-title">{nodeData.title}</div>
         {nodeData.subtitle ? <div className="node-subtitle">{nodeData.subtitle}</div> : null}
+        {logicBands}
         {nodeData.badges.length > 0 ? (
           <div className="node-badges">
             {nodeData.badges.slice(0, 5).map((badge) => (
@@ -1185,6 +1218,7 @@ function StoryNode({ id, data, selected }: NodeProps<StoryCanvasNode>) {
             </div>
           </div>
         ) : null}
+        {logicBands}
         {canSource ? <Handle type="source" position={Position.Right} /> : null}
       </div>
     );
@@ -1278,6 +1312,7 @@ function StoryNode({ id, data, selected }: NodeProps<StoryCanvasNode>) {
           </div>
         ) : null}
         <CanvasInfoBadges badges={infoBadges} />
+        {logicBands}
         {summaryBadges.length > 0 ? (
           <div className="node-badges">
             {summaryBadges.slice(0, 3).map((badge) => (
@@ -1383,6 +1418,7 @@ function StoryNode({ id, data, selected }: NodeProps<StoryCanvasNode>) {
             <div className="node-title">{nodeData.title}</div>
           )}
         </div>
+        {logicBands}
         {canSource ? <Handle type="source" position={Position.Right} /> : null}
       </div>
     );
@@ -1403,6 +1439,7 @@ function StoryNode({ id, data, selected }: NodeProps<StoryCanvasNode>) {
         </div>
       ) : null}
       <CanvasInfoBadges badges={infoBadges} />
+      {logicBands}
       {nodeData.subtitle ? <div className="node-subtitle">{nodeData.subtitle}</div> : null}
       {detailBadges.length > 0 ? (
         <div className="node-badges">

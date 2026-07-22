@@ -28,6 +28,7 @@ import { DataDrawer } from "./components/DataDrawer.js";
 import { ReferencePicker } from "./components/ReferencePicker.js";
 import { AssetsPanel } from "./components/AssetsPanel.js";
 import { LogicPanel } from "./components/LogicPanel.js";
+import { LogicConditionEditor, LogicEffectEditor } from "./components/LogicComposer.js";
 import { PlayerPanel } from "./components/PlayerPanel.js";
 import { ExportPanel } from "./components/ExportPanel.js";
 import { EventScriptWorkspace } from "./components/EventScriptWorkspace.js";
@@ -153,6 +154,7 @@ import type {
   EventCategoryDefinition,
   EventNode,
   EventType,
+  EntityRuntimeStateRole,
   ExplorerPropertyOption,
   LocalExplorerEntity,
   LocalExplorerProperty,
@@ -229,6 +231,7 @@ import * as mutations from "./projectMutations.js";
 import {
   exportRuntimeDialog,
   normalizeProject,
+  openDemoUniverse,
   openUniverseDialog,
   openUniversePath,
   openUniverseStory,
@@ -304,6 +307,7 @@ import {
   type AppSettings,
   type AuthoringDisplaySettings,
   type CanvasBackgroundSettings,
+  type CanvasLayerMode,
   type CanvasLayoutMode,
   type EventInspectorTabGroup,
   type NodeColorSettings,
@@ -325,6 +329,7 @@ import {
   type StoryCanvasNodeData,
   type SubcanvasWorkspaceBounds,
 } from "./canvas/storyCanvasModel.js";
+import { connectedNarrativeNodePosition } from "./canvas/nodePlacement.js";
 import { isTauriRuntime, shortcutMatches } from "./utils/appEnvironment.js";
 import { resolveUniverseAssetUrl } from "./utils/assetUrl.js";
 
@@ -1185,7 +1190,7 @@ function canvasNodeSizeForKind(kind: StoryCanvasNodeData["kind"]) {
       return { width: 300, height: 170 };
     case "speechBeat":
     case "directionBeat":
-      return { width: 210, height: 106 };
+      return { width: 360, height: 176 };
     case "dialogue":
       return { width: 230, height: 150 };
     case "dialogueStart":
@@ -1294,59 +1299,6 @@ function nearestFreeCanvasPosition(
   }
 
   return requested;
-}
-
-/**
- * Places a node that springs from a source node's output. Prefers the same
- * height (Y) as the source with a minimum horizontal separation. When that
- * slot (or the column to the right) is already occupied, it distributes the
- * new node vertically into the nearest free slot with a minimum vertical gap,
- * keeping consecutive nodes (and any route gate in the way) presentable.
- */
-function connectedNarrativeNodePosition(
-  nodes: StoryCanvasNode[],
-  source: StoryCanvasNode,
-  targetSize: { width: number; height: number },
-  options: { snapToGrid: boolean; gridSize: number },
-): CanvasPoint {
-  const sourceSize = canvasNodeSize(source);
-  const horizontalGap = CANVAS_NODE_GAP * 3;
-  const verticalGap = CANVAS_NODE_GAP;
-  const x = source.position.x + sourceSize.width + horizontalGap;
-  const desiredY = source.position.y;
-  const columnLeft = x - horizontalGap / 2;
-  const columnRight = x + targetSize.width + horizontalGap / 2;
-  const columnObstacles = nodes
-    .filter(
-      (node) =>
-        node.id !== source.id &&
-        node.data.kind !== "workspace" &&
-        !node.data.isContainer,
-    )
-    .map((node) => {
-      const size = canvasNodeSize(node);
-      return {
-        top: node.position.y,
-        bottom: node.position.y + size.height,
-        left: node.position.x,
-        right: node.position.x + size.width,
-      };
-    })
-    .filter((obstacle) => obstacle.right > columnLeft && obstacle.left < columnRight);
-  const fitsAt = (y: number) =>
-    !columnObstacles.some(
-      (obstacle) =>
-        y < obstacle.bottom + verticalGap && y + targetSize.height + verticalGap > obstacle.top,
-    );
-  const candidateYs = [
-    desiredY,
-    ...columnObstacles.map((obstacle) => obstacle.bottom + verticalGap),
-    ...columnObstacles.map((obstacle) => obstacle.top - targetSize.height - verticalGap),
-  ]
-    .filter((y) => fitsAt(y))
-    .sort((left, right) => Math.abs(left - desiredY) - Math.abs(right - desiredY));
-  const y = candidateYs.length > 0 ? candidateYs[0] : desiredY;
-  return snapCanvasPoint({ x, y }, options.snapToGrid, options.gridSize);
 }
 
 function visibleCanvasFlowBounds(reactFlowInstance: ReactFlowInstance<any, any>) {
@@ -1662,7 +1614,7 @@ function defaultCanonCondition(canonRefs: string[]) {
   return { type: "canonEntryUnlocked" as const, ref: canonRefs[0] ?? "" };
 }
 
-function BasicConditionEditor({
+function LegacyBasicConditionEditor({
   label = "Conditions",
   value,
   canonRefs,
@@ -1765,7 +1717,7 @@ function BasicConditionEditor({
               ? "Negates the child condition."
               : `Evaluates the child condition as part of a ${type} set.`}
           </span>
-          <BasicConditionEditor
+          <LegacyBasicConditionEditor
             label="Child Condition"
             value={firstConditionSetChild(value)}
             canonRefs={canonRefs}
@@ -2075,38 +2027,45 @@ function BasicConditionEditor({
   );
 }
 
+function BasicConditionEditor({
+  project,
+  label = "WHEN",
+  value,
+  onChange,
+  compact = false,
+  contextEntityIds,
+}: {
+  project: BranchingProject;
+  label?: string;
+  value?: ConditionInput;
+  canonRefs: string[];
+  dataObjects: ProjectDataObject[];
+  grantableOptions: GrantableEntityOption[];
+  onChange: (value: ConditionInput | undefined) => void;
+  compact?: boolean;
+  contextEntityIds?: string[];
+}) {
+  return <LogicConditionEditor project={project} label={label} value={value} onChange={onChange} compact={compact} contextEntityIds={contextEntityIds} />;
+}
+
 function TransitionConditionEditor({
+  project,
   value,
   canonRefs,
   dataObjects,
   grantableOptions,
   onChange,
 }: {
+  project: BranchingProject;
   value?: ConditionInput;
   canonRefs: string[];
   dataObjects: ProjectDataObject[];
   grantableOptions: GrantableEntityOption[];
   onChange: (value: ConditionInput | undefined) => void;
 }) {
-  if (!value) {
-    return (
-      <section className="inspector-section transition-condition-empty">
-        <h2>Condition</h2>
-        <p className="inspector-connection-hint">None — this route is always eligible.</p>
-        <button
-          type="button"
-          onClick={() =>
-            onChange({ type: "variable", name: "flag", operator: "==", value: true })
-          }
-        >
-          Add If
-        </button>
-      </section>
-    );
-  }
-
   return (
     <BasicConditionEditor
+      project={project}
       label="If"
       value={value}
       canonRefs={canonRefs}
@@ -2142,7 +2101,7 @@ function InspectorContentTabs({
   );
 }
 
-function ConsequenceEditor({
+function LegacyConsequenceEditor({
   title = "Consequences",
   value,
   grantableOptions,
@@ -2298,6 +2257,25 @@ function ConsequenceEditor({
       </div>
     </Wrapper>
   );
+}
+
+function ConsequenceEditor({
+  project,
+  title = "THEN",
+  value,
+  onChange,
+  compact = false,
+  contextEntityIds,
+}: {
+  project: BranchingProject;
+  title?: string;
+  value?: Consequence[];
+  grantableOptions: GrantableEntityOption[];
+  onChange: (value: Consequence[] | undefined) => void;
+  compact?: boolean;
+  contextEntityIds?: string[];
+}) {
+  return <LogicEffectEditor project={project} label={title} value={value} onChange={onChange} compact={compact} contextEntityIds={contextEntityIds} />;
 }
 
 function CanonRefsPicker({
@@ -2561,6 +2539,7 @@ function HomeDashboard({
   onOpenSettings,
   onToggleTheme,
   onEnterWorkspace,
+  onOpenDemoUniverse,
   onOpenProject,
   onOpenRecentProject,
   onRemoveRecentProject,
@@ -2577,6 +2556,7 @@ function HomeDashboard({
   onOpenSettings: () => void;
   onToggleTheme: () => void;
   onEnterWorkspace: () => void;
+  onOpenDemoUniverse?: () => void;
   onOpenProject: () => void;
   onOpenRecentProject: (path: string) => void;
   onRemoveRecentProject: (path: string) => void;
@@ -2683,6 +2663,12 @@ function HomeDashboard({
             <FolderOpen size={16} />
             Open Universe
           </button>
+          {onOpenDemoUniverse ? (
+            <button type="button" onClick={onOpenDemoUniverse}>
+              <Sparkles size={16} />
+              Open Demo Universe
+            </button>
+          ) : null}
           <button
             type="button"
             onClick={onEnterWorkspace}
@@ -5789,6 +5775,52 @@ function EventAuthoringDock({
   );
 }
 
+const RUNTIME_ROLE_CAPABILITIES: Array<{
+  id: EntityRuntimeStateRole;
+  label: string;
+  description: string;
+  icon: typeof Package;
+}> = [
+  { id: "owned", label: "Owned", description: "Check ownership and grant or remove the entity.", icon: Package },
+  { id: "unlocked", label: "Unlocked", description: "Check and change whether the entity is unlocked.", icon: ShieldCheck },
+  { id: "discovered", label: "Discovered", description: "Check discovery and discover or hide the entity.", icon: Eye },
+  { id: "present", label: "Present", description: "Check presence and make the entity enter or leave.", icon: UserRound },
+];
+
+function RuntimeRoleCapabilityCards({
+  value,
+  onChange,
+}: {
+  value?: LogicTypeOverride;
+  onChange: (changes: Partial<LogicTypeOverride>) => void;
+}) {
+  const enabledRoles = new Set<EntityRuntimeStateRole>([
+    ...(value?.runtimeRoles ?? []),
+    ...(value?.grantable ? ["owned" as const] : []),
+  ]);
+  return <>
+    {RUNTIME_ROLE_CAPABILITIES.map(({ id, label, description, icon: Icon }) => {
+      const enabled = enabledRoles.has(id);
+      return <button
+        key={id}
+        type="button"
+        className={`logic-capability-card${enabled ? " active" : ""}`}
+        onClick={() => {
+          const runtimeRoles = enabled
+            ? [...enabledRoles].filter((role) => role !== id)
+            : [...enabledRoles, id];
+          onChange({ runtimeRoles, ...(id === "owned" ? { grantable: !enabled } : {}) });
+        }}
+        aria-pressed={enabled}
+      >
+        <div className="logic-capability-icon"><Icon size={16} /></div>
+        <div className="logic-capability-content"><strong>{label}</strong><span>{description}</span></div>
+        <div className="logic-capability-toggle">{enabled ? <CheckCircle2 size={18} /> : <Circle size={18} />}</div>
+      </button>;
+    })}
+  </>;
+}
+
 function Inspector({
   project,
   localeNames,
@@ -5801,6 +5833,9 @@ function Inspector({
   findings,
   exportOpen,
   exportPreviewMode,
+  canvasLayerMode,
+  onCanvasLayerModeChange,
+  requestedLogicTab,
   embedded = false,
   manualDirty = false,
   onSaveManual,
@@ -5862,6 +5897,9 @@ function Inspector({
   findings: ValidationFinding[];
   exportOpen: boolean;
   exportPreviewMode: ExportPreviewMode;
+  canvasLayerMode: CanvasLayerMode;
+  onCanvasLayerModeChange: (mode: CanvasLayerMode) => void;
+  requestedLogicTab?: { selectionKey: string; part: "conditions" | "consequences" };
   embedded?: boolean;
   manualDirty?: boolean;
   onSaveManual?: () => void;
@@ -5970,6 +6008,19 @@ function Inspector({
     selection?.type === "edge"
       ? edges.find((edgeItem) => edgeItem.id === selection.id)
       : undefined;
+  useEffect(() => {
+    if (canvasLayerMode !== "logic" || !requestedLogicTab || !selection) return;
+    const selectionKey = `${selection.type}:${selection.id}`;
+    if (selectionKey !== requestedLogicTab.selectionKey) return;
+    if (selection.type === "edge") setTransitionInspectorTab(requestedLogicTab.part);
+    if (selection.type === "node") setObjectInspectorTab(requestedLogicTab.part);
+  }, [canvasLayerMode, requestedLogicTab, selection]);
+
+  useEffect(() => {
+    if (canvasLayerMode === "logic") return;
+    setTransitionInspectorTab("route");
+    setObjectInspectorTab((current) => current === "conditions" || current === "consequences" ? "overview" : current);
+  }, [canvasLayerMode]);
   const selectedCanon =
     selection?.type === "canon"
       ? project.canonRefs.find((canonRef) => canonRef.id === selection.id)
@@ -6131,7 +6182,11 @@ function Inspector({
           const routes = project.events
             .flatMap((eventNode) => eventNode.transitions ?? [])
             .filter((transition) => transition.from === sourceId)
-            .sort((left, right) => (left.order ?? 0) - (right.order ?? 0));
+            .sort((left, right) => {
+              if (left.mode === "fallback" && right.mode !== "fallback") return 1;
+              if (right.mode === "fallback" && left.mode !== "fallback") return -1;
+              return (left.order ?? 0) - (right.order ?? 0);
+            });
           return { sourceId, eventId, routes };
         })()
       : undefined;
@@ -6359,6 +6414,12 @@ function Inspector({
       ) : null}
 
       <div className="inspector-scroll">
+        {canvasLayerMode === "visual" && (selectedNode || selectedEdge) ? (
+          <section className="inspector-section logic-layer-notice">
+            <div><GitBranch size={15} /><span>Conditions and effects are hidden in the Visual layer.</span></div>
+            <button type="button" onClick={() => onCanvasLayerModeChange("logic")}>Open in Logic</button>
+          </section>
+        ) : null}
         {sequence ? (
           <section className="inspector-section">
             <h2>Sequence</h2>
@@ -6419,6 +6480,7 @@ function Inspector({
         {sequence ? (
           <>
             <BasicConditionEditor
+              project={project}
               value={sequence.availability}
               canonRefs={canonRefIds}
               dataObjects={dataObjects}
@@ -6427,7 +6489,7 @@ function Inspector({
                 onUpdateSequence(sequence.id, { availability })
               }
             />
-            <ConsequenceEditor value={sequence.consequences} grantableOptions={grantableOptionsList} onChange={(consequences) => onUpdateSequence(sequence.id, { consequences })} />
+            <ConsequenceEditor project={project} value={sequence.consequences} grantableOptions={grantableOptionsList} onChange={(consequences) => onUpdateSequence(sequence.id, { consequences })} />
             <LogicSection
               availability={sequence.availability}
               consequences={sequence.consequences}
@@ -6495,6 +6557,7 @@ function Inspector({
               </div>
             </section>
             <BasicConditionEditor
+              project={project}
               value={branch.availability}
               canonRefs={canonRefIds}
               dataObjects={dataObjects}
@@ -6503,7 +6566,7 @@ function Inspector({
                 onUpdateBranch(branch.id, { availability })
               }
             />
-            <ConsequenceEditor value={branch.consequences} grantableOptions={grantableOptionsList} onChange={(consequences) => onUpdateBranch(branch.id, { consequences })} />
+            <ConsequenceEditor project={project} value={branch.consequences} grantableOptions={grantableOptionsList} onChange={(consequences) => onUpdateBranch(branch.id, { consequences })} />
             <LogicSection
               availability={branch.availability}
               consequences={branch.consequences}
@@ -6513,7 +6576,7 @@ function Inspector({
 
         {event ? (
           <>
-            <InspectorContentTabs value={objectInspectorTab} onChange={setObjectInspectorTab} tabs={[{ id: "overview", label: "Overview" }, { id: "path", label: "Path" }, { id: "connections", label: "Connections" }, { id: "conditions", label: "Conditions" }, { id: "consequences", label: "Consequences" }, { id: "choices", label: "Choices" }]} />
+            <InspectorContentTabs value={objectInspectorTab} onChange={setObjectInspectorTab} tabs={[{ id: "overview", label: "Overview" }, { id: "path", label: "Path" }, { id: "connections", label: "Connections" }, ...(canvasLayerMode === "logic" ? [{ id: "conditions", label: "Conditions" }, { id: "consequences", label: "Consequences" }] : []), { id: "choices", label: "Choices" }]} />
             {objectInspectorTab === "overview" ? <>
             <section className="inspector-section">
               <div className="event-inspector-overview-preview">
@@ -6674,7 +6737,9 @@ function Inspector({
             </> : null}
             {objectInspectorTab === "conditions" ? (
             <BasicConditionEditor
+              project={project}
               value={event.availability}
+              contextEntityIds={event.presentEntityRefs ?? event.canonRefs}
               canonRefs={canonRefIds}
               dataObjects={dataObjects}
               grantableOptions={grantableOptionsList}
@@ -6685,7 +6750,9 @@ function Inspector({
             ) : null}
             {objectInspectorTab === "consequences" ? (
             <ConsequenceEditor
+              project={project}
               value={event.consequences}
+              contextEntityIds={event.presentEntityRefs ?? event.canonRefs}
               grantableOptions={grantableOptionsList}
               onChange={(consequences) => onUpdateEvent(event.id, { consequences })}
             />
@@ -6753,7 +6820,7 @@ function Inspector({
 
         {selectedDecisionContext?.decision ? (
           <>
-            <InspectorContentTabs value={objectInspectorTab} onChange={setObjectInspectorTab} tabs={[{ id: "overview", label: "Overview" }, { id: "choices", label: "Choices" }, { id: "conditions", label: "Conditions" }]} />
+            <InspectorContentTabs value={objectInspectorTab} onChange={setObjectInspectorTab} tabs={[{ id: "overview", label: "Overview" }, { id: "choices", label: "Choices" }, ...(canvasLayerMode === "logic" ? [{ id: "conditions", label: "Conditions" }] : [])]} />
             <section className="inspector-section">
               <h2>Decision</h2>
               {objectInspectorTab === "overview" ? <>
@@ -6914,6 +6981,7 @@ function Inspector({
             </section>
             {objectInspectorTab === "conditions" ? <>
             <BasicConditionEditor
+              project={project}
               value={selectedDecisionContext.decision!.availability}
               canonRefs={canonRefIds}
               dataObjects={dataObjects}
@@ -6932,7 +7000,7 @@ function Inspector({
 
         {selectedDialogueBeatContext ? (
           <>
-            <InspectorContentTabs value={objectInspectorTab} onChange={setObjectInspectorTab} tabs={[{ id: "overview", label: "Content" }, { id: "conditions", label: "Conditions" }, { id: "consequences", label: "Consequences" }]} />
+            <InspectorContentTabs value={objectInspectorTab} onChange={setObjectInspectorTab} tabs={[{ id: "overview", label: "Content" }, ...(canvasLayerMode === "logic" ? [{ id: "conditions", label: "Conditions" }, { id: "consequences", label: "Consequences" }] : [])]} />
             {objectInspectorTab === "overview" ? (
             <section className="inspector-section">
               <h2>{selectedDialogueBeatContext.beat.kind === "speech" ? "Speech Beat" : "Direction Beat"}</h2>
@@ -7117,8 +7185,10 @@ function Inspector({
               </label>
             </section>
             <BasicConditionEditor
+              project={project}
               label="Display condition"
               value={selectedDialogueBeatContext.beat.displayCondition}
+              contextEntityIds={selectedBeatPresentEntityRefs}
               canonRefs={canonRefIds}
               dataObjects={dataObjects}
               grantableOptions={grantableOptionsList}
@@ -7129,7 +7199,9 @@ function Inspector({
             </> : null}
             {objectInspectorTab === "consequences" ? (
             <ConsequenceEditor
+              project={project}
               value={selectedDialogueBeatContext.beat.consequences}
+              contextEntityIds={selectedBeatPresentEntityRefs}
               grantableOptions={grantableOptionsList}
               onChange={(consequences) => selectedDialogueBeatContext.dialogueId
                 ? onUpdateDialogueBeat(selectedDialogueBeatContext.eventId, selectedDialogueBeatContext.dialogueId, selectedDialogueBeatContext.beat.id, { consequences })
@@ -7191,7 +7263,7 @@ function Inspector({
 
         {selectedDialogueContext?.dialogue ? (
           <>
-            <InspectorContentTabs value={objectInspectorTab} onChange={setObjectInspectorTab} tabs={[{ id: "overview", label: "Overview" }, { id: "conditions", label: "Conditions" }, { id: "consequences", label: "Consequences" }]} />
+            <InspectorContentTabs value={objectInspectorTab} onChange={setObjectInspectorTab} tabs={[{ id: "overview", label: "Overview" }, ...(canvasLayerMode === "logic" ? [{ id: "conditions", label: "Conditions" }, { id: "consequences", label: "Consequences" }] : [])]} />
             {objectInspectorTab === "overview" ? (
             <section className="inspector-section">
               <h2>Dialogue</h2>
@@ -7297,7 +7369,9 @@ function Inspector({
             ) : null}
             {objectInspectorTab === "conditions" ? (
             <BasicConditionEditor
+              project={project}
               value={selectedDialogueContext.dialogue.availability}
+              contextEntityIds={selectedDialoguePresentEntityRefs}
               canonRefs={canonRefIds}
               dataObjects={dataObjects}
               grantableOptions={grantableOptionsList}
@@ -7311,7 +7385,7 @@ function Inspector({
             />
             ) : null}
             {objectInspectorTab === "consequences" ? (
-            <ConsequenceEditor value={selectedDialogueContext.dialogue.consequences} grantableOptions={grantableOptionsList} onChange={(consequences) =>
+            <ConsequenceEditor project={project} contextEntityIds={selectedDialoguePresentEntityRefs} value={selectedDialogueContext.dialogue.consequences} grantableOptions={grantableOptionsList} onChange={(consequences) =>
                 onUpdateDialogue(
                   selectedDialogueContext.eventId,
                   selectedDialogueContext.dialogue!.id,
@@ -7350,7 +7424,7 @@ function Inspector({
 
         {selectedOutcomeContext?.outcome ? (
           <>
-            <InspectorContentTabs value={objectInspectorTab} onChange={setObjectInspectorTab} tabs={[{ id: "overview", label: "Overview" }, { id: "conditions", label: "Conditions" }, { id: "consequences", label: "Consequences" }]} />
+            <InspectorContentTabs value={objectInspectorTab} onChange={setObjectInspectorTab} tabs={[{ id: "overview", label: "Overview" }, ...(canvasLayerMode === "logic" ? [{ id: "conditions", label: "Conditions" }, { id: "consequences", label: "Consequences" }] : [])]} />
             {objectInspectorTab === "overview" ? (
             <section className="inspector-section">
               <h2>Outcome</h2>
@@ -7479,6 +7553,7 @@ function Inspector({
             ) : null}
             {objectInspectorTab === "conditions" ? <>
             <BasicConditionEditor
+              project={project}
               label="Choice conditions"
               value={selectedOutcomeContext.outcome!.availability}
               canonRefs={canonRefIds}
@@ -7496,6 +7571,7 @@ function Inspector({
             </> : null}
             {objectInspectorTab === "consequences" ? <>
             <ConsequenceEditor
+              project={project}
               value={selectedOutcomeContext.outcome!.consequences}
               grantableOptions={grantableOptionsList}
               onChange={(consequences) =>
@@ -7540,7 +7616,7 @@ function Inspector({
           </section>
         ) : null}
 
-        {selectedRouteGateContext ? (
+        {selectedRouteGateContext && canvasLayerMode === "logic" ? (
           <section className="inspector-section route-gate-inspector">
             <h2>Conditions</h2>
             <p className="inspector-connection-hint">
@@ -7660,6 +7736,7 @@ function Inspector({
                     ) : null}
                     {!isFallback ? (
                       <BasicConditionEditor
+                        project={project}
                         label="Condition"
                         value={route.conditions}
                         canonRefs={canonRefIds}
@@ -7676,6 +7753,7 @@ function Inspector({
                       </p>
                     )}
                     <ConsequenceEditor
+                      project={project}
                       title="Consequences"
                       value={route.consequences}
                       grantableOptions={grantableOptionsList}
@@ -7693,7 +7771,7 @@ function Inspector({
 
         {selectedEdge ? (
           <>
-            {selectedTransition ? (
+            {selectedTransition && canvasLayerMode === "logic" ? (
               <nav className="inspector-subtabs" aria-label="Transition inspector sections">
                 <button type="button" className={transitionInspectorTab === "route" ? "active" : ""} onClick={() => setTransitionInspectorTab("route")}>Route</button>
                 <button type="button" className={transitionInspectorTab === "conditions" ? "active" : ""} onClick={() => setTransitionInspectorTab("conditions")}>Conditions</button>
@@ -7808,6 +7886,7 @@ function Inspector({
               <>
                 {selectedTransition.mode !== "fallback" ? (
                   <TransitionConditionEditor
+                    project={project}
                     value={selectedTransition.conditions}
                     canonRefs={canonRefIds}
                     dataObjects={dataObjects}
@@ -7828,6 +7907,7 @@ function Inspector({
             ) : null}
             {selectedTransition && transitionInspectorTab === "consequences" ? (
               <ConsequenceEditor
+                project={project}
                 value={selectedTransition.consequences}
                 grantableOptions={grantableOptionsList}
                 onChange={(consequences) =>
@@ -8313,21 +8393,10 @@ function Inspector({
               const typeCapabilityValue = typeCapability(project, typeSource, selectedExplorerType.id);
               return (
                 <div className="logic-property-capabilities">
-                  <button
-                    type="button"
-                    className={`logic-capability-card${typeCapabilityValue?.grantable ? " active" : ""}`}
-                    onClick={() => onUpdateLogicTypeOverride(selectedExplorerType.id, typeSource, { grantable: !typeCapabilityValue?.grantable })}
-                    aria-pressed={typeCapabilityValue?.grantable ?? false}
-                  >
-                    <div className="logic-capability-icon"><Package size={16} /></div>
-                    <div className="logic-capability-content">
-                      <strong>Grantable</strong>
-                      <span>Entities of this type can be granted/removed as a consequence and checked as a condition</span>
-                    </div>
-                    <div className="logic-capability-toggle">
-                      {typeCapabilityValue?.grantable ? <CheckCircle2 size={18} /> : <Circle size={18} />}
-                    </div>
-                  </button>
+                  <RuntimeRoleCapabilityCards
+                    value={typeCapabilityValue}
+                    onChange={(changes) => onUpdateLogicTypeOverride(selectedExplorerType.id, typeSource, changes)}
+                  />
                   <button
                     type="button"
                     className={`logic-capability-card${typeCapabilityValue?.location ? " active" : ""}`}
@@ -8371,25 +8440,14 @@ function Inspector({
                 return <>
                   {rawTypeId ? (
                     <>
-                      <button
-                        type="button"
-                        className={`logic-capability-card${typeOverride?.grantable ? " active" : ""}`}
-                        onClick={() => onUpdateLogicPropertyOverride(rawTypeId, source, { grantable: !typeOverride?.grantable })}
-                        aria-pressed={typeOverride?.grantable ?? false}
-                      >
-                        <div className="logic-capability-icon"><Package size={16} /></div>
-                        <div className="logic-capability-content">
-                          <strong>Grantable</strong>
-                          <span>Entities of this type can be granted/removed as a consequence and checked as a condition</span>
-                        </div>
-                        <div className="logic-capability-toggle">
-                          {typeOverride?.grantable ? <CheckCircle2 size={18} /> : <Circle size={18} />}
-                        </div>
-                      </button>
+                      <RuntimeRoleCapabilityCards
+                        value={typeOverride}
+                        onChange={(changes) => onUpdateLogicTypeOverride(rawTypeId, source, changes)}
+                      />
                       <button
                         type="button"
                         className={`logic-capability-card${typeOverride?.location ? " active" : ""}`}
-                        onClick={() => onUpdateLogicPropertyOverride(rawTypeId, source, { location: !typeOverride?.location })}
+                        onClick={() => onUpdateLogicTypeOverride(rawTypeId, source, { location: !typeOverride?.location })}
                         aria-pressed={typeOverride?.location ?? false}
                       >
                         <div className="logic-capability-icon"><MapPin size={16} /></div>
@@ -8405,9 +8463,9 @@ function Inspector({
                   ) : null}
                   <button
                     type="button"
-                    className={`logic-capability-card${(override?.conditionReadable ?? true) ? " active" : ""}`}
-                    onClick={() => onUpdateLogicPropertyOverride(selectedExplorerProperty.id, source, { conditionReadable: !(override?.conditionReadable ?? true) })}
-                    aria-pressed={override?.conditionReadable ?? true}
+                    className={`logic-capability-card${override?.conditionReadable === true ? " active" : ""}`}
+                    onClick={() => onUpdateLogicPropertyOverride(selectedExplorerProperty.id, source, { conditionReadable: override?.conditionReadable !== true })}
+                    aria-pressed={override?.conditionReadable === true}
                   >
                     <div className="logic-capability-icon"><ShieldCheck size={16} /></div>
                     <div className="logic-capability-content">
@@ -8415,15 +8473,15 @@ function Inspector({
                       <span>Can be used in conditions and logic checks</span>
                     </div>
                     <div className="logic-capability-toggle">
-                      {(override?.conditionReadable ?? true) ? <CheckCircle2 size={18} /> : <Circle size={18} />}
+                      {override?.conditionReadable === true ? <CheckCircle2 size={18} /> : <Circle size={18} />}
                     </div>
                   </button>
 
                   <button
                     type="button"
-                    className={`logic-capability-card${(override?.actionWritable ?? source === "local") ? " active" : ""}`}
-                    onClick={() => onUpdateLogicPropertyOverride(selectedExplorerProperty.id, source, { actionWritable: !(override?.actionWritable ?? source === "local") })}
-                    aria-pressed={override?.actionWritable ?? source === "local"}
+                    className={`logic-capability-card${override?.actionWritable === true ? " active" : ""}`}
+                    onClick={() => onUpdateLogicPropertyOverride(selectedExplorerProperty.id, source, { actionWritable: override?.actionWritable !== true })}
+                    aria-pressed={override?.actionWritable === true}
                   >
                     <div className="logic-capability-icon"><Pencil size={16} /></div>
                     <div className="logic-capability-content">
@@ -8431,7 +8489,7 @@ function Inspector({
                       <span>Can be modified by story actions</span>
                     </div>
                     <div className="logic-capability-toggle">
-                      {(override?.actionWritable ?? source === "local") ? <CheckCircle2 size={18} /> : <Circle size={18} />}
+                      {override?.actionWritable === true ? <CheckCircle2 size={18} /> : <Circle size={18} />}
                     </div>
                   </button>
 
@@ -8814,6 +8872,7 @@ function Inspector({
               </div>
             </section>
             <BasicConditionEditor
+              project={project}
               value={selectedDataObject.availability}
               canonRefs={canonRefIds}
               dataObjects={dataObjects}
@@ -8822,7 +8881,7 @@ function Inspector({
                 onUpdateDataObject(selectedDataObject.id, { availability })
               }
             />
-            <ConsequenceEditor value={selectedDataObject.consequences} grantableOptions={grantableOptionsList} onChange={(consequences) => onUpdateDataObject(selectedDataObject.id, { consequences })} />
+            <ConsequenceEditor project={project} value={selectedDataObject.consequences} grantableOptions={grantableOptionsList} onChange={(consequences) => onUpdateDataObject(selectedDataObject.id, { consequences })} />
             <LogicSection
               availability={selectedDataObject.availability}
               consequences={selectedDataObject.consequences}
@@ -8843,6 +8902,7 @@ type CanvasContextMenu = {
   sourceNodeId?: string;
   sourceHandleId?: string;
   routeSourceId?: string;
+  edgeId?: string;
   nodeIds?: string[];
   contextNodeId?: string;
 };
@@ -9128,7 +9188,8 @@ function StoryCanvas({
   expandedInspectorTabId,
   inspectorMaximized,
   canvasBackground,
-  authoringDisplay,
+  canvasLayerMode,
+  onCanvasLayerModeChange,
   onCanvasBackgroundChange,
   onNodesChange,
   onEdgesChange,
@@ -9264,7 +9325,8 @@ function StoryCanvas({
   expandedInspectorTabId?: string;
   inspectorMaximized: boolean;
   canvasBackground: CanvasBackgroundSettings;
-  authoringDisplay: AuthoringDisplaySettings;
+  canvasLayerMode: CanvasLayerMode;
+  onCanvasLayerModeChange: (mode: CanvasLayerMode) => void;
   onCanvasBackgroundChange: (updates: Partial<CanvasBackgroundSettings>) => void;
   onNodesChange: (changes: NodeChange<StoryCanvasNode>[]) => void;
   onEdgesChange: (changes: EdgeChange<StoryCanvasEdge>[]) => void;
@@ -9444,6 +9506,10 @@ function StoryCanvas({
   onOpenRule: (id: string) => void;
 }) {
   const shellRef = useRef<HTMLElement | null>(null);
+  const [logicFocus, setLogicFocus] = useState<{
+    selectionKey: string;
+    part: "conditions" | "consequences";
+  }>();
   const pendingNodeClickRef = useRef<{
     nodeId: string;
     timer?: number;
@@ -9554,6 +9620,14 @@ function StoryCanvas({
         ...node,
         data: {
           ...node.data,
+          onOpenLogicPart: canvasLayerMode === "logic"
+            ? (part: "conditions" | "consequences") => {
+                const nodeSelection = { type: "node" as const, id: node.id };
+                setLogicFocus({ selectionKey: `node:${node.id}`, part });
+                onCanvasSelect(nodeSelection);
+                onOpenCanvasInspector(nodeSelection);
+              }
+            : undefined,
           inspectorState: inspectorNodeStates.get(node.id),
           details: {
             ...node.data.details,
@@ -9911,7 +9985,16 @@ function StoryCanvas({
                                 position,
                               );
                             },
-                            onInsertConditions: () => onInsertRouteGate(node.id),
+                            onInsertConditions: canvasLayerMode === "logic" && edges.some((item) => item.data?.routeSourceId === node.id)
+                              ? () => {
+                                  const routeEdge = edges.find((item) => item.data?.routeSourceId === node.id);
+                                  if (!routeEdge) return;
+                                  const edgeSelection = { type: "edge" as const, id: routeEdge.id };
+                                  setLogicFocus({ selectionKey: `edge:${routeEdge.id}`, part: "conditions" });
+                                  onCanvasSelect(edgeSelection);
+                                  onOpenCanvasInspector(edgeSelection);
+                                }
+                              : undefined,
                           }
                         : undefined,
                   };
@@ -9942,11 +10025,19 @@ function StoryCanvas({
               ? (label: string) => commitEdgeLabel(edgeItem.id, label)
               : undefined,
             onCancelLabel: editable ? () => setEditingEdgeId(undefined) : undefined,
+            onOpenLogicPart: canvasLayerMode === "logic"
+              ? (part: "conditions" | "consequences") => {
+                  const edgeSelection = { type: "edge" as const, id: edgeItem.id };
+                  setLogicFocus({ selectionKey: `edge:${edgeItem.id}`, part });
+                  onCanvasSelect(edgeSelection);
+                  onOpenCanvasInspector(edgeSelection);
+                }
+              : undefined,
           },
         };
       }),
     }),
-    [activeScope, authoringDisplay, canvasBackground.connectionPadding, canvasBackground.gridSize, canvasBackground.snapToGrid, canvasLocale, commitEdgeLabel, editingEdgeId, edges, inspectorEdgeStates, inspectorNodeStates, localeNames, locales, nodes, onAuxiliaryPanelChange, onCreateBoundaryEnd, onCreateBoundaryRoute, onCreateBoundaryRouteEvent, onCreateConnectedNarrativeNode, onCreateOutcome, onDeleteBoundaryEnd, onDeleteOutcome, onImportEventCoverImage, onImportSceneImage, onUpdateDecision, onUpdateDialogueBeat, onUpdateEvent, onUpdateEventDialogueBeat, onUpdateLocalizedText, onUpdateOutcome, onUpdateScriptBlock, onUpdateTransition, onWorkspaceBoundsChange, primaryLocale, project, propertiesConfig],
+    [activeScope, canvasLayerMode, canvasBackground.connectionPadding, canvasBackground.gridSize, canvasBackground.snapToGrid, canvasLocale, commitEdgeLabel, editingEdgeId, edges, inspectorEdgeStates, inspectorNodeStates, localeNames, locales, nodes, onAuxiliaryPanelChange, onCanvasSelect, onCreateBoundaryEnd, onCreateBoundaryRoute, onCreateBoundaryRouteEvent, onCreateConnectedNarrativeNode, onCreateOutcome, onDeleteBoundaryEnd, onDeleteOutcome, onImportEventCoverImage, onImportSceneImage, onOpenCanvasInspector, onUpdateDecision, onUpdateDialogueBeat, onUpdateEvent, onUpdateEventDialogueBeat, onUpdateLocalizedText, onUpdateOutcome, onUpdateScriptBlock, onUpdateTransition, onWorkspaceBoundsChange, primaryLocale, project, propertiesConfig],
   );
   const activeEventScope =
     activeScope?.kind === "event"
@@ -10310,6 +10401,7 @@ function StoryCanvas({
       setContextMenu({
         kind: "route-gate",
         routeSourceId: edgeItem.data.routeSourceId,
+        edgeId: edgeItem.id,
         x: event.clientX - (shellRect?.left ?? 0),
         y: event.clientY - (shellRect?.top ?? 0),
         flowX: 0,
@@ -10523,7 +10615,7 @@ function StoryCanvas({
 
   return (
     <main
-      className={`canvas-shell ${activeScope?.kind === "event" || activeScope?.kind === "dialogue" ? "nested-scope" : ""} ${draggingEvent ? "dragging-event" : ""}`}
+      className={`canvas-shell canvas-layer-${canvasLayerMode} ${activeScope?.kind === "event" || activeScope?.kind === "dialogue" ? "nested-scope" : ""} ${draggingEvent ? "dragging-event" : ""}`}
       ref={shellRef}
       tabIndex={-1}
     >
@@ -10572,6 +10664,28 @@ function StoryCanvas({
             );
           })}
         </div>
+      </div>
+      <div className="canvas-layer-switch" role="radiogroup" aria-label="Canvas layer">
+        <button
+          type="button"
+          role="radio"
+          aria-checked={canvasLayerMode === "visual"}
+          className={canvasLayerMode === "visual" ? "active" : ""}
+          onClick={() => onCanvasLayerModeChange("visual")}
+          title="Show narrative structure without route logic"
+        >
+          <Eye size={13} aria-hidden="true" /> Visual
+        </button>
+        <button
+          type="button"
+          role="radio"
+          aria-checked={canvasLayerMode === "logic"}
+          className={canvasLayerMode === "logic" ? "active" : ""}
+          onClick={() => onCanvasLayerModeChange("logic")}
+          title="Show and edit node and route logic"
+        >
+          <GitBranch size={13} aria-hidden="true" /> Logic
+        </button>
       </div>
       <div className="canvas-locale-control">
         <button
@@ -10861,11 +10975,17 @@ function StoryCanvas({
               <button
                 type="button"
                 onClick={() => {
-                  if (contextMenu.routeSourceId) onInsertRouteGate(contextMenu.routeSourceId);
+                  if (contextMenu.edgeId) {
+                    const edgeSelection = { type: "edge" as const, id: contextMenu.edgeId };
+                    onCanvasLayerModeChange("logic");
+                    setLogicFocus({ selectionKey: `edge:${contextMenu.edgeId}`, part: "conditions" });
+                    onCanvasSelect(edgeSelection);
+                    onOpenCanvasInspector(edgeSelection);
+                  }
                   setContextMenu(undefined);
                 }}
               >
-                Conditions
+                Edit route logic
               </button>
             </>
           ) : contextMenu.kind === "connect-create" ? (
@@ -10915,15 +11035,6 @@ function StoryCanvas({
                         </button>
                         <button type="button" onClick={() => connectNarrativeNode("directionBeat", "directionBeat")}>
                           Director Direction
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            onInsertRouteGate(contextMenu.sourceHandleId ?? sourceNodeId);
-                            setContextMenu(undefined);
-                          }}
-                        >
-                          Conditions
                         </button>
                         <hr />
                         <button type="button" onClick={() => connectNarrativeNode("dialogue", "dialogue")}>
@@ -11192,6 +11303,9 @@ function StoryCanvas({
           findings={findings}
           exportOpen={exportOpen}
           exportPreviewMode={exportPreviewMode}
+          canvasLayerMode={canvasLayerMode}
+          onCanvasLayerModeChange={onCanvasLayerModeChange}
+          requestedLogicTab={logicFocus}
           embedded
           manualDirty={manualInspectorDraft?.dirty}
           onSaveManual={
@@ -11321,6 +11435,9 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
     useState<StoryOutlineTab>("sequence");
   const [activeScope, setActiveScopeState] = useState<CanvasScope>();
   const [canvasMode, setCanvasMode] = useState<CanvasMode>("branching");
+  const [canvasLayerMode, setCanvasLayerMode] = useState<CanvasLayerMode>(() =>
+    loadSettings().authoringDisplay.logicMode ? "logic" : "visual",
+  );
   const [focusNodeId, setFocusNodeId] = useState<string>();
   const [undoStack, setUndoStack] = useState<BranchingProject[]>([]);
   const [redoStack, setRedoStack] = useState<BranchingProject[]>([]);
@@ -11372,6 +11489,7 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
   }>();
   const panelContextMenuRef = useRef<HTMLDivElement | null>(null);
   const projectRef = useRef<BranchingProject | undefined>(undefined);
+  const canvasLayerModeRef = useRef<CanvasLayerMode>(canvasLayerMode);
   const workspaceRef = useRef<PathBranchingWorkspace | undefined>(undefined);
   const fileStateRef = useRef<ProjectFileState>({ dirty: false });
   const selectionRef = useRef<Selection | undefined>(undefined);
@@ -11444,6 +11562,7 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
         scope: normalizedScope,
         gridSize: settingsRef.current.canvasBackground.gridSize,
         authoringDisplay: settingsRef.current.authoringDisplay,
+        canvasLayerMode: canvasLayerModeRef.current,
       });
       if (options.dirty || options.revision) {
         projectRevisionRef.current += 1;
@@ -11493,6 +11612,9 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
       const savedSession = normalizeWorkspaceSession(
         settingsRef.current.workspaceSessions?.[universePath],
       );
+      const restoredLayerMode: CanvasLayerMode = savedSession.canvasLayerMode ??
+        (settingsRef.current.authoringDisplay.logicMode ? "logic" : "visual");
+      canvasLayerModeRef.current = restoredLayerMode;
       const activeProject = normalizeProject({
         ...nextWorkspace.activeProject,
         universeRootPath: universePath,
@@ -11518,6 +11640,7 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
         scope: normalizedScope,
         gridSize: settingsRef.current.canvasBackground.gridSize,
         authoringDisplay: settingsRef.current.authoringDisplay,
+        canvasLayerMode: restoredLayerMode,
       });
       workspaceRef.current = nextWorkspace;
       projectRef.current = activeProjectWithScope;
@@ -11602,6 +11725,7 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
             : undefined),
       );
       setCanvasMode(savedSession.canvasMode ?? "branching");
+      setCanvasLayerMode(restoredLayerMode);
       setFocusNodeId(savedSession.focusNodeId);
       setError(undefined);
       setMessage(workspaceLoadWarningMessage(nextWorkspace));
@@ -11653,6 +11777,7 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
           scope: snapshotScope,
           gridSize: settingsRef.current.canvasBackground.gridSize,
           authoringDisplay: settingsRef.current.authoringDisplay,
+          canvasLayerMode: canvasLayerModeRef.current,
         });
         setProject(snapshot.project);
         setActiveScopeState(snapshotScope);
@@ -11781,18 +11906,19 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
     ) => {
       const currentProject = projectRef.current;
       if (!currentProject) return;
+      const normalizedTypeId = typeId.startsWith("type:") ? typeId.slice("type:".length) : typeId;
 
       const current = (currentProject.logicTypeOverrides ?? []).find(
-        (item) => item.typeId === typeId && item.source === source,
-      ) ?? { typeId, source };
+        (item) => (item.typeId === normalizedTypeId || item.typeId === `type:${normalizedTypeId}`) && item.source === source,
+      ) ?? { typeId: normalizedTypeId, source };
 
       const updatedProject = {
         ...currentProject,
         logicTypeOverrides: [
           ...(currentProject.logicTypeOverrides ?? []).filter(
-            (item) => item.typeId !== typeId || item.source !== source,
+            (item) => (item.typeId !== normalizedTypeId && item.typeId !== `type:${normalizedTypeId}`) || item.source !== source,
           ),
-          { ...current, ...changes },
+          { ...current, typeId: normalizedTypeId, ...changes },
         ],
       };
 
@@ -12689,12 +12815,13 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
       scope,
       gridSize: settings.canvasBackground.gridSize,
       authoringDisplay: settings.authoringDisplay,
+      canvasLayerMode,
     });
     setActiveScopeState(scope);
     setNodes(model.nodes);
     setEdges(model.edges);
     setFiles(model.files);
-  }, [settings.authoringDisplay, settings.nodeColors]);
+  }, [canvasLayerMode, settings.authoringDisplay, settings.nodeColors]);
 
   const changeTheme = useCallback((theme: ThemeId) => {
     setSettings((current) => ({ ...current, theme }));
@@ -12720,6 +12847,7 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
       inspectorMaximized,
       activeScope,
       canvasMode,
+      canvasLayerMode,
       focusNodeId,
       markdownTabs: storableMarkdownTabs(markdownTabs),
       activeMarkdownTabId,
@@ -12747,6 +12875,7 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
     canonOpen,
     canonWidth,
     canvasMode,
+    canvasLayerMode,
     dataOpen,
     eventInspector,
     eventInspectorTabGroups,
@@ -12794,6 +12923,16 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
     },
     [],
   );
+
+  const changeCanvasLayerMode = useCallback((mode: CanvasLayerMode) => {
+    canvasLayerModeRef.current = mode;
+    setCanvasLayerMode(mode);
+    setSettings((current) => {
+      if (typeof current.authoringDisplay.logicMode !== "boolean") return current;
+      const { logicMode: _legacyLogicMode, ...authoringDisplay } = current.authoringDisplay;
+      return { ...current, authoringDisplay };
+    });
+  }, []);
 
   const changeInspectorTabCloseSelectsNext = useCallback((value: boolean) => {
     setSettings((current) => ({
@@ -12959,6 +13098,29 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
       setError(
         openError instanceof Error ? openError.message : String(openError),
       );
+    }
+  }, [applyWorkspace, confirmDiscardChanges]);
+
+  const openDemoProject = useCallback(async () => {
+    if (!(await confirmDiscardChanges())) return;
+    try {
+      const opened = await openDemoUniverse();
+      applyWorkspace(opened.workspace, opened.path);
+      setSettings((current) => ({
+        ...current,
+        worldnotionBridge: {
+          ...current.worldnotionBridge,
+          connected: true,
+          lastCheckedAt: Date.now(),
+          lastStatus: "ok",
+          lastMessage: "Loaded the writable browser demo universe in memory.",
+        },
+      }));
+      setView("workspace");
+      setError(undefined);
+      setMessage("Opened the writable PathBranching browser demo. Changes last for this session only.");
+    } catch (openError) {
+      setError(openError instanceof Error ? openError.message : String(openError));
     }
   }, [applyWorkspace, confirmDiscardChanges]);
 
@@ -13906,6 +14068,7 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
         scope: normalizedScope,
         gridSize: settingsRef.current.canvasBackground.gridSize,
         authoringDisplay: settingsRef.current.authoringDisplay,
+        canvasLayerMode: canvasLayerModeRef.current,
       });
       projectRef.current = nextProject;
       setProject(nextProject);
@@ -13963,19 +14126,12 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
   }, [project, nodes, edges]);
   const webPreviewBanner = desktopRuntime ? null : (
     <div className="persistence-warning" role="status">
-      Preview web: no guarda en universo. Abre Everend PathBranching con Tauri
-      para crear stories, secuencias y eventos persistentes.
+      Vista web: selecciona una carpeta de universo para comprobar y guardar metadatos de PathBranching durante esta sesión.
     </div>
   );
 
   const createStory = useCallback(
     async (name?: string) => {
-      if (!isTauriRuntime()) {
-        setMessage(
-          "Preview web: no guarda en universo. Abre Everend PathBranching con Tauri para crear stories persistentes.",
-        );
-        return;
-      }
       const currentWorkspace = workspaceRef.current;
       const currentFileState = fileStateRef.current;
       if (!currentWorkspace || !currentFileState.universePath) {
@@ -14020,12 +14176,6 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
 
   const createSequence = useCallback(
     (name?: string) => {
-      if (!isTauriRuntime()) {
-        setMessage(
-          "Preview web: no guarda en universo. Abre Everend PathBranching con Tauri para crear secuencias persistentes.",
-        );
-        return;
-      }
       const currentProject = projectRef.current;
       if (!currentProject || workspaceRef.current?.createdDefaultStory) {
         setNameDialog({
@@ -14308,12 +14458,6 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
 
   const createBranch = useCallback(
     (position?: { x: number; y: number }) => {
-      if (!isTauriRuntime()) {
-        setMessage(
-          "Preview web: no guarda en universo. Abre Everend PathBranching con Tauri para crear branches persistentes.",
-        );
-        return;
-      }
       const currentProject = projectRef.current;
       if (!currentProject || workspaceRef.current?.createdDefaultStory) {
         setMessage(
@@ -14337,12 +14481,6 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
       position?: { x: number; y: number },
       branchId?: string,
     ) => {
-      if (!isTauriRuntime()) {
-        setMessage(
-          "Preview web: no guarda en universo. Abre Everend PathBranching con Tauri para crear eventos persistentes.",
-        );
-        return;
-      }
       const currentProject = projectRef.current;
       if (!currentProject || workspaceRef.current?.createdDefaultStory) {
         setMessage(
@@ -14369,12 +14507,6 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
       type: EventType = "normal",
       position?: { x: number; y: number },
     ) => {
-      if (!isTauriRuntime()) {
-        setMessage(
-          "Preview web: no guarda en universo. Abre Everend PathBranching con Tauri para crear microeventos persistentes.",
-        );
-        return;
-      }
       const currentProject = projectRef.current;
       if (!currentProject || workspaceRef.current?.createdDefaultStory) {
         setMessage(
@@ -14407,12 +14539,6 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
       position?: { x: number; y: number },
       sourceHandleId?: string,
     ) => {
-      if (!isTauriRuntime()) {
-        setMessage(
-          "Preview web: no guarda en universo. Abre Everend PathBranching con Tauri para crear microeventos persistentes.",
-        );
-        return;
-      }
       const currentProject = projectRef.current;
       if (!currentProject || workspaceRef.current?.createdDefaultStory) {
         setMessage(
@@ -14455,12 +14581,6 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
       position: CanvasPoint,
       sourceHandleId?: string,
     ) => {
-      if (!isTauriRuntime()) {
-        setMessage(
-          "Preview web: no guarda en universo. Abre Everend PathBranching con Tauri para crear nodos persistentes.",
-        );
-        return;
-      }
       const currentProject = projectRef.current;
       if (!currentProject || workspaceRef.current?.createdDefaultStory) {
         setMessage(
@@ -14582,12 +14702,6 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
 
   const createBoundaryRouteEvent = useCallback(
     (eventId: string) => {
-      if (!isTauriRuntime()) {
-        setMessage(
-          "Preview web: abre Everend PathBranching con Tauri para crear destinos persistentes.",
-        );
-        return;
-      }
       const currentProject = projectRef.current;
       if (!currentProject || workspaceRef.current?.createdDefaultStory) {
         setMessage("Create an Everend PathBranching story before adding route destinations.");
@@ -14684,13 +14798,6 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
       position: { x: number; y: number },
       sourceHandleId?: string,
     ) => {
-      if (!isTauriRuntime()) {
-        setMessage(
-          "Preview web: no guarda en universo. Abre Everend PathBranching con Tauri para crear eventos persistentes.",
-        );
-        return;
-      }
-
       const currentProject = projectRef.current;
       if (!currentProject || workspaceRef.current?.createdDefaultStory) {
         setMessage(
@@ -14836,6 +14943,7 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
         id: transitionId,
         from: routeSourceId === sourceNode.id ? sourceEventId : routeSourceId,
         to: targetEventId,
+        role: "flow",
         source: "graph",
       };
 
@@ -14855,7 +14963,10 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
           event.id === sourceEventId
             ? {
                 ...event,
-                transitions: [...(event.transitions ?? []), transition],
+                transitions: mutations.normalizeTransitionRoles(
+                  [...(event.transitions ?? []), transition],
+                  nextProject,
+                ),
               }
             : event,
         ),
@@ -15722,6 +15833,7 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
           to: targetNode.id,
           order: siblingCount,
           mode: "conditional",
+          role: "flow",
           source: "graph",
         };
         updateProject(
@@ -15729,7 +15841,13 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
             ...project,
             events: project.events.map((event) =>
               event.id === ownerEventId
-                ? { ...event, transitions: [...(event.transitions ?? []), transition] }
+                ? {
+                    ...event,
+                    transitions: mutations.normalizeTransitionRoles(
+                      [...(event.transitions ?? []), transition],
+                      project,
+                    ),
+                  }
                 : event,
             ),
           },
@@ -15829,6 +15947,7 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
         id: transitionId,
         from: decisionOutcomeSourceId ?? (sourceNode.data.kind === "outcome" ? sourceNode.id : sourceEventId),
         to: targetEventId,
+        role: "flow",
         source: "graph",
       };
 
@@ -15849,7 +15968,10 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
             event.id === sourceEventId
               ? {
                   ...event,
-                  transitions: [...(event.transitions ?? []), transition],
+                  transitions: mutations.normalizeTransitionRoles(
+                    [...(event.transitions ?? []), transition],
+                    project,
+                  ),
                 }
               : event,
           ),
@@ -17519,6 +17641,7 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
           onOpenSettings={() => setShowSettings(true)}
           onToggleTheme={toggleTheme}
           onEnterWorkspace={() => setView("workspace")}
+          onOpenDemoUniverse={isTauriRuntime() ? undefined : openDemoProject}
           onOpenProject={openProject}
           onOpenRecentProject={openRecentProject}
           onRemoveRecentProject={removeRecentProject}
@@ -17707,7 +17830,8 @@ export function App({ suiteChrome }: { suiteChrome?: SuiteChrome } = {}) {
             expandedInspectorTabId={expandedInspectorTabId}
             inspectorMaximized={inspectorMaximized}
             canvasBackground={settings.canvasBackground}
-            authoringDisplay={settings.authoringDisplay}
+            canvasLayerMode={canvasLayerMode}
+            onCanvasLayerModeChange={changeCanvasLayerMode}
             onCanvasBackgroundChange={changeCanvasBackground}
             onNodesChange={handleNodesChange}
             onEdgesChange={handleEdgesChange}

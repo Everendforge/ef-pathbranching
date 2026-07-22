@@ -17,7 +17,12 @@ import type {
   Sequence,
   Transition,
 } from "./domain.js";
-import { conditionInputsFromConsequences, walkConditions } from "./logic.js";
+import {
+  conditionInputsFromConsequences,
+  inferredTransitionRole,
+  migrateLogicMoment,
+  walkConditions,
+} from "./logic.js";
 import { scriptBlockTextKey } from "./localization.js";
 import { canvasScopeKey } from "./storySelection.js";
 import { automaticEventName, automaticNarrativeName } from "./narrativeNaming.js";
@@ -79,6 +84,107 @@ export function findEvent(
   id: string,
 ): EventNode | undefined {
   return project.events.find((event) => event.id === id);
+}
+
+type LogicOwnerShape = {
+  logic?: { when?: ConditionInput; then?: Consequence[]; rules?: unknown[] };
+  availability?: ConditionInput;
+  conditions?: ConditionInput;
+  displayCondition?: ConditionInput;
+  consequences?: Consequence[];
+};
+
+function synchronizeLogicOwner<T extends LogicOwnerShape>(
+  current: T,
+  updates: Partial<T>,
+): T {
+  const has = (key: keyof LogicOwnerShape) => Object.prototype.hasOwnProperty.call(updates, key);
+  const explicitLogic = updates.logic ?? current.logic;
+  const updatesWhen = has("availability") || has("conditions") || has("displayCondition");
+  const when = has("availability")
+    ? updates.availability
+    : has("conditions")
+      ? updates.conditions
+      : has("displayCondition")
+        ? updates.displayCondition
+        : explicitLogic?.when;
+  const then = has("consequences") ? updates.consequences : explicitLogic?.then;
+  const logic = updatesWhen || has("consequences") || updates.logic
+    ? {
+        ...explicitLogic,
+        ...(updatesWhen ? { when } : {}),
+        ...(has("consequences") ? { then } : {}),
+      }
+    : current.logic;
+  return { ...current, ...updates, logic } as T;
+}
+
+export function normalizeTransitionRoles(
+  transitions: Transition[] | undefined,
+  project: Pick<BranchingProject, "logicVariables">,
+): Transition[] {
+  const sourceGroups = new Map<string, Transition[]>();
+  (transitions ?? []).forEach((transition) => {
+    sourceGroups.set(transition.from, [
+      ...(sourceGroups.get(transition.from) ?? []),
+      transition,
+    ]);
+  });
+
+  const normalized = new Map<string, Transition>();
+  sourceGroups.forEach((group) => {
+    const ordered = [...group].sort((left, right) => {
+      if (left.mode === "fallback" && right.mode !== "fallback") return 1;
+      if (right.mode === "fallback" && left.mode !== "fallback") return -1;
+      return (left.order ?? 0) - (right.order ?? 0);
+    });
+    let fallbackSeen = false;
+    ordered.forEach((transition, order) => {
+      const requestedFallback = transition.mode === "fallback" && !fallbackSeen;
+      fallbackSeen ||= requestedFallback;
+      const mode = requestedFallback ? "fallback" : "conditional";
+      const logic = migrateLogicMoment(
+        transition.id,
+        mode === "fallback" ? undefined : transition.conditions,
+        transition.consequences,
+        transition.logic,
+        project.logicVariables ?? [],
+      );
+      const role = inferredTransitionRole(
+        {
+          ...transition,
+          role: undefined,
+          mode,
+          logic,
+        },
+        ordered.length,
+      );
+      normalized.set(
+        transition.id,
+        role === "flow"
+          ? {
+              id: transition.id,
+              from: transition.from,
+              to: transition.to,
+              role: "flow",
+              order: 0,
+              mode: "conditional",
+              source: transition.source,
+              label: transition.label,
+            }
+          : {
+              ...transition,
+              role: "route",
+              order,
+              mode,
+              logic,
+              conditions: mode === "fallback" ? undefined : logic?.when,
+              consequences: logic?.then,
+            },
+      );
+    });
+  });
+  return (transitions ?? []).map((transition) => normalized.get(transition.id) ?? transition);
 }
 
 export function isTerminalEventType(
@@ -186,7 +292,7 @@ export function updateSequence(
     project: {
       ...project,
       sequences: project.sequences.map((sequence) =>
-        sequence.id === id ? { ...sequence, ...updates } : sequence,
+        sequence.id === id ? synchronizeLogicOwner(sequence, updates) : sequence,
       ),
     },
   };
@@ -515,7 +621,7 @@ export function updateBranch(
     project: {
       ...project,
       branches: project.branches.map((branch) =>
-        branch.id === id ? { ...branch, ...updates } : branch,
+        branch.id === id ? synchronizeLogicOwner(branch, updates) : branch,
       ),
     },
   };
@@ -530,7 +636,7 @@ export function updateEvent(
     project: {
       ...project,
       events: project.events.map((event) =>
-        event.id === id ? { ...event, ...updates } : event,
+        event.id === id ? synchronizeLogicOwner(event, updates) : event,
       ),
     },
   };
@@ -585,7 +691,7 @@ export function updateDecision(
   }
   return updateEvent(project, eventId, {
     decisions: (event.decisions ?? []).map((decision) =>
-      decision.id === decisionId ? { ...decision, ...updates } : decision,
+      decision.id === decisionId ? synchronizeLogicOwner(decision, updates) : decision,
     ),
   });
 }
@@ -687,7 +793,7 @@ export function updateOutcome(
   }
   return updateDecision(project, eventId, decisionId, {
     outcomes: decision.outcomes.map((outcome) =>
-      outcome.id === outcomeId ? { ...outcome, ...updates } : outcome,
+      outcome.id === outcomeId ? synchronizeLogicOwner(outcome, updates) : outcome,
     ),
   });
 }
@@ -863,7 +969,7 @@ export function updateDialogueStart(
   const event = findEvent(project, eventId);
   if (!event) return { project, message: "Event not found." };
   return updateEvent(project, eventId, {
-    dialogueStarts: (event.dialogueStarts ?? []).map((start) => start.id === startId ? { ...start, ...updates } : start),
+    dialogueStarts: (event.dialogueStarts ?? []).map((start) => start.id === startId ? synchronizeLogicOwner(start, updates) : start),
   });
 }
 
@@ -889,7 +995,7 @@ export function updateDialogue(
   }
   return updateEvent(project, eventId, {
     dialogues: (event.dialogues ?? []).map((dialogue) =>
-      dialogue.id === dialogueId ? { ...dialogue, ...updates } : dialogue,
+      dialogue.id === dialogueId ? synchronizeLogicOwner(dialogue, updates) : dialogue,
     ),
   });
 }
@@ -1023,7 +1129,7 @@ export function updateEventDialogueBeat(
   const event = findEvent(project, eventId);
   if (!event?.dialogueBeats?.some((beat) => beat.id === beatId)) return { project, message: "Dialogue beat not found." };
   return updateEvent(project, eventId, {
-    dialogueBeats: event.dialogueBeats.map((beat) => beat.id === beatId ? { ...beat, ...updates } : beat),
+    dialogueBeats: event.dialogueBeats.map((beat) => beat.id === beatId ? synchronizeLogicOwner(beat, updates) : beat),
   });
 }
 
@@ -1063,7 +1169,7 @@ export function updateDialogueBeat(
   const dialogue = event?.dialogues?.find((item) => item.id === dialogueId);
   if (!event || !dialogue) return { project, message: "Dialogue not found." };
   return updateDialogue(project, eventId, dialogueId, {
-    beats: (dialogue.beats ?? []).map((beat) => beat.id === beatId ? { ...beat, ...updates } : beat),
+    beats: (dialogue.beats ?? []).map((beat) => beat.id === beatId ? synchronizeLogicOwner(beat, updates) : beat),
   });
 }
 
@@ -1283,14 +1389,16 @@ export function createInternalTransition(
     to,
     order: existing.filter((item) => item.from === from).length,
     mode: "conditional",
+    role: "flow",
     source: "graph",
   };
+  const transitions = normalizeTransitionRoles([...existing, transition], project);
   return {
     project: {
       ...project,
       events: project.events.map((item) =>
         item.id === eventId
-          ? { ...item, transitions: [...existing, transition] }
+          ? { ...item, transitions }
           : item,
       ),
     },
@@ -1309,12 +1417,13 @@ export function updateTransition(
   const currentTransition = owner?.transitions?.find((transition) => transition.id === transitionId);
   if (!owner || !currentTransition) return { project, message: "Transition not found." };
   const nextMode = updates.mode ?? currentTransition.mode ?? "conditional";
-  const updatedTransition: Transition = {
+  const updatesConditions = Object.prototype.hasOwnProperty.call(updates, "conditions");
+  const updatedTransition = synchronizeLogicOwner(currentTransition, {
     ...currentTransition,
     ...updates,
     mode: nextMode,
-    conditions: nextMode === "fallback" ? undefined : updates.conditions ?? currentTransition.conditions,
-  };
+    conditions: nextMode === "fallback" ? undefined : updatesConditions ? updates.conditions : currentTransition.conditions,
+  });
   let siblings = (owner.transitions ?? [])
     .filter((transition) => transition.from === currentTransition.from && transition.id !== transitionId)
     .map((transition) => ({ ...transition }))
@@ -1341,14 +1450,18 @@ export function updateTransition(
       })
       .map((transition, order) => [transition.id, { ...transition, order }]),
   );
+  const transitions = normalizeTransitionRoles(
+    (owner.transitions ?? []).map((transition) =>
+      reordered.get(transition.id) ?? transition,
+    ),
+    project,
+  );
   return {
     project: {
       ...project,
       events: project.events.map((event) => ({
         ...event,
-        transitions: event.transitions?.map((transition) =>
-          reordered.get(transition.id) ?? transition,
-        ),
+        transitions: event.id === owner.id ? transitions : event.transitions,
       })),
     },
   };
@@ -1389,14 +1502,20 @@ export function deleteTransition(
   project: BranchingProject,
   transitionId: string,
 ): MutationResult {
+  const owner = project.events.find((event) =>
+    event.transitions?.some((transition) => transition.id === transitionId),
+  );
   return {
     project: {
       ...project,
       events: project.events.map((event) => ({
         ...event,
-        transitions: event.transitions?.filter(
-          (transition) => transition.id !== transitionId,
-        ),
+        transitions: event.id === owner?.id
+          ? normalizeTransitionRoles(
+              event.transitions?.filter((transition) => transition.id !== transitionId),
+              project,
+            )
+          : event.transitions,
         boundaryBindings: event.boundaryBindings?.filter(
           (binding) => `transition:boundary:${binding.id}` !== transitionId,
         ),
@@ -1437,7 +1556,7 @@ export function updateDataObject(
       ...project,
       projectDataObjects: (project.projectDataObjects ?? []).map(
         (dataObject) =>
-          dataObject.id === id ? { ...dataObject, ...updates } : dataObject,
+          dataObject.id === id ? synchronizeLogicOwner(dataObject, updates) : dataObject,
       ),
     },
   };

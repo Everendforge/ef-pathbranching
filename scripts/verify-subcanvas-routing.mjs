@@ -235,8 +235,8 @@ project.canvas = {
   },
 };
 const manuallyGatedEventModel = buildStoryCanvasModel(project, { scope: { kind: "event", id: parent.id } });
-if (!manuallyGatedEventModel.nodes.some((node) => node.id === decisionGateId)) {
-  throw new Error("A manually inserted Route Gate must work for a single event-canvas transition.");
+if (manuallyGatedEventModel.nodes.some((node) => node.id === decisionGateId)) {
+  throw new Error("Legacy routeGateSources metadata must not force a Gate for a single route.");
 }
 const simpleRootModel = buildStoryCanvasModel(project);
 if (simpleRootModel.nodes.some((node) => node.data.kind === "decision")) {
@@ -246,7 +246,7 @@ if (simpleRootModel.nodes.some((node) => node.id === "decision:event:route-a:dec
   throw new Error("Nested-event decisions must not appear in the parent canvas.");
 }
 if (simpleRootModel.nodes.some((node) => node.id === decisionGateId)) {
-  throw new Error("Parent canvases must keep Route Gates opt-in.");
+  throw new Error("A single parent-canvas route must stay direct.");
 }
 const rootScopeKey = `sequence:${project.sequences[0].id}`;
 project.canvas = {
@@ -258,11 +258,8 @@ project.canvas = {
 };
 const rootModel = buildStoryCanvasModel(project);
 const decisionGate = rootModel.nodes.find((node) => node.id === decisionGateId);
-if (decisionGate?.data.kind !== "routeGate") {
-  throw new Error("Expected a Decision outcome Route Gate in the parent canvas.");
-}
-if (decisionGate.data.details?.eventId !== parent.id) {
-  throw new Error("Expected the parent-canvas Route Gate to retain its owning event.");
+if (decisionGate) {
+  throw new Error("Legacy routeGateSources metadata must remain round-trippable without controlling parent-canvas presentation.");
 }
 
-console.log(JSON.stringify({ entryRoutes: entryRoutes.length, routeGate: gateId, decisionGate: decisionGateId, outputPort: outputPort.id, workspace: workspace.id }, null, 2));
+console.log(JSON.stringify({ entryRoutes: entryRoutes.length, routeGate: gateId, ignoredLegacyGate: decisionGateId, outputPort: outputPort.id, workspace: workspace.id }, null, 2));

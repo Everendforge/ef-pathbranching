@@ -302,28 +302,37 @@ export function typeCapability(
   source: "canon" | "local",
   typeId: string,
 ) {
-  // For entity-type properties (prefixed with "type:"), look in property overrides
-  if (typeId.startsWith("type:")) {
-    return project.logicPropertyOverrides?.find(
-      (item) => item.propertyId === typeId && item.source === source,
-    ) as LogicPropertyOverride | undefined;
-  }
-  // For legacy local types, look in type overrides
-  return project.logicTypeOverrides?.find(
-    (item) => item.typeId === typeId && item.source === source,
+  const normalizedTypeId = typeId.startsWith("type:") ? typeId.slice("type:".length) : typeId;
+  const configured = project.logicTypeOverrides?.find(
+    (item) =>
+      item.source === source &&
+      (item.typeId === normalizedTypeId || item.typeId === `type:${normalizedTypeId}`),
   );
+  const legacy = project.logicPropertyOverrides?.find(
+    (item) => item.propertyId === `type:${normalizedTypeId}` && item.source === source,
+  );
+  if (!configured && !legacy) return undefined;
+  return {
+    ...legacy,
+    ...configured,
+    typeId: normalizedTypeId,
+    source,
+    runtimeRoles: configured?.runtimeRoles ?? legacy?.runtimeRoles ??
+      (configured?.grantable || legacy?.grantable ? ["owned" as const] : undefined),
+  };
 }
 
 export function isGrantableType(
-  project: Pick<BranchingProject, "logicTypeOverrides">,
+  project: Pick<BranchingProject, "logicTypeOverrides" | "logicPropertyOverrides">,
   source: "canon" | "local",
   typeId: string,
 ) {
-  return typeCapability(project, source, typeId)?.grantable === true;
+  const capability = typeCapability(project, source, typeId);
+  return capability?.grantable === true || capability?.runtimeRoles?.includes("owned") === true;
 }
 
 export function isLocationType(
-  project: Pick<BranchingProject, "logicTypeOverrides">,
+  project: Pick<BranchingProject, "logicTypeOverrides" | "logicPropertyOverrides">,
   source: "canon" | "local",
   typeId: string,
 ) {
@@ -334,7 +343,7 @@ export type GrantableEntityOption = { id: string; label: string; source: "canon"
 
 /** Merged pool of canon + local entities whose entity type is marked grantable. */
 export function grantableEntities(
-  project: Pick<BranchingProject, "canonRefs" | "localExplorerEntities" | "logicTypeOverrides">,
+  project: Pick<BranchingProject, "canonRefs" | "localExplorerEntities" | "logicTypeOverrides" | "logicPropertyOverrides">,
 ): GrantableEntityOption[] {
   const canonOptions = project.canonRefs
     .filter((ref) => ref.kind && isGrantableType(project, "canon", ref.kind))
@@ -347,7 +356,7 @@ export function grantableEntities(
 
 /** Merged pool of canon + local entities whose entity type is marked as a location. */
 export function locationEntities(
-  project: Pick<BranchingProject, "canonRefs" | "localExplorerEntities" | "logicTypeOverrides">,
+  project: Pick<BranchingProject, "canonRefs" | "localExplorerEntities" | "logicTypeOverrides" | "logicPropertyOverrides">,
 ): GrantableEntityOption[] {
   const canonOptions = project.canonRefs
     .filter((ref) => ref.kind && isLocationType(project, "canon", ref.kind))

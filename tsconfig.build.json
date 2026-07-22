@@ -19,6 +19,7 @@
     "src/canonChanges.ts",
     "src/speakerRoles.ts",
     "src/worldnotionVariants.ts",
+    "src/canvas/nodePlacement.ts",
     "src/explorerEntities.ts",
     "src/explorerSchema.ts",
     "src/evpathFormat.ts"

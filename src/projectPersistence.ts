@@ -14,6 +14,15 @@ import {
 import { normalizeProject, parseProject, projectFileName, serializeProject } from "./projectSerialization.js";
 import { serializeIntegrationConfigYaml } from "./integrationConfig.js";
 import { isTauriRuntime } from "./utils/appEnvironment.js";
+import {
+  browserUniversePath,
+  ensureBrowserUniverseWritePermission,
+  pickBrowserUniverse,
+  readBrowserUniverse,
+  type BrowserDirectoryHandle,
+  writeBrowserUniverseFile,
+} from "./utils/browserUniverse.js";
+import { createDemoBrowserUniverse } from "./utils/demoBrowserUniverse.js";
 
 export { normalizeProject, parseProject, projectFileName, serializeProject } from "./projectSerialization.js";
 
@@ -62,6 +71,13 @@ export type BridgeStatus = {
 
 export type ImportedAsset = Omit<ProjectAsset, "id" | "origin" | "importedAt">;
 
+let selectedBrowserUniverse: BrowserDirectoryHandle | undefined;
+
+function currentBrowserUniverse(path: string): BrowserDirectoryHandle | undefined {
+  if (!selectedBrowserUniverse || path !== browserUniversePath(selectedBrowserUniverse)) return undefined;
+  return selectedBrowserUniverse;
+}
+
 export async function importUniverseAssets(universePath: string): Promise<ImportedAsset[]> {
   assertDesktopRuntime("Importing assets");
   return invoke<ImportedAsset[]>("import_universe_assets", { universePath });
@@ -99,7 +115,16 @@ export async function openProjectDialog(): Promise<{ project: BranchingProject; 
 export async function openUniverseDialog(): Promise<
   { workspace: PathBranchingWorkspace; path: string; files: UniverseReadResult["files"] } | undefined
 > {
-  assertDesktopRuntime("Opening a local universe");
+  if (!isTauriRuntime()) {
+    const picked = await pickBrowserUniverse();
+    if (picked.status === "cancelled") return undefined;
+    const root = picked.root;
+    await ensureBrowserUniverseWritePermission(root);
+    const files = await readBrowserUniverse(root);
+    selectedBrowserUniverse = root;
+    const path = browserUniversePath(root);
+    return { workspace: loadPathBranchingWorkspace(files), path, files };
+  }
   const payload = await invoke<UniverseReadResult | null>("open_universe_dialog");
   if (!payload) return undefined;
   return {
@@ -107,6 +132,18 @@ export async function openUniverseDialog(): Promise<
     path: payload.rootPath,
     files: payload.files,
   };
+}
+
+export async function openDemoUniverse(): Promise<{
+  workspace: PathBranchingWorkspace;
+  path: string;
+  files: UniverseReadResult["files"];
+}> {
+  const root = createDemoBrowserUniverse();
+  const files = await readBrowserUniverse(root);
+  selectedBrowserUniverse = root;
+  const path = browserUniversePath(root);
+  return { workspace: loadPathBranchingWorkspace(files), path, files };
 }
 
 export async function verifyDesktopBridge(): Promise<BridgeStatus> {
@@ -119,6 +156,14 @@ export async function openUniversePath(path: string): Promise<{
   path: string;
   files: UniverseReadResult["files"];
 }> {
+  const browserUniverse = currentBrowserUniverse(path);
+  if (browserUniverse) {
+    const files = await readBrowserUniverse(browserUniverse);
+    return { workspace: loadPathBranchingWorkspace(files), path, files };
+  }
+  if (!isTauriRuntime()) {
+    throw new Error("This browser session no longer has access to that folder. Select the universe folder again.");
+  }
   assertDesktopRuntime("Opening a recent universe");
   const payload = await invoke<UniverseReadResult>("read_universe_folder", { path });
   return {
@@ -133,9 +178,8 @@ export async function openUniverseStory(path: string, storyId: string): Promise<
   path: string;
   files: UniverseReadResult["files"];
 }> {
-  assertDesktopRuntime("Opening a universe story");
-  const payload = await invoke<UniverseReadResult>("read_universe_folder", { path });
-  const files = payload.files.map((file) => {
+  const opened = await openUniversePath(path);
+  const files = opened.files.map((file) => {
     if (file.relativePath !== pathBranchingMetadataPaths.manifest) {
       return file;
     }
@@ -151,7 +195,7 @@ export async function openUniverseStory(path: string, storyId: string): Promise<
   });
   return {
     workspace: loadPathBranchingWorkspace(files),
-    path: payload.rootPath,
+    path: opened.path,
     files,
   };
 }
@@ -181,6 +225,11 @@ export async function saveUniverseTextFile(
   content: string,
   expectedModifiedMs?: number,
 ): Promise<WriteResult> {
+  const browserUniverse = currentBrowserUniverse(universePath);
+  if (browserUniverse) {
+    const modifiedMs = await writeBrowserUniverseFile(browserUniverse, relativePath, content);
+    return { ok: true, path: relativePath, modifiedMs };
+  }
   assertDesktopRuntime("Saving universe app data");
   return invoke<WriteResult>("save_universe_text_file", {
     universePath,
@@ -304,8 +353,6 @@ export async function saveProjectAsDialog(project: BranchingProject): Promise<Wr
  * Based on the ESTRELLAS CORRUPTAS universe structure.
  */
 export async function initializePropertiesFile(universePath: string): Promise<WriteResult> {
-  assertDesktopRuntime("Initializing properties file");
-  
   // Template based on ESTRELLAS CORRUPTAS structure
   const propertiesTemplate = {
     "version": "3.0",

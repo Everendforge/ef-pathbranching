@@ -20,8 +20,9 @@ function eventChoices(event: EventNode): RuntimeChoice[] | undefined {
         id: outcome.id,
         textKey: `outcome.${outcome.id}.text`,
         targetNodeId: transition?.to ?? event.id,
-        conditions: outcome.availability ?? outcome.conditions,
-        consequences: outcome.consequences,
+        conditions: outcome.logic?.when ?? outcome.availability ?? outcome.conditions,
+        consequences: outcome.logic?.then ?? outcome.consequences,
+        logic: outcome.logic,
         unavailableBehavior: outcome.unavailableBehavior ?? "locked",
         lockTextKey: outcome.lockText?.content ? `outcome.${outcome.id}.lock` : undefined,
       };
@@ -71,7 +72,7 @@ export function exportRuntimePackage(project: BranchingProject): RuntimePackage 
     type: "event",
     textKey: `event.${event.id}.name`,
     choices: eventChoices(event),
-    conditions: event.availability,
+    conditions: event.logic?.when ?? event.availability,
     canonRefs: event.canonRefs,
     canonRefDetails: canonRefDetails(event.canonRefs),
     storyText: event.text,
@@ -85,7 +86,8 @@ export function exportRuntimePackage(project: BranchingProject): RuntimePackage 
     automaticTransitions: orderedTransitions(
       (event.transitions ?? []).filter((transition) => transition.from === event.id),
     ),
-    consequences: event.consequences,
+    consequences: event.logic?.then ?? event.consequences,
+    logic: event.logic,
   }));
   const scriptBlocks = new Map(
     (project.scriptDocuments ?? []).flatMap((script) =>
@@ -116,8 +118,9 @@ export function exportRuntimePackage(project: BranchingProject): RuntimePackage 
       characterRef: characterRef === UNKNOWN_SPEAKER_REF ? undefined : characterRef,
       characterVariantId: characterRef === UNKNOWN_SPEAKER_REF ? undefined : block?.characterVariantId,
       speakerRef: characterRef === UNKNOWN_SPEAKER_REF ? "unknown" : characterRef ? speakerMappings[characterRef] || characterRef : undefined,
-      conditions: beat.displayCondition,
-      consequences: beat.consequences,
+      conditions: beat.logic?.when ?? beat.displayCondition,
+      consequences: beat.logic?.then ?? beat.consequences,
+      logic: beat.logic,
       automaticTransitions: orderedTransitions((event.transitions ?? []).filter((transition) => transition.from === id)),
       dialogueId,
       ...(sceneImage ? { sceneImage } : {}),
@@ -136,7 +139,9 @@ export function exportRuntimePackage(project: BranchingProject): RuntimePackage 
         automaticTransitions: orderedTransitions(
           (event.transitions ?? []).filter((transition) => transition.from === containerId),
         ),
-        consequences: dialogue.consequences,
+        conditions: dialogue.logic?.when ?? dialogue.availability,
+        consequences: dialogue.logic?.then ?? dialogue.consequences,
+        logic: dialogue.logic,
       };
       const beats = (dialogue.beats ?? []).map((beat) => runtimeBeat(event, beat, dialogue.id));
       return [container, ...beats];
@@ -147,7 +152,9 @@ export function exportRuntimePackage(project: BranchingProject): RuntimePackage 
     id: `dialogue-start:${event.id}:${start.id}`,
     type: "dialogueTrigger",
     source: start.source,
-    conditions: start.availability,
+    conditions: start.logic?.when ?? start.availability,
+    consequences: start.logic?.then,
+    logic: start.logic,
     automaticTransitions: orderedTransitions(
       (event.transitions ?? []).filter((transition) => transition.from === `dialogue-start:${event.id}:${start.id}`),
     ),

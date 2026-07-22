@@ -293,7 +293,12 @@ export function AssetsPanel({
                     return (
                       <div className="asset-explorer-tree-node" key={`${row.kind}:${row.id}`} style={{ "--asset-tree-depth": depth } as CSSProperties}>
                         <div className={`explorer-entity-row ${rowSelected ? "active" : ""}`}>
-                          <button type="button" className="explorer-entity-open" title={row.label} onPointerDown={() => handleExplorerRowPointerDown(row)} onPointerUp={() => handleExplorerRowPointerUp(row)} onPointerLeave={clearPendingInspectorClick}>
+                          <button type="button" className="explorer-entity-open" title={row.label} draggable={row.kind !== "data"} onDragStart={(event) => {
+                            if (row.kind === "data") return;
+                            event.dataTransfer.setData("application/x-pathbranching-entity", row.id);
+                            event.dataTransfer.setData("text/plain", row.id);
+                            event.dataTransfer.effectAllowed = "copy";
+                          }} onPointerDown={() => handleExplorerRowPointerDown(row)} onPointerUp={() => handleExplorerRowPointerUp(row)} onPointerLeave={clearPendingInspectorClick}>
                             <RowIcon size={14} />
                             <span className="explorer-entity-name">{row.label}</span>
                             <em className={`explorer-origin ${row.source.toLowerCase().replace(/\s+/g, "-")}`}>{row.source}</em>

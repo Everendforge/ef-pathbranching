@@ -1,7 +1,8 @@
-import type { BranchingProject, ConditionInput, Consequence, EventNode, ScriptBlock, ValidationFinding } from "./domain.js";
+import type { BranchingProject, ConditionInput, Consequence, EventNode, LogicEffect, LogicPredicate, ScriptBlock, ValidationFinding } from "./domain.js";
 import { conditionInputsFromConsequences, walkConditions } from "./logic.js";
 import { mappingsForCanonRef } from "./integrationConfig.js";
 import { entitySupportsDialogueTrigger } from "./explorerSchema.js";
+import { logicEffectOperations, logicOperatorsFor, resolveLogicField } from "./logicCapabilities.js";
 import { isGenericSpeakerRef } from "./speakerRoles.js";
 import { canonVariantsForRef } from "./worldnotionVariants.js";
 
@@ -38,7 +39,7 @@ function grantableEntityIds(project: BranchingProject): Set<string> {
   const grantableCanonTypes = new Set<string>();
   const grantableLocalTypes = new Set<string>();
   (project.logicTypeOverrides ?? []).forEach((override) => {
-    if (!override.grantable) return;
+    if (!override.grantable && !override.runtimeRoles?.includes("owned")) return;
     (override.source === "canon" ? grantableCanonTypes : grantableLocalTypes).add(override.typeId);
   });
   const ids = new Set<string>();
@@ -49,6 +50,52 @@ function grantableEntityIds(project: BranchingProject): Set<string> {
     if (grantableLocalTypes.has(entity.type)) ids.add(entity.id);
   });
   return ids;
+}
+
+function entityDescriptor(project: BranchingProject, entityId: string) {
+  const canon = project.canonRefs.find((entity) => entity.id === entityId);
+  if (canon) return { source: "canon" as const, typeId: canon.kind };
+  const local = project.localExplorerEntities?.find((entity) => entity.id === entityId);
+  return local ? { source: "local" as const, typeId: local.type } : undefined;
+}
+
+function validateTypedPredicate(
+  findings: ValidationFinding[],
+  projectRefs: ProjectReferenceSets,
+  ownerId: string,
+  context: string,
+  predicate: LogicPredicate,
+) {
+  const { project } = projectRefs;
+  const subject = predicate.subject;
+  if (subject.kind === "external" && !project.externalFunctions.some((externalFunction) => externalFunction.name === subject.functionId)) {
+    findings.push(finding("invalid_condition", "error", `${context} references missing external function "${subject.functionId}".`, { id: ownerId, ref: subject.functionId }));
+    return;
+  }
+  if (subject.kind === "variable" && !(project.logicVariables ?? []).some((variable) => variable.id === subject.variableId)) {
+    findings.push(finding("invalid_condition", "error", `${context} references missing variable "${subject.variableId}".`, { id: ownerId, ref: subject.variableId }));
+    return;
+  }
+  if (subject.kind === "dataObject" && !projectRefs.dataObjectIds.has(subject.objectId)) {
+    findings.push(finding("missing_data_object", "error", `${context} references missing data object "${subject.objectId}".`, { id: ownerId, ref: subject.objectId }));
+    return;
+  }
+  if (subject.kind === "entity") {
+    const entity = entityDescriptor(project, subject.entityId);
+    if (!entity?.typeId) {
+      findings.push(finding("missing_canon_ref", "error", `${context} references missing entity "${subject.entityId}".`, { id: ownerId, ref: subject.entityId }));
+      return;
+    }
+  }
+  const fieldKind = predicate.type === "state" ? "state" : predicate.type === "property" ? "property" : predicate.type === "visited" ? "visited" : predicate.type === "external" ? "external" : "value";
+  const fieldId = predicate.type === "state" ? predicate.stateId : predicate.type === "property" ? predicate.propertyId : predicate.type;
+  const field = resolveLogicField(project, predicate.subject, "condition", fieldKind, fieldId);
+  if (field.status !== "enabled") {
+    findings.push(finding("invalid_condition", "error", `${context} uses unavailable ${field.kind} "${fieldId}" (${field.status}).`, { id: ownerId, ref: fieldId }));
+  }
+  if (!logicOperatorsFor(field).includes(predicate.operator)) {
+    findings.push(finding("invalid_condition", "error", `${context} uses incompatible operator "${predicate.operator}" for "${fieldId}".`, { id: ownerId, ref: fieldId }));
+  }
 }
 
 function validateCanonRef(
@@ -77,6 +124,10 @@ function validateConditionRefs(
   conditions: ConditionInput | undefined,
 ) {
   walkConditions(conditions, (condition, path) => {
+    if ("subject" in condition) {
+      validateTypedPredicate(findings, projectRefs, ownerId, `${context} ${path}`, condition as LogicPredicate);
+      return;
+    }
     if (
       (condition.type === "canonEntryUnlocked" || condition.type === "canonProperty" || condition.type === "canonState") &&
       typeof condition.ref === "string"
@@ -181,6 +232,38 @@ function validateConsequenceCanonRefs(
   consequences: Consequence[] | undefined,
 ) {
   consequences?.forEach((consequence) => {
+    if ("subject" in consequence) {
+      const effect = consequence as LogicEffect;
+      const subject = effect.subject;
+      if (subject.kind === "external" && !projectRefs.project.externalFunctions.some((externalFunction) => externalFunction.name === subject.functionId)) {
+        findings.push(finding("invalid_consequence", "error", `${context} references missing external function "${subject.functionId}".`, { id: ownerId, ref: subject.functionId }));
+        return;
+      }
+      if (subject.kind === "entity") {
+        const entity = entityDescriptor(projectRefs.project, subject.entityId);
+        if (!entity?.typeId) {
+          findings.push(finding("missing_canon_ref", "error", `${context} references missing entity "${subject.entityId}".`, { id: ownerId, ref: subject.entityId }));
+          return;
+        }
+      }
+      if (subject.kind === "variable" && !(projectRefs.project.logicVariables ?? []).some((variable) => variable.id === subject.variableId)) {
+        findings.push(finding("invalid_consequence", "error", `${context} references missing variable "${subject.variableId}".`, { id: ownerId, ref: subject.variableId }));
+        return;
+      }
+      if (subject.kind === "dataObject" && !projectRefs.dataObjectIds.has(subject.objectId)) {
+        findings.push(finding("missing_data_object", "error", `${context} references missing data object "${subject.objectId}".`, { id: ownerId, ref: subject.objectId }));
+        return;
+      }
+      const fieldKind = effect.type === "state" ? "state" : effect.type === "property" ? "property" : effect.type === "external" ? "external" : "value";
+      const fieldId = effect.type === "state" ? effect.stateId : effect.type === "property" ? effect.propertyId : effect.type;
+      const field = resolveLogicField(projectRefs.project, effect.subject, "effect", fieldKind, fieldId);
+      if (field.status !== "enabled") {
+        findings.push(finding("invalid_consequence", "error", `${context} writes unavailable ${field.kind} "${fieldId}" (${field.status}).`, { id: ownerId, ref: fieldId }));
+      } else if (!logicEffectOperations(field).includes(effect.operation)) {
+        findings.push(finding("invalid_consequence", "error", `${context} uses incompatible operation "${effect.operation}" for "${fieldId}".`, { id: ownerId, ref: fieldId }));
+      }
+      return;
+    }
     if (
       (consequence.type === "addGrantable" || consequence.type === "removeGrantable" || consequence.type === "editGrantable") &&
       !projectRefs.grantableEntityIds.has(consequence.entityId)
@@ -665,13 +748,24 @@ export function validateProject(project: BranchingProject): ValidationFinding[] 
           }),
         );
       }
+      const transitionWhen = transition.logic?.when ?? transition.conditions;
+      const transitionThen = transition.logic?.then ?? transition.consequences;
+      if (
+        transition.role === "flow" &&
+        (transitionWhen || transitionThen?.length || transition.mode === "fallback" || transition.function || transition.arguments?.length)
+      ) {
+        findings.push(finding("invalid_scope_transition", "error", `Flow transition "${transition.id}" carries route logic or payload. Promote it to route.`, { id: transition.id }));
+      }
+      if (transition.function) {
+        findings.push(finding("invalid_consequence", "error", `Transition "${transition.id}" uses legacy function payload "${transition.function}". Convert it to a typed external predicate or effect.`, { id: transition.id, ref: transition.function }));
+      }
       validateConditionRefs(
         findings,
         projectRefs,
         canonIds,
         transition.id,
         `Transition "${transition.id}" condition`,
-        transition.conditions,
+        transitionWhen,
       );
       validateConsequenceCanonRefs(
         findings,
@@ -679,7 +773,7 @@ export function validateProject(project: BranchingProject): ValidationFinding[] 
         canonIds,
         transition.id,
         `Transition "${transition.id}" consequence`,
-        transition.consequences,
+        transitionThen,
       );
     });
     transitionGroups.forEach((transitions, sourceId) => {
@@ -693,15 +787,15 @@ export function validateProject(project: BranchingProject): ValidationFinding[] 
         findings.push(finding("invalid_transition_order", "error", `Node "${sourceId}" has duplicate or invalid transition order values.`, { id: sourceId }));
       }
       const unconditionalIndex = ordered.findIndex(
-        (transition) => transition.mode !== "fallback" && !transition.conditions,
+        (transition) => transition.mode !== "fallback" && !(transition.logic?.when ?? transition.conditions),
       );
       if (unconditionalIndex >= 0 && unconditionalIndex < ordered.length - 1) {
         findings.push(finding("invalid_transition_order", "warning", `Node "${sourceId}" has an unconditional route before later transitions; those routes are unreachable.`, { id: sourceId }));
       }
       if (
-        transitions.some((transition) => transition.conditions) &&
+        transitions.some((transition) => transition.logic?.when ?? transition.conditions) &&
         !fallbacks.length &&
-        !transitions.some((transition) => transition.mode !== "fallback" && !transition.conditions)
+        !transitions.some((transition) => transition.mode !== "fallback" && !(transition.logic?.when ?? transition.conditions))
       ) {
         findings.push(finding("no_valid_transition", "error", `Non-terminal node "${sourceId}" can stop when no conditional transition matches. Add an Else fallback.`, { id: sourceId }));
       }

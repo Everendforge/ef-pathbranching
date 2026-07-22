@@ -60,8 +60,11 @@ export type CanvasBackgroundSettings = {
 };
 
 export type CanvasLayoutMode = "branching" | "timeline" | "branches";
+export type CanvasLayerMode = "visual" | "logic";
 
 export type AuthoringDisplaySettings = {
+  /** @deprecated Read only as a migration fallback for pre-layer settings. */
+  logicMode?: boolean;
   showDecisionCount: boolean;
   showOutcomeCount: boolean;
   showDialogueCount: boolean;
@@ -150,6 +153,7 @@ export type PathBranchingWorkspaceSession = {
   inspectorMaximized?: boolean;
   activeScope?: CanvasScope;
   canvasMode?: CanvasMode;
+  canvasLayerMode?: CanvasLayerMode;
   focusNodeId?: string;
   markdownTabs?: MarkdownEditorTab[];
   activeMarkdownTabId?: string;
@@ -183,6 +187,7 @@ export function normalizeAuthoringDisplaySettings(value: unknown): AuthoringDisp
     : {};
   const hasCharacterCountSetting = typeof settings.showCharacterCount === "boolean";
   return {
+    ...(typeof settings.logicMode === "boolean" ? { logicMode: settings.logicMode } : {}),
     showDecisionCount: typeof settings.showDecisionCount === "boolean" ? settings.showDecisionCount : DEFAULT_AUTHORING_DISPLAY_SETTINGS.showDecisionCount,
     showOutcomeCount: typeof settings.showOutcomeCount === "boolean" ? settings.showOutcomeCount : DEFAULT_AUTHORING_DISPLAY_SETTINGS.showOutcomeCount,
     showDialogueCount: typeof settings.showDialogueCount === "boolean" ? settings.showDialogueCount : DEFAULT_AUTHORING_DISPLAY_SETTINGS.showDialogueCount,
@@ -650,6 +655,10 @@ export function normalizeWorkspaceSession(
     canvasMode:
       session.canvasMode === "branching" || session.canvasMode === "focus"
         ? session.canvasMode
+        : undefined,
+    canvasLayerMode:
+      session.canvasLayerMode === "visual" || session.canvasLayerMode === "logic"
+        ? session.canvasLayerMode
         : undefined,
     focusNodeId:
       typeof session.focusNodeId === "string" ? session.focusNodeId : undefined,

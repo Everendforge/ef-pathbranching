@@ -81,7 +81,7 @@ function universeFiles(project, { evpath = true, storageVersion } = {}) {
     .filter((file) => (evpath ? true : !file.relativePath.endsWith(".evpath")))
     .map((file) => {
       if (storageVersion && file.relativePath.endsWith(".json")) {
-        return { ...file, content: file.content.replace(/"storageVersion": "0\.3"/g, `"storageVersion": "${storageVersion}"`) };
+        return { ...file, content: file.content.replace(/"storageVersion": "0\.4"/g, `"storageVersion": "${storageVersion}"`) };
       }
       return { ...file };
     });
@@ -109,16 +109,16 @@ function eventOf(project, id) {
 const project = sampleProject();
 const expectedEvpath = serializeEventEvpath(project, "intro");
 
-// --- Serialization emits a .evpath sidecar and bumps storage to 0.3 --------
+// --- Serialization emits a .evpath sidecar and bumps storage to 0.4 --------
 const { storyFiles } = universeFiles(project);
 const storyJson = storyFiles.find((file) => file.relativePath === storyPath("main"));
-assert.match(storyJson.content, /"storageVersion": "0\.3"/);
+assert.match(storyJson.content, /"storageVersion": "0\.4"/);
 const introEvpath = storyFiles.find((file) => file.relativePath.endsWith("/events/intro.evpath"));
 assert.ok(introEvpath, "expected an intro.evpath file");
 assert.equal(introEvpath.content, expectedEvpath);
 assert.match(introEvpath.content, /^Kaelen: ¿Dónde está la reliquia\? #\^beat:s1$/m);
 
-// --- Loading a 0.3 story is a no-op reconcile (no spurious drift) ----------
+// --- Loading a 0.4 story is a no-op reconcile (no spurious drift) ----------
 const { files } = universeFiles(project);
 const loaded = loadPathBranchingWorkspace(files);
 assert.deepEqual(loaded.loadWarnings ?? [], [], `unexpected load warnings: ${JSON.stringify(loaded.loadWarnings)}`);
@@ -129,7 +129,12 @@ assert.equal(blockContent(loaded.activeProject, "block:b1"), "¿Dónde está la 
 assert.equal(blockContent(loaded.activeProject, "block:b2"), "El sótano tiembla.");
 assert.equal((loadedIntro.transitions ?? []).length, 4);
 assert.equal(loadedIntro.decisions[0].outcomes.length, 2);
-assert.deepEqual(loadedIntro.decisions[0].outcomes[0].availability, { type: "variable", name: "miedo", operator: "<", value: 3 });
+assert.deepEqual(loadedIntro.decisions[0].outcomes[0].availability, {
+  type: "value",
+  subject: { kind: "variable", variableId: "miedo" },
+  operator: "<",
+  value: 3,
+});
 // The loaded event re-serializes to the same evpath the file held.
 assert.equal(serializeEventEvpath(loaded.activeProject, "intro"), expectedEvpath);
 
@@ -175,4 +180,4 @@ const brokenIntro = eventOf(loadedBroken.activeProject, "intro");
 assert.equal(brokenIntro.dialogueBeats.length, 2, "JSON sidecar must be preserved when evpath is malformed");
 assert.equal(blockContent(loadedBroken.activeProject, "block:b1"), "¿Dónde está la reliquia?");
 
-console.log("evpath storage (0.3) verification passed");
+console.log("evpath storage (0.4) verification passed");

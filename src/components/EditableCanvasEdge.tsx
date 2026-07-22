@@ -5,14 +5,17 @@ import {
   getStraightPath,
   type EdgeProps,
 } from "@xyflow/react";
+import { CircleAlert, GitBranch, Zap } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { StoryCanvasEdge, StoryCanvasEdgeData } from "../canvas/storyCanvasModel.js";
+import type { LogicPresentation } from "../logicCapabilities.js";
 
 type EditableCanvasEdgeData = StoryCanvasEdgeData & {
   editing?: boolean;
   inspectorState?: "open" | "expanded";
   onCommitLabel?: (label: string) => void;
   onCancelLabel?: () => void;
+  onOpenLogicPart?: (part: "conditions" | "consequences") => void;
   connectionPadding?: number;
 };
 
@@ -20,6 +23,9 @@ type RoutePreview = {
   mode?: "conditional" | "fallback";
   conditions?: string[];
   consequences?: string[];
+  conditionItems?: LogicPresentation[];
+  consequenceItems?: LogicPresentation[];
+  warningCount?: number;
 };
 
 function routePreview(value: unknown): RoutePreview | undefined {
@@ -69,6 +75,7 @@ export function EditableCanvasEdge({
   data,
 }: EdgeProps<StoryCanvasEdge>) {
   const edgeData = data as EditableCanvasEdgeData | undefined;
+  const logicMode = edgeData?.canvasLayerMode === "logic";
   const connectionPadding = Number(edgeData?.connectionPadding ?? 0);
   const isEntryEdge = edgeData?.kind === "entry";
   const [edgePath, labelX, labelY] = (isEntryEdge ? getStraightPath : getBezierPath)({
@@ -90,7 +97,9 @@ export function EditableCanvasEdge({
         : "";
   const [value, setValue] = useState(label);
   const inputRef = useRef<HTMLInputElement | null>(null);
-  const preview = routePreview(edgeData?.routePreview);
+  const preview = logicMode ? routePreview(edgeData?.routePreview) : undefined;
+  const routeIndex = Number(edgeData?.routeIndex ?? 0);
+  const routeCount = Number(edgeData?.routeCount ?? 0);
   const previewLabel = preview
     ? preview.mode === "fallback"
       ? "Else"
@@ -111,6 +120,7 @@ export function EditableCanvasEdge({
     <>
       <BaseEdge
         path={edgePath}
+        className={logicMode && edgeData?.routeRole === "route" ? "canvas-route-edge" : edgeData?.kind === "transition" ? "canvas-flow-edge" : undefined}
         markerEnd={markerEnd}
         style={{
           ...style,
@@ -128,7 +138,7 @@ export function EditableCanvasEdge({
           {arrowheads.map((arrowhead) => <polygon key={arrowhead.id} points={arrowhead.points} />)}
         </g>
       ) : null}
-      {editing || label || previewLabel ? (
+      {editing || (logicMode && (label || previewLabel)) ? (
         <EdgeLabelRenderer>
           <div
             className={`canvas-edge-label nodrag nopan ${editing ? "editing" : ""}`}
@@ -155,10 +165,17 @@ export function EditableCanvasEdge({
                 }}
               />
             ) : (
-              <span className="canvas-edge-preview">
+              <span className={`canvas-edge-preview${preview?.warningCount ? " warning" : ""}`}>
                 {label ? <strong>{label}</strong> : null}
-                {previewLabel ? <em>{previewLabel}</em> : null}
-                {preview?.consequences?.length ? <small>{preview.consequences.join(" · ")}</small> : null}
+                {previewLabel ? <button type="button" className="route-logic-chip condition" onClick={(event) => { event.stopPropagation(); edgeData?.onOpenLogicPart?.("conditions"); }}>
+                  <GitBranch size={11} />
+                  <span>{preview?.mode === "fallback" ? "ELSE" : routeCount > 1 ? `${routeIndex + 1} · IF` : "IF"}</span>
+                  <b>{preview?.conditionItems?.[0]?.text ?? preview?.conditions?.join(" · ")}</b>
+                </button> : null}
+                {preview?.consequences?.length ? <button type="button" className="route-logic-chip consequence" onClick={(event) => { event.stopPropagation(); edgeData?.onOpenLogicPart?.("consequences"); }}>
+                  <Zap size={11} /><span>THEN</span><b>{preview?.consequenceItems?.[0]?.text ?? preview?.consequences?.join(" · ")}</b>
+                </button> : null}
+                {preview?.warningCount ? <span className="route-logic-warning" title={`${preview.warningCount} capability warning${preview.warningCount === 1 ? "" : "s"}`}><CircleAlert size={11} />{preview.warningCount}</span> : null}
               </span>
             )}
           </div>

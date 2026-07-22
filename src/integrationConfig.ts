@@ -56,12 +56,12 @@ function normalizeMapping(value: unknown): CanonRoleMapping | undefined {
     roles: Array.isArray(mapping.roles)
       ? mapping.roles.filter((item): item is string => typeof item === "string")
       : [],
-    comparableProperties: Array.isArray(mapping.comparableProperties)
-      ? mapping.comparableProperties.filter((item): item is string => typeof item === "string")
-      : undefined,
-    states: Array.isArray(mapping.states)
-      ? mapping.states.filter((item): item is string => typeof item === "string")
-      : undefined,
+    ...(Array.isArray(mapping.comparableProperties)
+      ? { comparableProperties: mapping.comparableProperties.filter((item): item is string => typeof item === "string") }
+      : {}),
+    ...(Array.isArray(mapping.states)
+      ? { states: mapping.states.filter((item): item is string => typeof item === "string") }
+      : {}),
   };
 }
 

@@ -1,16 +1,28 @@
 import type {
   BranchingProject,
   Condition,
+  ConditionExpression,
   ConditionInput,
   Consequence,
   DialogueBeat,
   DialogueNode,
   EventNode,
+  LogicEffect,
+  LogicComparisonOperator,
+  LogicPredicate,
+  LogicSubject,
   Outcome,
   ScriptBlock,
   Transition,
 } from "./domain.js";
-import { asConditionExpressions, conditionLabel, consequenceLabel, isConditionSet } from "./logic.js";
+import {
+  asConditionExpressions,
+  conditionLabel,
+  consequenceLabel,
+  isConditionSet,
+  migrateConditionInput,
+  migrateConsequence,
+} from "./logic.js";
 import { UNDETERMINED_LOCALE, blockValues, localizedValue, updateLocalizedEntry } from "./localization.js";
 import { UNKNOWN_SPEAKER_REF, speakerLabel } from "./speakerRoles.js";
 import { BASE_VARIANT_ID, canonVariantsForRef } from "./worldnotionVariants.js";
@@ -148,47 +160,98 @@ function jsonScalar(value: unknown): string {
   return JSON.stringify(value);
 }
 
-function simpleConditionText(condition: Condition): string | undefined {
-  if (condition.type !== "variable") return undefined;
-  return `{ ${condition.name} ${condition.operator} ${jsonScalar(condition.value)} }`;
+function quotedReference(label: string, id: string, prefix: string): string {
+  return `${prefix}${JSON.stringify(label)}<${id}>`;
 }
 
-/** Renders conditions in the parseable grammar or as opaque `{ # label }` markers. */
-export function conditionInputText(input: ConditionInput | undefined): string {
-  return asConditionExpressions(input)
-    .map((expression) => {
-      if (!isConditionSet(expression)) {
-        return simpleConditionText(expression) ?? `{ # ${conditionLabel(expression)} }`;
-      }
-      return "{ # condition set }";
-    })
-    .join(" ");
+function entityLabel(project: BranchingProject | undefined, id: string): string {
+  return project?.canonRefs.find((item) => item.id === id)?.label ??
+    project?.localExplorerEntities?.find((item) => item.id === id)?.name ?? id;
 }
 
-function simpleConsequenceText(consequence: Consequence): string | undefined {
-  if (consequence.conditions) return undefined;
-  if (consequence.type === "setVariable") {
-    return `~ ${consequence.name} = ${jsonScalar(consequence.value)}`;
+function propertyLabel(project: BranchingProject | undefined, id: string): string {
+  return project?.localExplorerProperties?.find((item) => item.id === id)?.label ?? id;
+}
+
+function subjectText(project: BranchingProject | undefined, subject: LogicSubject): string {
+  if (subject.kind === "entity") return quotedReference(entityLabel(project, subject.entityId), subject.entityId, "@");
+  if (subject.kind === "dataObject") {
+    const label = project?.projectDataObjects?.find((item) => item.id === subject.objectId)?.name ?? subject.objectId;
+    return quotedReference(label, subject.objectId, "%");
   }
-  if (consequence.type === "addGrantable") {
-    return `~ grant ${consequence.entityId}`;
+  if (subject.kind === "variable") {
+    const label = project?.logicVariables?.find((item) => item.id === subject.variableId)?.name ?? subject.variableId;
+    return quotedReference(label, subject.variableId, "$");
   }
-  if (consequence.type === "removeGrantable") {
-    return `~ ungrant ${consequence.entityId}`;
+  if (subject.kind === "progress") {
+    const label = project?.events.find((item) => item.id === subject.targetId)?.name ??
+      project?.sequences.find((item) => item.id === subject.targetId)?.name ??
+      project?.branches.find((item) => item.id === subject.targetId)?.title ?? subject.targetId;
+    return quotedReference(label, subject.targetId, "^");
   }
-  if (consequence.type === "editGrantable") {
-    return `~ ${consequence.entityId}.${consequence.propertyId} = ${jsonScalar(consequence.value)}`;
+  return quotedReference(subject.functionId, subject.functionId, "!");
+}
+
+function predicateText(project: BranchingProject | undefined, predicate: LogicPredicate): string | undefined {
+  const subject = subjectText(project, predicate.subject);
+  if (predicate.type === "state") {
+    if (predicate.stateId === "owned") return `${predicate.operator === "missing" ? "missing" : "has"} ${subject}`;
+    return `${subject}.${JSON.stringify(predicate.stateId)}<${predicate.stateId}> ${predicate.operator}`;
   }
+  if (predicate.type === "property") {
+    return `${subject}.${JSON.stringify(propertyLabel(project, predicate.propertyId))}<${predicate.propertyId}> ${predicate.operator}${predicate.operator === "exists" || predicate.operator === "missing" ? "" : ` ${jsonScalar(predicate.value)}`}`;
+  }
+  if (predicate.type === "value") {
+    return `${subject} ${predicate.operator}${predicate.operator === "exists" || predicate.operator === "missing" ? "" : ` ${jsonScalar(predicate.value)}`}`;
+  }
+  if (predicate.type === "visited") return `${predicate.operator === "missing" ? "not visited" : "visited"} ${subject}`;
   return undefined;
 }
 
-export function consequenceTexts(consequences: Consequence[] | undefined): string[] {
-  return (consequences ?? []).map(
-    (consequence) => simpleConsequenceText(consequence) ?? `~ # ${consequenceLabel(consequence)}`,
-  );
+function expressionText(project: BranchingProject | undefined, expression: Condition | ConditionInput): string | undefined {
+  if (Array.isArray(expression)) {
+    const children = expression.map((child) => expressionText(project, child)).filter(Boolean);
+    return children.length ? children.join(" and ") : undefined;
+  }
+  if (!isConditionSet(expression)) return predicateText(project, expression as LogicPredicate);
+  if ("all" in expression) {
+    const children = expression.all.map((child) => expressionText(project, child)).filter(Boolean);
+    return children.length ? children.map((child) => `(${child})`).join(" and ") : undefined;
+  }
+  if ("any" in expression) {
+    const children = expression.any.map((child) => expressionText(project, child)).filter(Boolean);
+    return children.length ? children.map((child) => `(${child})`).join(" or ") : undefined;
+  }
+  const child = expressionText(project, expression.not);
+  return child ? `not (${child})` : undefined;
 }
 
-const CONDITION_PATTERN = /\{\s*([^{}\s]+)\s*(==|!=|>=|<=|>|<)\s*([^{}]*?)\s*\}/;
+/** Renders stable, readable logic references; unknown expressions stay opaque. */
+export function conditionInputText(input: ConditionInput | undefined, project?: BranchingProject): string {
+  const migrated = migrateConditionInput(input, project?.logicVariables ?? []);
+  if (!migrated) return "";
+  const text = expressionText(project, migrated);
+  return text ? `{ ${text} }` : `{ # ${asConditionExpressions(input)[0] ? conditionLabel(asConditionExpressions(input)[0] as Condition) : "condition"} }`;
+}
+
+function simpleConsequenceText(consequence: Consequence, project?: BranchingProject): string | undefined {
+  if ("conditions" in consequence && consequence.conditions) return undefined;
+  const effect = migrateConsequence(consequence, project?.logicVariables ?? []);
+  const subject = subjectText(project, effect.subject);
+  if (effect.type === "state") return `~ ${effect.operation} ${subject}`;
+  if (effect.type === "external") return undefined;
+  const operation = effect.operation === "add" ? "+=" : effect.operation === "subtract" ? "-=" : "=";
+  if (effect.type === "property") {
+    return `~ ${subject}.${JSON.stringify(propertyLabel(project, effect.propertyId))}<${effect.propertyId}> ${operation} ${jsonScalar(effect.value)}`;
+  }
+  return `~ ${subject} ${operation} ${jsonScalar(effect.value)}`;
+}
+
+export function consequenceTexts(consequences: Consequence[] | undefined, project?: BranchingProject): string[] {
+  return (consequences ?? []).map(
+    (consequence) => simpleConsequenceText(consequence, project) ?? `~ # ${consequenceLabel(consequence)}`,
+  );
+}
 
 function parseScalar(raw: string): { ok: boolean; value?: unknown } {
   const text = raw.trim();
@@ -206,34 +269,146 @@ function parseScalar(raw: string): { ok: boolean; value?: unknown } {
   return { ok: false };
 }
 
-/** Parses `{ name op value }` groups; returns undefined when any group is opaque. */
+const REFERENCE_PATTERN = /^([@$%^!])"((?:\\.|[^"])*)"<([^>]+)>/;
+const PROPERTY_PATTERN = /^\."((?:\\.|[^"])*)"<([^>]+)>/;
+
+function parseReference(text: string): { subject: LogicSubject; propertyId?: string; rest: string } | undefined {
+  const match = text.trim().match(REFERENCE_PATTERN);
+  if (!match) return undefined;
+  const [, prefix, _label, id] = match;
+  let subject: LogicSubject;
+  if (prefix === "@") subject = { kind: "entity", entityId: id };
+  else if (prefix === "%") subject = { kind: "dataObject", objectId: id };
+  else if (prefix === "$") subject = { kind: "variable", variableId: id };
+  else if (prefix === "^") subject = { kind: "progress", targetType: "event", targetId: id };
+  else subject = { kind: "external", functionId: id };
+  let rest = text.trim().slice(match[0].length);
+  const property = rest.match(PROPERTY_PATTERN);
+  if (property) rest = rest.slice(property[0].length);
+  return { subject, propertyId: property?.[2], rest: rest.trim() };
+}
+
+function stripOuterParentheses(text: string): string {
+  let value = text.trim();
+  while (value.startsWith("(") && value.endsWith(")")) {
+    let depth = 0;
+    let wrapped = true;
+    for (let index = 0; index < value.length; index += 1) {
+      if (value[index] === "(") depth += 1;
+      if (value[index] === ")") depth -= 1;
+      if (depth === 0 && index < value.length - 1) { wrapped = false; break; }
+    }
+    if (!wrapped) break;
+    value = value.slice(1, -1).trim();
+  }
+  return value;
+}
+
+function splitLogical(text: string, keyword: "and" | "or"): string[] {
+  const token = ` ${keyword} `;
+  const parts: string[] = [];
+  let depth = 0;
+  let quoted = false;
+  let escaped = false;
+  let start = 0;
+  for (let index = 0; index <= text.length - token.length; index += 1) {
+    const character = text[index];
+    if (escaped) { escaped = false; continue; }
+    if (character === "\\") { escaped = true; continue; }
+    if (character === '"') quoted = !quoted;
+    if (quoted) continue;
+    if (character === "(") depth += 1;
+    if (character === ")") depth -= 1;
+    if (depth === 0 && text.slice(index, index + token.length) === token) {
+      parts.push(text.slice(start, index).trim());
+      start = index + token.length;
+      index += token.length - 1;
+    }
+  }
+  if (!parts.length) return [text.trim()];
+  parts.push(text.slice(start).trim());
+  return parts;
+}
+
+function parseExpressionText(text: string): ConditionExpression | null {
+  const value = stripOuterParentheses(text);
+  const orParts = splitLogical(value, "or");
+  if (orParts.length > 1) {
+    const children = orParts.map(parseExpressionText);
+    return children.every(Boolean) ? { any: children as ConditionExpression[] } : null;
+  }
+  const andParts = splitLogical(value, "and");
+  if (andParts.length > 1) {
+    const children = andParts.map(parseExpressionText);
+    return children.every(Boolean) ? { all: children as ConditionExpression[] } : null;
+  }
+  if (value.startsWith("not ")) {
+    const child = parseExpressionText(value.slice(4));
+    return child ? { not: child } : null;
+  }
+  const stateMatch = value.match(/^(has|missing)\s+(.+)$/);
+  if (stateMatch) {
+    const reference = parseReference(stateMatch[2]);
+    return reference ? { type: "state", subject: reference.subject, stateId: "owned", operator: stateMatch[1] as "has" | "missing" } : null;
+  }
+  const visitedMatch = value.match(/^(not visited|visited)\s+(.+)$/);
+  if (visitedMatch) {
+    const reference = parseReference(visitedMatch[2]);
+    return reference?.subject.kind === "progress"
+      ? { type: "visited", subject: reference.subject, operator: visitedMatch[1] === "not visited" ? "missing" : "has" }
+      : null;
+  }
+  const reference = parseReference(value);
+  if (reference) {
+    const operatorMatch = reference.rest.match(/^(==|!=|>=|<=|>|<|contains|notContains|exists|missing|has)(?:\s+(.+))?$/);
+    if (!operatorMatch) return null;
+    const scalar = operatorMatch[2] ? parseScalar(operatorMatch[2]) : { ok: true, value: undefined };
+    if (!scalar.ok) return null;
+    if (reference.propertyId) {
+      return { type: "property", subject: reference.subject, propertyId: reference.propertyId, operator: operatorMatch[1] as LogicComparisonOperator, value: scalar.value } as Condition;
+    }
+    return { type: "value", subject: reference.subject, operator: operatorMatch[1] as "==", value: scalar.value };
+  }
+  const legacy = value.match(/^([^\s]+)\s*(==|!=|>=|<=|>|<)\s*(.+)$/);
+  if (!legacy) return null;
+  const scalar = parseScalar(legacy[3]);
+  return scalar.ok ? { type: "variable", name: legacy[1], operator: legacy[2] as "==", value: scalar.value } : null;
+}
+
+/** Parses the v2 expression grammar and the legacy variable grammar. */
 export function parseConditionText(text: string): ConditionInput | undefined | null {
   const trimmed = text.trim();
   if (!trimmed) return undefined;
-  const conditions: Condition[] = [];
   const groups = trimmed.match(/\{[^{}]*\}/g);
   if (!groups || groups.join(" ") !== trimmed.replace(/\}\s+\{/g, "} {")) return null;
-  for (const group of groups) {
-    const match = group.match(CONDITION_PATTERN);
-    if (!match) return null;
-    const [, name, operator, rawValue] = match;
-    const scalar = parseScalar(rawValue);
-    if (!scalar.ok) return null;
-    conditions.push({
-      type: "variable",
-      name,
-      operator: operator as "==" | "!=" | ">" | ">=" | "<" | "<=",
-      value: scalar.value,
-    });
-  }
-  if (!conditions.length) return undefined;
-  return conditions.length === 1 ? conditions[0] : conditions;
+  const expressions = groups.map((group) => parseExpressionText(group.slice(1, -1).trim()));
+  if (expressions.some((expression) => !expression)) return null;
+  return expressions.length === 1 ? expressions[0]! : expressions as ConditionInput;
 }
 
 /** Parses one `~ ...` line; null means opaque/unparseable. */
 export function parseConsequenceText(text: string): Consequence | null {
   const body = text.replace(/^~\s*/, "").trim();
   if (body.startsWith("#")) return null;
+  const state = body.match(/^(grant|ungrant|unlock|lock|discover|hide|enter|leave)\s+(.+)$/);
+  if (state) {
+    const reference = parseReference(state[2]);
+    if (reference?.subject.kind === "entity") {
+      const stateIds = { grant: "owned", ungrant: "owned", unlock: "unlocked", lock: "unlocked", discover: "discovered", hide: "discovered", enter: "present", leave: "present" } as const;
+      return { type: "state", subject: reference.subject, stateId: stateIds[state[1] as keyof typeof stateIds], operation: state[1] as LogicEffect["operation"] } as Consequence;
+    }
+  }
+  const reference = parseReference(body);
+  if (reference) {
+    const assign = reference.rest.match(/^(=|\+=|-=)\s*(.+)$/);
+    if (!assign) return null;
+    const scalar = parseScalar(assign[2]);
+    if (!scalar.ok) return null;
+    const operation = assign[1] === "+=" ? "add" : assign[1] === "-=" ? "subtract" : "set";
+    return reference.propertyId
+      ? { type: "property", subject: reference.subject, propertyId: reference.propertyId, operation, value: scalar.value }
+      : { type: "value", subject: reference.subject, operation, value: scalar.value };
+  }
   const grant = body.match(/^grant\s+(\S+)$/);
   if (grant) return { type: "addGrantable", entityId: grant[1] };
   const ungrant = body.match(/^ungrant\s+(\S+)$/);
@@ -312,9 +487,10 @@ function outsFrom(event: EventNode, nodeId: string): Transition[] {
 
 function transitionPayloadFree(transition: Transition): boolean {
   return (
+    (transition.role ?? "flow") === "flow" &&
     !transition.label &&
-    !transition.conditions &&
-    !(transition.consequences?.length) &&
+    !(transition.logic?.when ?? transition.conditions) &&
+    !((transition.logic?.then ?? transition.consequences)?.length) &&
     (transition.mode ?? "conditional") === "conditional"
   );
 }
@@ -337,6 +513,10 @@ export function serializeEventEvpathDetailed(
   if (event.type !== "normal") {
     lines.push(`# category: ${category?.label ?? event.type}`);
   }
+  const eventCond = conditionInputText(event.logic?.when ?? event.availability, project);
+  if (eventCond) lines.push(`# when: ${eventCond}`);
+  const eventConsTexts = consequenceTexts(event.logic?.then ?? event.consequences, project);
+  eventConsTexts.forEach((text) => lines.push(text));
   lines.push("");
 
   const indentOf = (level: number) => EVPATH_INDENT.repeat(level);
@@ -361,15 +541,18 @@ export function serializeEventEvpathDetailed(
   };
 
   const emitDivert = (transition: Transition, level: number) => {
-    const cond = conditionInputText(transition.conditions);
+    const cond = conditionInputText(transition.logic?.when ?? transition.conditions, project);
+    const consTexts = consequenceTexts(transition.logic?.then ?? transition.consequences, project);
     lines.push(
       `${indentOf(level)}-> ${divertTargetRef(transition)}${cond ? ` ${cond}` : ""} #^${transition.id}`,
     );
+    consTexts.forEach((text) => lines.push(`${indentOf(level + 1)}${text}`));
     registry.set(transition.id, {
       kind: "transition",
       from: transition.from,
       to: transition.to,
       condText: cond || undefined,
+      consTexts,
     });
   };
 
@@ -378,14 +561,16 @@ export function serializeEventEvpathDetailed(
     const text = escapeText(beatText(project, beat));
     let consTexts: string[] = [];
     if (beat.kind === "direction") {
-      lines.push(`${indentOf(level)}[${text}] #^${beat.id}`);
+      const cond = conditionInputText(beat.logic?.when ?? beat.displayCondition, project);
+      lines.push(`${indentOf(level)}[${text}]${cond ? ` ${cond}` : ""} #^${beat.id}`);
     } else {
       const found = findBlock(project, beat);
       const characterRef = found?.block.characterRef ?? found?.block.speakerRef;
       const speaker = speakerDisplay(project, characterRef);
       const variant = variantDisplay(project, characterRef, found?.block.characterVariantId);
       const prefix = speaker ? `${speaker}${variant ? ` (${variant})` : ""}: ` : "";
-      lines.push(`${indentOf(level)}${prefix}${text} #^${beat.id}`);
+      const cond = conditionInputText(beat.logic?.when ?? beat.displayCondition, project);
+      lines.push(`${indentOf(level)}${prefix}${text}${cond ? ` ${cond}` : ""} #^${beat.id}`);
       if (beat.directorNote) {
         lines.push(`${indentOf(level + 1)}(${escapeText(beat.directorNote)})`);
       }
@@ -396,10 +581,15 @@ export function serializeEventEvpathDetailed(
       // Consequences only round-trip for speech beats — direction beats don't
       // carry an anchor (`lastSpeechRef`) the parser can reattach `~` lines to,
       // matching the existing note/scene-image restriction.
-      consTexts = consequenceTexts(beat.consequences);
+      consTexts = consequenceTexts(beat.logic?.then ?? beat.consequences, project);
       consTexts.forEach((consText) => lines.push(`${indentOf(level + 1)}${consText}`));
     }
-    registry.set(beat.id, { kind: "beat", container: node.container?.id, consTexts });
+    registry.set(beat.id, {
+      kind: "beat",
+      container: node.container?.id,
+      condText: conditionInputText(beat.logic?.when ?? beat.displayCondition, project) || undefined,
+      consTexts,
+    });
   };
 
   const renderChain = (startId: string, level: number, containerId?: string) => {
@@ -414,8 +604,9 @@ export function serializeEventEvpathDetailed(
       visited.add(currentId);
 
       if (node.kind === "dialogue") {
-        lines.push(`${indentOf(level)}= dialogue: ${escapeText(node.dialogue.title || "Dialogue")} #^${node.dialogue.id}`);
-        registry.set(node.dialogue.id, { kind: "dialogue" });
+        const cond = conditionInputText(node.dialogue.logic?.when ?? node.dialogue.availability, project);
+        lines.push(`${indentOf(level)}= dialogue: ${escapeText(node.dialogue.title || "Dialogue")}${cond ? ` ${cond}` : ""} #^${node.dialogue.id}`);
+        registry.set(node.dialogue.id, { kind: "dialogue", condText: cond || undefined });
         const entryBeat = node.dialogue.entryBeatId ?? node.dialogue.beats?.[0]?.id;
         if (entryBeat) {
           renderChain(beatNodeId(event.id, entryBeat), level + 1, node.dialogue.id);
@@ -427,14 +618,15 @@ export function serializeEventEvpathDetailed(
       if (node.kind === "decision") {
         const decision = (event.decisions ?? []).find((item) => item.id === node.decisionId);
         if (!decision) return;
-        lines.push(`${indentOf(level)}? ${escapeText(decision.name || "Decision")} #^${decision.id}`);
-        registry.set(decision.id, { kind: "decision" });
+        const decisionCond = conditionInputText(decision.logic?.when ?? decision.availability, project);
+        lines.push(`${indentOf(level)}? ${escapeText(decision.name || "Decision")}${decisionCond ? ` ${decisionCond}` : ""} #^${decision.id}`);
+        registry.set(decision.id, { kind: "decision", condText: decisionCond || undefined });
         decision.outcomes.forEach((outcome) => {
-          const cond = conditionInputText(outcome.availability);
+          const cond = conditionInputText(outcome.logic?.when ?? outcome.availability, project);
           lines.push(
             `${indentOf(level)}* [${escapeText(outcome.visibleText || outcome.name)}]${cond ? ` ${cond}` : ""} #^${outcome.id}`,
           );
-          const consTexts = consequenceTexts(outcome.consequences);
+          const consTexts = consequenceTexts(outcome.logic?.then ?? outcome.consequences, project);
           consTexts.forEach((text) => lines.push(`${indentOf(level + 1)}${text}`));
           registry.set(outcome.id, {
             kind: "outcome",
@@ -586,6 +778,7 @@ export function serializeEventEvpath(project: BranchingProject, eventId: string)
 export type EvpathLineKind =
   | "header"
   | "category"
+  | "eventWhen"
   | "dialogue"
   | "trigger"
   | "decision"
@@ -654,12 +847,17 @@ export function parseEvpath(text: string): EvpathDocument {
       parsed.push({ line, indent, kind: "category", text: body.replace(/^#\s*category\s*:\s*/i, "").trim() });
       return;
     }
+    if (/^#\s*when\s*:/i.test(body)) {
+      parsed.push({ line, indent, kind: "eventWhen", condText: body.replace(/^#\s*when\s*:\s*/i, "").trim() });
+      return;
+    }
     if (/^#img\s*:/i.test(body)) {
       parsed.push({ line, indent, kind: "img", text: body.replace(/^#img\s*:\s*/i, "").trim() });
       return;
     }
     if (/^=\s*dialogue\s*:/i.test(body)) {
-      parsed.push({ line, indent, kind: "dialogue", anchor, text: unescapeText(body.replace(/^=\s*dialogue\s*:\s*/i, "").trim()) });
+      const dialogue = extractConditionText(body.replace(/^=\s*dialogue\s*:\s*/i, "").trim());
+      parsed.push({ line, indent, kind: "dialogue", anchor, text: unescapeText(dialogue.body.trim()), condText: dialogue.condText });
       return;
     }
     if (/^=\s*trigger\s*:/i.test(body)) {
@@ -667,7 +865,8 @@ export function parseEvpath(text: string): EvpathDocument {
       return;
     }
     if (body.startsWith("? ")) {
-      parsed.push({ line, indent, kind: "decision", anchor, text: unescapeText(body.slice(2).trim()) });
+      const decision = extractConditionText(body.slice(2).trim());
+      parsed.push({ line, indent, kind: "decision", anchor, text: unescapeText(decision.body.trim()), condText: decision.condText });
       return;
     }
     if (body.startsWith("* ")) {
@@ -711,17 +910,21 @@ export function parseEvpath(text: string): EvpathDocument {
       parsed.push({ line, indent, kind: "note", text: unescapeText(body.slice(1, -1)) });
       return;
     }
-    if (/^\[.*\]$/s.test(body)) {
-      parsed.push({ line, indent, kind: "direction", anchor, text: unescapeText(body.slice(1, -1)) });
+    const directionMatch = body.match(/^\[(.*)\]\s*(.*)$/s);
+    if (directionMatch) {
+      const trailing = extractConditionText(directionMatch[2] ? `x ${directionMatch[2]}` : "x");
+      parsed.push({ line, indent, kind: "direction", anchor, text: unescapeText(directionMatch[1]), condText: trailing.condText });
       return;
     }
-    const unknownSpeakerMatch = body.match(/^\?\?\?\s*:\s(.*)$/s);
+    const speechCondition = extractConditionText(body);
+    const speechBody = speechCondition.body.trim();
+    const unknownSpeakerMatch = speechBody.match(/^\?\?\?\s*:\s(.*)$/s);
     if (unknownSpeakerMatch) {
-      parsed.push({ line, indent, kind: "speech", anchor, speaker: "???", text: unescapeText(unknownSpeakerMatch[1]) });
+      parsed.push({ line, indent, kind: "speech", anchor, speaker: "???", text: unescapeText(unknownSpeakerMatch[1]), condText: speechCondition.condText });
       return;
     }
-    const speakerMatch = body.match(/^([^:[\](){}~#*?=\\][^:]*?)(?:\s*\(([^)]+)\))?\s*:\s(.*)$/s);
-    if (speakerMatch && !body.startsWith("\\")) {
+    const speakerMatch = speechBody.match(/^([^:[\](){}~#*?=\\][^:]*?)(?:\s*\(([^)]+)\))?\s*:\s(.*)$/s);
+    if (speakerMatch && !speechBody.startsWith("\\")) {
       parsed.push({
         line,
         indent,
@@ -730,10 +933,11 @@ export function parseEvpath(text: string): EvpathDocument {
         speaker: speakerMatch[1].trim(),
         variant: speakerMatch[2]?.trim(),
         text: unescapeText(speakerMatch[3]),
+        condText: speechCondition.condText,
       });
       return;
     }
-    parsed.push({ line, indent, kind: "speech", anchor, text: unescapeText(body) });
+    parsed.push({ line, indent, kind: "speech", anchor, text: unescapeText(speechBody), condText: speechCondition.condText });
   });
 
   return { lines: parsed, errors };
@@ -840,6 +1044,12 @@ export function applyEvpathToEvent(
   const consumedNotes = new Map<string, { note?: string; img?: string }>();
   const parsedOutcomeCons = new Map<string, string[]>();
   const parsedBeatCons = new Map<string, string[]>();
+  const parsedDivertCons = new Map<EvpathParsedLine, string[]>();
+  const parsedEventCons: string[] = [];
+  const serializedEventCons = consequenceTexts(event.logic?.then ?? event.consequences, project);
+  let narrativeStarted = false;
+  let eventWhenSeen = false;
+  let pendingDivert: EvpathParsedLine | undefined;
 
   const currentScope = () => scopeStack[scopeStack.length - 1];
 
@@ -903,11 +1113,13 @@ export function applyEvpathToEvent(
     if (previousLineNumber !== undefined && parsedLine.line > previousLineNumber + 1) {
       chainTip.clear();
       lastSpeechRef = undefined;
+      pendingDivert = undefined;
     }
     previousLineNumber = parsedLine.line;
     if (kind !== "note" && kind !== "img" && kind !== "consequence") {
       popScopesTo(indent);
     }
+    if (kind !== "consequence" && kind !== "divert") pendingDivert = undefined;
     if (anchor) {
       if (parsedAnchors.has(anchor)) {
         errors.push({ line: parsedLine.line, message: `Ancla duplicada #^${anchor}.` });
@@ -937,6 +1149,24 @@ export function applyEvpathToEvent(
       continue;
     }
 
+    if (kind === "eventWhen") {
+      eventWhenSeen = true;
+      const conditions = parseConditionText(parsedLine.condText ?? "");
+      if (conditions === null) {
+        warnings.push(`Línea ${parsedLine.line}: condición del evento no reconocida; se conserva.`);
+      } else {
+        const currentEvent = findEvent(current, eventId)!;
+        const currentText = conditionInputText(currentEvent.logic?.when ?? currentEvent.availability, current);
+        if (currentText !== (parsedLine.condText ?? "")) {
+          run(updateEvent(current, eventId, {
+            availability: conditions,
+            logic: { ...currentEvent.logic, when: conditions },
+          }), "event condition");
+        }
+      }
+      continue;
+    }
+
     if (kind === "trigger") {
       const startId = anchor && registry.get(anchor)?.kind === "trigger" ? anchor : undefined;
       if (!startId) {
@@ -950,6 +1180,7 @@ export function applyEvpathToEvent(
     }
 
     if (kind === "dialogue") {
+      narrativeStarted = true;
       let dialogueId = anchor && registry.get(anchor)?.kind === "dialogue" ? anchor : undefined;
       let isNew = false;
       if (!dialogueId) {
@@ -961,8 +1192,19 @@ export function applyEvpathToEvent(
       }
       if (dialogueId) {
         const dialogue = findEvent(current, eventId)?.dialogues?.find((item) => item.id === dialogueId);
-        if (dialogue && parsedLine.text && dialogue.title !== parsedLine.text) {
-          run(updateDialogue(current, eventId, dialogueId, { title: parsedLine.text }), "dialogue");
+        if (dialogue) {
+          const updates: Partial<DialogueNode> = {};
+          if (parsedLine.text && dialogue.title !== parsedLine.text) updates.title = parsedLine.text;
+          const previous = anchor ? registry.get(anchor) : undefined;
+          if ((previous?.condText ?? "") !== (parsedLine.condText ?? "")) {
+            const conditions = parseConditionText(parsedLine.condText ?? "");
+            if (conditions === null) warnings.push(`Línea ${parsedLine.line}: condición del diálogo no reconocida; se conserva.`);
+            else {
+              updates.availability = conditions;
+              updates.logic = { ...dialogue.logic, when: conditions };
+            }
+          }
+          if (Object.keys(updates).length) run(updateDialogue(current, eventId, dialogueId, updates), "dialogue");
         }
         const nodeRef = dialogueNodeId(eventId, dialogueId);
         linkFromTip(indent, nodeRef, dialogueId);
@@ -977,6 +1219,7 @@ export function applyEvpathToEvent(
     }
 
     if (kind === "decision") {
+      narrativeStarted = true;
       let decisionId = anchor && registry.get(anchor)?.kind === "decision" ? anchor : undefined;
       let isNew = false;
       if (!decisionId) {
@@ -986,8 +1229,19 @@ export function applyEvpathToEvent(
       }
       if (!decisionId) continue;
       const decision = findEvent(current, eventId)?.decisions?.find((item) => item.id === decisionId);
-      if (decision && parsedLine.text && decision.name !== parsedLine.text) {
-        run(updateDecision(current, eventId, decisionId, { name: parsedLine.text }), "decision");
+      if (decision) {
+        const updates: Partial<typeof decision> = {};
+        if (parsedLine.text && decision.name !== parsedLine.text) updates.name = parsedLine.text;
+        const previous = anchor ? registry.get(anchor) : undefined;
+        if ((previous?.condText ?? "") !== (parsedLine.condText ?? "")) {
+          const conditions = parseConditionText(parsedLine.condText ?? "");
+          if (conditions === null) warnings.push(`Línea ${parsedLine.line}: condición de la decisión no reconocida; se conserva.`);
+          else {
+            updates.availability = conditions;
+            updates.logic = { ...decision.logic, when: conditions };
+          }
+        }
+        if (Object.keys(updates).length) run(updateDecision(current, eventId, decisionId, updates), "decision");
       }
       const nodeRef = decisionNodeId(eventId, decisionId);
       linkFromTip(indent, nodeRef, decisionId);
@@ -999,6 +1253,7 @@ export function applyEvpathToEvent(
     }
 
     if (kind === "option") {
+      narrativeStarted = true;
       if (!pendingDecision || pendingDecision.indent !== indent) {
         errors.push({ line: parsedLine.line, message: "Una opción `*` debe ir después de una decisión `?` al mismo nivel." });
         continue;
@@ -1045,6 +1300,14 @@ export function applyEvpathToEvent(
     }
 
     if (kind === "consequence") {
+      if (!narrativeStarted && indent === 0) {
+        parsedEventCons.push(parsedLine.text ?? "");
+        continue;
+      }
+      if (pendingDivert && indent > pendingDivert.indent) {
+        parsedDivertCons.get(pendingDivert)?.push(parsedLine.text ?? "");
+        continue;
+      }
       const scope = currentScope();
       if (scope.kind === "option") {
         parsedOutcomeCons.get(scope.outcomeId)?.push(parsedLine.text ?? "");
@@ -1069,6 +1332,7 @@ export function applyEvpathToEvent(
     }
 
     if (kind === "divert") {
+      narrativeStarted = true;
       const scope = currentScope();
       let from: string | undefined = chainTip.get(indent);
       if (!from && scope.kind === "option" && scopeBaseIndent.get(scope) === indent - 1) {
@@ -1083,11 +1347,14 @@ export function applyEvpathToEvent(
         continue;
       }
       explicitDiverts.push({ parsedLine, from });
+      parsedDivertCons.set(parsedLine, []);
+      pendingDivert = parsedLine;
       chainTip.set(indent, undefined);
       continue;
     }
 
     // speech / direction beats
+    narrativeStarted = true;
     const dialogueId = containerDialogueId();
     let beatId = anchor && registry.get(anchor)?.kind === "beat" ? anchor : undefined;
     let isNew = false;
@@ -1123,6 +1390,25 @@ export function applyEvpathToEvent(
       : currentEvent.dialogueBeats
     )?.find((item) => item.id === beatId);
     if (!beat) continue;
+
+    const parsedBeatCondition = parsedLine.condText ?? "";
+    const previousBeatCondition = anchor ? registry.get(anchor)?.condText ?? "" : "";
+    if (parsedBeatCondition !== previousBeatCondition) {
+      const conditions = parseConditionText(parsedBeatCondition);
+      if (conditions === null) {
+        warnings.push(`Línea ${parsedLine.line}: condición del beat no reconocida; se conserva.`);
+      } else if (containedIn) {
+        run(updateDialogueBeat(current, eventId, containedIn, beatId, {
+          displayCondition: conditions,
+          logic: { ...beat.logic, when: conditions },
+        }), "beat condition");
+      } else {
+        run(updateEventDialogueBeat(current, eventId, beatId, {
+          displayCondition: conditions,
+          logic: { ...beat.logic, when: conditions },
+        }), "beat condition");
+      }
+    }
 
     const found = findBlock(current, beat);
     if (found) {
@@ -1171,9 +1457,31 @@ export function applyEvpathToEvent(
     return { project: original, errors, warnings, changed: false };
   }
 
+  if (!eventWhenSeen && (event.logic?.when ?? event.availability)) {
+    const currentEvent = findEvent(current, eventId)!;
+    run(updateEvent(current, eventId, {
+      availability: undefined,
+      logic: currentEvent.logic ? { ...currentEvent.logic, when: undefined } : undefined,
+    }), "event condition");
+  }
+
   // ------------------------------------------------------------------
   // Pass 2 — director notes, scene images, and outcome consequences.
   // ------------------------------------------------------------------
+  if (serializedEventCons.join("\n") !== parsedEventCons.join("\n")) {
+    const parsedConsequences = parsedEventCons.map(parseConsequenceText);
+    if (parsedConsequences.some((consequence) => !consequence)) {
+      warnings.push("Consecuencia del evento no reconocida; se conserva la lógica existente.");
+    } else {
+      const currentEvent = findEvent(current, eventId)!;
+      const consequences = parsedConsequences as Consequence[];
+      run(updateEvent(current, eventId, {
+        consequences,
+        logic: { ...currentEvent.logic, then: consequences },
+      }), "event consequences");
+    }
+  }
+
   const applyBeatExtras = (beatId: string) => {
     const currentEvent = findEvent(current, eventId)!;
     const containedIn = currentEvent.dialogues?.find((item) => item.beats?.some((beat) => beat.id === beatId))?.id;
@@ -1392,13 +1700,40 @@ export function applyEvpathToEvent(
       if (existing.from !== from) updates.from = from;
       const previous = registry.get(existing.id);
       const parsedCond = parsedLine.condText ?? "";
-      if ((previous?.condText ?? "") !== parsedCond) {
+      let nextConditions = existing.logic?.when ?? existing.conditions;
+      const conditionChanged = (previous?.condText ?? "") !== parsedCond;
+      if (conditionChanged) {
         const conditions = parseConditionText(parsedCond);
         if (conditions === null) {
           warnings.push(`Línea ${parsedLine.line}: condición del divert no reconocida; se conserva.`);
         } else {
           updates.conditions = conditions;
+          nextConditions = conditions;
         }
+      }
+      const consTexts = parsedDivertCons.get(parsedLine) ?? [];
+      const previousConsTexts = previous?.consTexts ?? [];
+      let nextConsequences = existing.logic?.then ?? existing.consequences;
+      const consequencesChanged = previousConsTexts.join("\n") !== consTexts.join("\n");
+      if (consequencesChanged) {
+        const parsedConsequences = consTexts.map(parseConsequenceText);
+        if (parsedConsequences.some((consequence) => !consequence)) {
+          warnings.push(`Línea ${parsedLine.line}: consecuencia del divert no reconocida; se conserva.`);
+        } else {
+          nextConsequences = parsedConsequences as Consequence[];
+          updates.consequences = nextConsequences;
+        }
+      }
+      if (conditionChanged || consequencesChanged) {
+        const carriesLogic = Boolean(nextConditions) || Boolean(nextConsequences?.length) || existing.mode === "fallback";
+        updates.role = carriesLogic ? "route" : "flow";
+        updates.logic = carriesLogic
+          ? {
+              ...existing.logic,
+              when: existing.mode === "fallback" ? undefined : nextConditions,
+              then: nextConsequences,
+            }
+          : undefined;
       }
       if (Object.keys(updates).length) {
         run(updateTransition(current, existing.id, updates), "divert");
@@ -1412,14 +1747,27 @@ export function applyEvpathToEvent(
     );
     if (created) {
       keptTransitionIds.add(created.id);
+      const updates: Partial<Transition> = {};
       if (parsedLine.condText) {
         const conditions = parseConditionText(parsedLine.condText);
         if (conditions === null) {
           warnings.push(`Línea ${parsedLine.line}: condición del divert no reconocida; se ignora.`);
         } else if (conditions) {
-          run(updateTransition(current, created.id, { conditions }), "divert");
+          updates.conditions = conditions;
         }
       }
+      const consTexts = parsedDivertCons.get(parsedLine) ?? [];
+      const consequences = consTexts.map(parseConsequenceText);
+      if (consequences.some((consequence) => !consequence)) {
+        warnings.push(`Línea ${parsedLine.line}: consecuencia del divert no reconocida; se ignora.`);
+      } else if (consequences.length) {
+        updates.consequences = consequences as Consequence[];
+      }
+      if (updates.conditions || updates.consequences?.length) {
+        updates.role = "route";
+        updates.logic = { when: updates.conditions, then: updates.consequences };
+      }
+      if (Object.keys(updates).length) run(updateTransition(current, created.id, updates), "divert");
     }
   });
 

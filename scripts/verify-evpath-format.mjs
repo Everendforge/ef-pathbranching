@@ -147,8 +147,8 @@ assert.match(text, /^\[La cámara tiembla\] #\^beat:direction-1$/m);
 assert.match(text, /^= dialogue: Interrogatorio #\^dialogue-1$/m);
 assert.match(text, /^    \?\?\?: No vas a salir de aquí\. #\^beat:speech-2$/m);
 assert.match(text, /^    \? Final #\^decision-1$/m);
-assert.match(text, /^    \* \[Entregar la reliquia\] \{ trust >= 2 \} #\^outcome-1$/m);
-assert.match(text, /^        ~ courage = 1$/m);
+assert.match(text, /^    \* \[Entregar la reliquia\] \{ \$"trust"<trust> >= 2 \} #\^outcome-1$/m);
+assert.match(text, /^        ~ \$"courage"<courage> = 1$/m);
 assert.match(text, /^        -> "Vault Sealed" #\^t5$/m);
 assert.match(text, /^    \* \[Atacar\] #\^outcome-2$/m);
 
@@ -232,12 +232,17 @@ assert.equal(decision.outcomes.length, 1);
 assert.equal(decision.outcomes[0].id, "outcome-1");
 
 // --- Editing a simple availability condition ------------------------------
-const condEdit = applyEvpathToEvent(project, "intro", text.replace("{ trust >= 2 }", "{ trust >= 3 }"));
+const condEdit = applyEvpathToEvent(project, "intro", text.replace('{ $"trust"<trust> >= 2 }', '{ $"trust"<trust> >= 3 }'));
 assert.equal(condEdit.errors.length, 0);
 const condOutcome = condEdit.project.events
   .find((event) => event.id === "intro")
   .decisions[0].outcomes.find((outcome) => outcome.id === "outcome-1");
-assert.deepEqual(condOutcome.availability, { type: "variable", name: "trust", operator: ">=", value: 3 });
+assert.deepEqual(condOutcome.availability, {
+  type: "value",
+  subject: { kind: "variable", variableId: "trust" },
+  operator: ">=",
+  value: 3,
+});
 
 // --- Director note removal ------------------------------------------------
 const noteRemoved = applyEvpathToEvent(project, "intro", text.replace(/^    \(con desconfianza\)\n?/m, ""));
@@ -424,17 +429,22 @@ const beatConsProject = beatConsequenceProject();
 const beatConsText = serializeEventEvpath(beatConsProject, "e1");
 
 assert.match(beatConsText, /^Encuentras una espada\. #\^beat:a$/m);
-assert.match(beatConsText, /^    ~ grant sword$/m);
+assert.match(beatConsText, /^    ~ grant @"sword"<sword>$/m);
 
 const beatConsIdempotent = applyEvpathToEvent(beatConsProject, "e1", beatConsText);
 assert.equal(beatConsIdempotent.errors.length, 0, JSON.stringify(beatConsIdempotent.errors));
 assert.equal(beatConsIdempotent.changed, false, `expected no changes, warnings: ${beatConsIdempotent.warnings.join(" | ")}`);
 assert.equal(serializeEventEvpath(beatConsIdempotent.project, "e1"), beatConsText);
 
-const beatConsEdited = applyEvpathToEvent(beatConsProject, "e1", beatConsText.replace("~ grant sword", "~ grant shield"));
+const beatConsEdited = applyEvpathToEvent(beatConsProject, "e1", beatConsText.replace('@"sword"<sword>', '@"shield"<shield>'));
 assert.equal(beatConsEdited.errors.length, 0);
 const editedConsBeat = beatConsEdited.project.events.find((event) => event.id === "e1").dialogueBeats[0];
-assert.deepEqual(editedConsBeat.consequences, [{ type: "addGrantable", entityId: "shield" }]);
+assert.deepEqual(editedConsBeat.consequences, [{
+  type: "state",
+  subject: { kind: "entity", entityId: "shield" },
+  stateId: "owned",
+  operation: "grant",
+}]);
 
 // --- Opaque (guarded) beat consequence is preserved, not reparsed ----------
 function beatOpaqueConsequenceProject() {

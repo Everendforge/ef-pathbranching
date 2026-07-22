@@ -7,6 +7,10 @@ import type {
   EventNode,
   LogicVariable,
   LogicVariableGroup,
+  LogicPropertyOverride,
+  LogicEffect,
+  LogicPredicate,
+  LogicTypeOverride,
   ScriptDocument,
   SpeechBeatCounterPreference,
   Transition,
@@ -14,6 +18,40 @@ import type {
 import { normalizeBranchMembership } from "./storyOutlineModel.js";
 import { DEFAULT_INTEGRATION_CONFIG, normalizeIntegrationConfig } from "./integrationConfig.js";
 import { migrateProjectTypesToProperties } from "./explorerSchema.js";
+import { inferredTransitionRole, migrateLogicMoment, walkConditions } from "./logic.js";
+
+function normalizeLogicCapabilities(project: BranchingProject): {
+  logicPropertyOverrides: LogicPropertyOverride[];
+  logicTypeOverrides: LogicTypeOverride[];
+} {
+  const types = new Map<string, LogicTypeOverride>();
+  (project.logicTypeOverrides ?? []).forEach((override) => {
+    const typeId = override.typeId.startsWith("type:") ? override.typeId.slice("type:".length) : override.typeId;
+    types.set(`${override.source}:${typeId}`, {
+      ...override,
+      typeId,
+      runtimeRoles: override.runtimeRoles ?? (override.grantable ? ["owned"] : undefined),
+    });
+  });
+  const properties = (project.logicPropertyOverrides ?? []).map((override) => {
+    if (!override.propertyId.startsWith("type:")) return override;
+    const typeId = override.propertyId.slice("type:".length);
+    if (override.grantable || override.location || override.runtimeRoles?.length) {
+      const key = `${override.source}:${typeId}`;
+      const current = types.get(key);
+      types.set(key, {
+        typeId,
+        source: override.source,
+        grantable: current?.grantable ?? override.grantable,
+        location: current?.location ?? override.location,
+        runtimeRoles: current?.runtimeRoles ?? override.runtimeRoles ?? (override.grantable ? ["owned"] : undefined),
+      });
+    }
+    const { grantable: _grantable, location: _location, runtimeRoles: _runtimeRoles, ...property } = override;
+    return property;
+  });
+  return { logicPropertyOverrides: properties, logicTypeOverrides: Array.from(types.values()) };
+}
 
 export function projectFileName(path: string | undefined) {
   if (!path) {
@@ -175,15 +213,15 @@ function normalizeEventCategories(
       category.id === "normal" && category.label === "Normal"
         ? "Event"
         : category.label;
+    const { terminal, ...categoryWithoutTerminal } = category;
     categories.set(category.id, {
-      ...category,
+      ...categoryWithoutTerminal,
       label: migratedLabel || labelFromCategoryId(category.id),
-      terminal:
-        category.id === "final"
-          ? true
-          : category.id === "normal"
-            ? false
-            : category.terminal,
+      ...(category.id === "final"
+        ? { terminal: true }
+        : category.id !== "normal" && terminal !== undefined
+          ? { terminal }
+          : {}),
     });
   });
   (project.events ?? []).forEach((event) => {
@@ -213,7 +251,10 @@ function normalizeDataClasses(
   return Array.from(classes.values());
 }
 
-function normalizeTransitionGroups(transitions: Transition[] | undefined): Transition[] {
+function normalizeTransitionGroups(
+  transitions: Transition[] | undefined,
+  variables: LogicVariable[] = [],
+): Transition[] {
   const next = (transitions ?? []).map((transition, index) => ({ transition, index }));
   const groups = new Map<string, Array<{ transition: Transition; index: number }>>();
   next.forEach((item) => groups.set(item.transition.from, [...(groups.get(item.transition.from) ?? []), item]));
@@ -227,18 +268,29 @@ function normalizeTransitionGroups(transitions: Transition[] | undefined): Trans
       })
       .forEach(({ transition }, order) => {
         const mode = transition.mode ?? "conditional";
+        const logic = migrateLogicMoment(
+          transition.id,
+          transition.conditions,
+          transition.consequences,
+          transition.logic,
+          variables,
+        );
+        const role = inferredTransitionRole({ ...transition, logic }, items.length);
         normalized.set(transition.id, {
           ...transition,
           order,
           mode,
-          conditions: mode === "fallback" ? undefined : transition.conditions,
+          role,
+          logic: role === "route" ? logic : undefined,
+          conditions: role === "route" && mode !== "fallback" ? logic?.when : undefined,
+          consequences: role === "route" ? logic?.then : undefined,
         });
       });
   });
   return next.map(({ transition }) => normalized.get(transition.id) ?? transition);
 }
 
-function migrateBoundaryBindingsToTransitions(event: EventNode): Transition[] {
+function migrateBoundaryBindingsToTransitions(event: EventNode, variables: LogicVariable[] = []): Transition[] {
   const transitions = [...(event.transitions ?? [])];
 
   (event.boundaryBindings ?? []).forEach((binding) => {
@@ -257,7 +309,7 @@ function migrateBoundaryBindingsToTransitions(event: EventNode): Transition[] {
     });
   });
 
-  return normalizeTransitionGroups(transitions);
+  return normalizeTransitionGroups(transitions, variables);
 }
 
 function migrateDialogue(
@@ -314,9 +366,65 @@ function normalizeBeatSceneImage<T extends { sceneImage?: unknown; sceneImages?:
   } as T;
 }
 
+function normalizedLogic(
+  ownerId: string,
+  availability: Parameters<typeof migrateLogicMoment>[1],
+  consequences: Parameters<typeof migrateLogicMoment>[2],
+  existing: Parameters<typeof migrateLogicMoment>[3],
+  variables: LogicVariable[],
+) {
+  return migrateLogicMoment(ownerId, availability, consequences, existing, variables);
+}
+
+function addCompatibilityLogicCapabilities(project: BranchingProject): BranchingProject {
+  const overrides = new Map(
+    (project.logicPropertyOverrides ?? []).map((override) => [`${override.source}:${override.propertyId}`, override]),
+  );
+  const sourceForEntity = (entityId: string): "canon" | "local" | undefined =>
+    project.canonRefs.some((entity) => entity.id === entityId)
+      ? "canon"
+      : project.localExplorerEntities?.some((entity) => entity.id === entityId)
+        ? "local"
+        : undefined;
+  const enable = (predicateOrEffect: LogicPredicate | LogicEffect, capability: "conditionReadable" | "actionWritable") => {
+    if (predicateOrEffect.type !== "property" || predicateOrEffect.subject.kind !== "entity") return;
+    const source = sourceForEntity(predicateOrEffect.subject.entityId);
+    if (!source) return;
+    const key = `${source}:${predicateOrEffect.propertyId}`;
+    const current = overrides.get(key) ?? { propertyId: predicateOrEffect.propertyId, source };
+    overrides.set(key, { ...current, [capability]: true });
+  };
+  const visited = new Set<object>();
+  const visit = (value: unknown) => {
+    if (!value || typeof value !== "object" || visited.has(value)) return;
+    visited.add(value);
+    if (Array.isArray(value)) {
+      value.forEach(visit);
+      return;
+    }
+    const record = value as Record<string, unknown>;
+    const logic = record.logic && typeof record.logic === "object" ? record.logic as Record<string, unknown> : undefined;
+    if (logic?.when) {
+      walkConditions(logic.when as Parameters<typeof walkConditions>[0], (condition) => {
+        if ("subject" in condition) enable(condition as LogicPredicate, "conditionReadable");
+      });
+    }
+    if (Array.isArray(logic?.then)) {
+      logic.then.forEach((effect) => enable(effect as LogicEffect, "actionWritable"));
+    }
+    Object.values(record).forEach(visit);
+  };
+  visit(project.sequences);
+  visit(project.branches);
+  visit(project.events);
+  visit(project.projectDataObjects);
+  return { ...project, logicPropertyOverrides: Array.from(overrides.values()) };
+}
+
 export function normalizeProject(project: BranchingProject): BranchingProject {
   // Migrate local types to properties if they exist
   project = migrateProjectTypesToProperties(project);
+  const logicCapabilities = normalizeLogicCapabilities(project);
 
   const entrySequenceId = project.entrySequenceId ?? project.sequences[0]?.id;
   const activeSequenceId =
@@ -359,12 +467,19 @@ export function normalizeProject(project: BranchingProject): BranchingProject {
   const events = (project.events ?? []).map((event) => {
     const dialogues = (event.dialogues ?? []).map((dialogue) => {
       const migrated = migrateDialogue(event.id, dialogue, scriptDocuments);
-      const beats = (migrated.beats ?? []).map(normalizeBeatSceneImage);
+      const beats = (migrated.beats ?? []).map((sourceBeat) => {
+        const beat = normalizeBeatSceneImage(sourceBeat);
+        const logic = normalizedLogic(beat.id, beat.displayCondition, beat.consequences, beat.logic, logicVariables);
+        return { ...beat, logic, displayCondition: logic?.when, consequences: logic?.then };
+      });
       const decisionMembers = (event.decisions ?? [])
         .filter((decision) => decision.dialogueId === migrated.id)
         .map((decision) => ({ kind: "decision" as const, id: decision.id }));
       return {
         ...migrated,
+        logic: normalizedLogic(migrated.id, migrated.availability, migrated.consequences, migrated.logic, logicVariables),
+        availability: normalizedLogic(migrated.id, migrated.availability, migrated.consequences, migrated.logic, logicVariables)?.when,
+        consequences: normalizedLogic(migrated.id, migrated.availability, migrated.consequences, migrated.logic, logicVariables)?.then,
         beats,
         members: migrated.members ?? [
           ...beats.map((beat) => ({ kind: "beat" as const, id: beat.id })),
@@ -372,7 +487,7 @@ export function normalizeProject(project: BranchingProject): BranchingProject {
         ],
       };
     });
-    const transitions = migrateBoundaryBindingsToTransitions(event);
+    const transitions = migrateBoundaryBindingsToTransitions(event, logicVariables);
     const dialogueStarts = (event.dialogueStarts ?? []).flatMap((start) => {
       // Automatic starts are already represented by an Event's entry route.
       if (start.mode === "automatic") return [];
@@ -391,34 +506,73 @@ export function normalizeProject(project: BranchingProject): BranchingProject {
         });
       }
       const { dialogueId: _dialogueId, mode: _mode, ...trigger } = start;
-      return [trigger];
+      const logic = normalizedLogic(start.id, start.availability, undefined, start.logic, logicVariables);
+      return [{ ...trigger, logic, availability: logic?.when }];
     });
     return {
       ...event,
+      logic: normalizedLogic(event.id, event.availability, event.consequences, event.logic, logicVariables),
+      availability: normalizedLogic(event.id, event.availability, event.consequences, event.logic, logicVariables)?.when,
+      consequences: normalizedLogic(event.id, event.availability, event.consequences, event.logic, logicVariables)?.then,
       childEventIds: event.childEventIds ?? [],
       decisions: (event.decisions ?? []).map((decision) => ({
         ...decision,
+        logic: normalizedLogic(decision.id, decision.availability, undefined, decision.logic, logicVariables),
+        availability: normalizedLogic(decision.id, decision.availability, undefined, decision.logic, logicVariables)?.when,
         outcomes: (decision.outcomes ?? []).map((outcome) => ({
           ...outcome,
           visibleText: outcome.visibleText ?? outcome.name,
-          availability: outcome.availability ?? outcome.conditions,
+          logic: normalizedLogic(
+            outcome.id,
+            outcome.availability ?? outcome.conditions,
+            outcome.consequences,
+            outcome.logic,
+            logicVariables,
+          ),
+          availability: normalizedLogic(
+            outcome.id,
+            outcome.availability ?? outcome.conditions,
+            outcome.consequences,
+            outcome.logic,
+            logicVariables,
+          )?.when,
+          consequences: normalizedLogic(
+            outcome.id,
+            outcome.availability ?? outcome.conditions,
+            outcome.consequences,
+            outcome.logic,
+            logicVariables,
+          )?.then,
           unavailableBehavior: outcome.unavailableBehavior ?? "locked",
         })),
       })),
       dialogues,
-      dialogueBeats: event.dialogueBeats?.map(normalizeBeatSceneImage),
+      dialogueBeats: event.dialogueBeats?.map((sourceBeat) => {
+        const beat = normalizeBeatSceneImage(sourceBeat);
+        const logic = normalizedLogic(beat.id, beat.displayCondition, beat.consequences, beat.logic, logicVariables);
+        return { ...beat, logic, displayCondition: logic?.when, consequences: logic?.then };
+      }),
       presentEntityRefs: event.presentEntityRefs ?? (event.canonRefs ? [...event.canonRefs] : undefined),
       dialogueStarts,
       boundaryBindings: event.boundaryBindings ?? [],
-      transitions,
+      transitions: normalizeTransitionGroups(transitions, logicVariables),
     };
   });
 
-  return normalizeBranchMembership({
+  return addCompatibilityLogicCapabilities(normalizeBranchMembership({
     ...project,
     specVersion: project.specVersion ?? "0.1",
     dataClasses: normalizeDataClasses(project),
-    projectDataObjects: project.projectDataObjects ?? [],
+    projectDataObjects: (project.projectDataObjects ?? []).map((dataObject) => {
+      const logic = normalizedLogic(
+        dataObject.id,
+        dataObject.availability,
+        dataObject.consequences,
+        dataObject.logic,
+        logicVariables,
+      );
+      return { ...dataObject, logic, availability: logic?.when, consequences: logic?.then };
+    }),
     canonEditSuggestions: project.canonEditSuggestions ?? [],
     canonWorkingCopies: project.canonWorkingCopies ?? [],
     canonChangeSets: project.canonChangeSets ?? [],
@@ -433,6 +587,8 @@ export function normalizeProject(project: BranchingProject): BranchingProject {
       : undefined,
     logicVariableGroups,
     logicVariables,
+    logicPropertyOverrides: logicCapabilities.logicPropertyOverrides,
+    logicTypeOverrides: logicCapabilities.logicTypeOverrides,
     projectionRules: project.projectionRules ?? [],
     graphModules: project.graphModules ?? [],
     panels: {
@@ -449,13 +605,19 @@ export function normalizeProject(project: BranchingProject): BranchingProject {
     entrySequenceId,
     eventCategories: normalizeEventCategories(project),
     canonRefs: project.canonRefs ?? [],
-    sequences: project.sequences ?? [],
-    branches: project.branches ?? [],
+    sequences: (project.sequences ?? []).map((sequence) => {
+      const logic = normalizedLogic(sequence.id, sequence.availability, sequence.consequences, sequence.logic, logicVariables);
+      return { ...sequence, logic, availability: logic?.when, consequences: logic?.then };
+    }),
+    branches: (project.branches ?? []).map((branch) => {
+      const logic = normalizedLogic(branch.id, branch.availability, branch.consequences, branch.logic, logicVariables);
+      return { ...branch, logic, availability: logic?.when, consequences: logic?.then };
+    }),
     events,
     scripts: project.scripts ?? [],
     externalFunctions: project.externalFunctions ?? [],
     variables: Object.fromEntries(logicVariables.map((variable) => [variable.name, variable.value])),
-  });
+  }));
 }
 
 function normalizeLogicGroups(groups: LogicVariableGroup[] | undefined): LogicVariableGroup[] {

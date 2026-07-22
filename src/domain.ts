@@ -156,6 +156,123 @@ export type LogicVariable = {
   description?: string;
 };
 
+export type EntityRuntimeStateRole = "owned" | "unlocked" | "discovered" | "present";
+
+export type LogicSubject =
+  | { kind: "entity"; entityId: string; source?: "canon" | "local" }
+  | { kind: "dataObject"; objectId: string }
+  | { kind: "variable"; variableId: string }
+  | {
+      kind: "progress";
+      targetType: "sequence" | "branch" | "event" | "decision" | "outcome";
+      targetId: string;
+    }
+  | { kind: "external"; functionId: string };
+
+export type LogicComparisonOperator =
+  | "=="
+  | "!="
+  | ">"
+  | ">="
+  | "<"
+  | "<="
+  | "contains"
+  | "notContains"
+  | "exists"
+  | "has"
+  | "missing";
+
+export type LogicPredicate =
+  | {
+      type: "state";
+      subject: LogicSubject;
+      stateId: EntityRuntimeStateRole | "exists" | string;
+      operator: "has" | "missing" | "==" | "!=";
+      value?: unknown;
+    }
+  | {
+      type: "property";
+      subject: LogicSubject;
+      propertyId: string;
+      operator: LogicComparisonOperator;
+      value?: unknown;
+    }
+  | {
+      type: "value";
+      subject: LogicSubject;
+      operator: LogicComparisonOperator;
+      value?: unknown;
+    }
+  | {
+      type: "visited";
+      subject: Extract<LogicSubject, { kind: "progress" }>;
+      operator: "has" | "missing";
+    }
+  | {
+      type: "external";
+      subject: Extract<LogicSubject, { kind: "external" }>;
+      operator: "has" | "missing";
+      arguments?: unknown[];
+    };
+
+export type LogicEffectOperation =
+  | "set"
+  | "toggle"
+  | "add"
+  | "subtract"
+  | "append"
+  | "remove"
+  | "clear"
+  | "grant"
+  | "ungrant"
+  | "unlock"
+  | "lock"
+  | "discover"
+  | "hide"
+  | "enter"
+  | "leave"
+  | "call";
+
+export type LogicEffect =
+  | {
+      type: "state";
+      subject: LogicSubject;
+      stateId: EntityRuntimeStateRole | string;
+      operation: LogicEffectOperation;
+      value?: unknown;
+    }
+  | {
+      type: "property";
+      subject: LogicSubject;
+      propertyId: string;
+      operation: LogicEffectOperation;
+      value?: unknown;
+    }
+  | {
+      type: "value";
+      subject: LogicSubject;
+      operation: LogicEffectOperation;
+      value?: unknown;
+    }
+  | {
+      type: "external";
+      subject: Extract<LogicSubject, { kind: "external" }>;
+      operation: "call";
+      arguments?: unknown[];
+    };
+
+export type LogicRule = {
+  id: string;
+  when: ConditionInput;
+  then: LogicEffect[];
+};
+
+export type LogicMoment = {
+  when?: ConditionInput;
+  then?: Consequence[];
+  rules?: LogicRule[];
+};
+
 export type CanonEditSuggestionStatus =
   | "draft"
   | "proposed"
@@ -201,6 +318,8 @@ export type LogicPropertyOverride = {
   grantable?: boolean;
   /** For entity-type properties: entities of this type can be selected as an Event/DialogueBeat location. */
   location?: boolean;
+  /** @deprecated Type capabilities formerly stored on synthetic `type:*` property overrides. */
+  runtimeRoles?: EntityRuntimeStateRole[];
 };
 
 /** Entity-type-level capability flags: an entity is grantable/a location because its TYPE is marked so. */
@@ -211,6 +330,8 @@ export type LogicTypeOverride = {
   grantable?: boolean;
   /** Entities of this type can be selected as an Event/DialogueBeat location. */
   location?: boolean;
+  /** Runtime state roles explicitly enabled for entities of this type. */
+  runtimeRoles?: EntityRuntimeStateRole[];
 };
 
 export type PlayerSimulationState = {
@@ -219,6 +340,14 @@ export type PlayerSimulationState = {
   variables?: Record<string, unknown>;
   /** editGrantable runtime values, keyed by grantable entity id then property id. */
   grantableProperties?: Record<string, Record<string, unknown>>;
+  /** Unified runtime overlay. Canon/local source data remains immutable. */
+  entityStates?: Record<
+    string,
+    {
+      states?: Partial<Record<EntityRuntimeStateRole | string, boolean>>;
+      properties?: Record<string, unknown>;
+    }
+  >;
   visited?: string[];
   activeNodeId?: string;
   activeDecisionId?: string;
@@ -394,6 +523,7 @@ export type Sequence = {
   entryLabel?: string;
   eventIds: string[];
   branchIds?: string[];
+  logic?: LogicMoment;
   availability?: ConditionInput;
   consequences?: Consequence[];
   legacyUnity?: Record<string, unknown>;
@@ -405,6 +535,7 @@ export type Branch = {
   description?: string;
   color?: string;
   eventIds: string[];
+  logic?: LogicMoment;
   availability?: ConditionInput;
   consequences?: Consequence[];
   legacyUnity?: Record<string, unknown>;
@@ -452,6 +583,7 @@ export type EventNode = {
   locationRef?: string;
   /** Canon entities configured as present in this event. */
   presentEntityRefs?: string[];
+  logic?: LogicMoment;
   availability?: ConditionInput;
   decisions?: Decision[];
   /** Optional pacing target displayed on each speech beat in this event. */
@@ -477,6 +609,7 @@ export type Decision = {
   optionStyle?: OutcomePresentationStyle;
   /** @deprecated Legacy grouping only. Decisions now belong directly to the event. */
   dialogueId?: string;
+  logic?: LogicMoment;
   availability?: ConditionInput;
   unavailableBehavior?: "locked" | "hidden";
   lockText?: StoryTextBlock;
@@ -491,6 +624,7 @@ export type DialogueNode = {
   members?: DialogueMemberRef[];
   speakerRef?: string;
   text: StoryTextBlock;
+  logic?: LogicMoment;
   availability?: ConditionInput;
   consequences?: Consequence[];
   canonRefs?: string[];
@@ -502,6 +636,7 @@ export type DialogueMemberRef =
 
 export type DialogueStart = {
   id: string;
+  logic?: LogicMoment;
   /** @deprecated Migrated to a graph transition targeting the Dialogue node. */
   dialogueId?: string;
   /** @deprecated Automatic starts are represented by the event's normal entry route. */
@@ -525,6 +660,7 @@ export type DialogueBeat = {
   sceneImage?: SceneImageAttachment;
   /** @deprecated Migrated to the single `sceneImage` attachment. */
   sceneImages?: SceneImageAttachment[];
+  logic?: LogicMoment;
   displayCondition?: ConditionInput;
   /** Fires when this beat is reached — e.g. grant/remove a grantable at this exact line. */
   consequences?: Consequence[];
@@ -547,6 +683,7 @@ export type Outcome = {
   description?: string;
   icon?: string;
   requiredCanonRefs?: string[];
+  logic?: LogicMoment;
   availability?: ConditionInput;
   unavailableBehavior?: "locked" | "hidden";
   lockText?: StoryTextBlock;
@@ -555,6 +692,7 @@ export type Outcome = {
 };
 
 export type Condition =
+  | LogicPredicate
   | {
       type: "canonEntryUnlocked";
       ref: string;
@@ -631,6 +769,7 @@ export type ConditionExpression = Condition | ConditionSet;
 export type ConditionInput = ConditionExpression | ConditionExpression[];
 
 export type Consequence =
+  | LogicEffect
   | {
       type: "addGrantable";
       entityId: string;
@@ -659,6 +798,8 @@ export type Transition = {
   id: string;
   from: string;
   to: string;
+  role?: "flow" | "route";
+  logic?: LogicMoment;
   label?: string;
   order?: number;
   mode?: "conditional" | "fallback";
@@ -698,6 +839,7 @@ export type ProjectDataObject = {
   fields: Record<string, unknown>;
   tags?: string[];
   scope?: ProjectDataObjectScope;
+  logic?: LogicMoment;
   availability?: ConditionInput;
   consequences?: Consequence[];
 };
@@ -831,6 +973,7 @@ export type RuntimeChoice = {
   targetNodeId: string;
   conditions?: ConditionInput;
   consequences?: Consequence[];
+  logic?: LogicMoment;
   unavailableBehavior?: "locked" | "hidden";
   lockTextKey?: string;
 };
@@ -855,6 +998,7 @@ export type RuntimeNode = {
   choices?: RuntimeChoice[];
   conditions?: ConditionInput;
   consequences?: Consequence[];
+  logic?: LogicMoment;
   [key: string]: unknown;
 };
 
@@ -897,6 +1041,7 @@ export type ValidationFinding = {
     | "invalid_frontmatter"
     | "invalid_worldnotion_properties"
     | "invalid_condition"
+    | "invalid_consequence"
     | "missing_grantable_entity"
     | "invalid_transition_order"
     | "duplicate_fallback"

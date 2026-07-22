@@ -12,6 +12,10 @@ export function isTauriRuntime(): boolean {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 }
 
+export function canUseBrowserDirectoryPicker(): boolean {
+  return typeof window !== "undefined" && "showDirectoryPicker" in window;
+}
+
 export function platformLabelsFor(platform: string, userAgent: string): PlatformLabels {
   const normalizedPlatform = platform.toLowerCase();
   const normalizedUserAgent = userAgent.toLowerCase();

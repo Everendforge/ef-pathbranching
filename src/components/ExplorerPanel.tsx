@@ -393,6 +393,13 @@ export function ExplorerPanel({
                           type="button"
                           className="explorer-entity-open"
                           title={row.label}
+                          draggable={row.kind !== "data"}
+                          onDragStart={(event) => {
+                            if (row.kind === "data") return;
+                            event.dataTransfer.setData("application/x-pathbranching-entity", row.id);
+                            event.dataTransfer.setData("text/plain", row.id);
+                            event.dataTransfer.effectAllowed = "copy";
+                          }}
                           onClick={() => onSelect(explorerSelection(row))}
                         >
                           <RowIcon size={14} />
